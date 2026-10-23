@@ -1,0 +1,2275 @@
+// App state (zustand) and every user action. UI reads with useApp, acts through the functions below.
+import { create } from 'zustand';
+import { api, type IslandIn, type Output, type Params, type PartOut, type Stats, ServerDown } from './api';
+import { download, readParts, toFbx, toObjs, zipFiles, type ExportPart } from './files';
+import { islandsOf, pickTri, seamSegments } from './islands';
+import { placeChanged } from './fitpack';
+import { edgeBetween, polygonsOf, sidesOf, topoOf, trisOf, vertexAt, xyzKey, type Topo } from './topo';
+import { health, healthReport, ruleCounts, RULES, setModelSize, type RuleId } from './health';
+import { clearRecentFiles, forgetRecent, pickWithHandle, recentFiles, remember, reopen } from './recent';
+import { carryNormals, dissolve, dissolveFaces, limitedDissolve, link, outNormals, ownPolygons, topoOfSoup, triangulate, trisToQuads, type Polys } from './polyedit';
+import { bake } from './bake';
+import { CHANNELS, composite, dab, dabUV, generate, setBaked, surfaceOf as texelSurface, type Gen, type GenKind, type Shown, fillAll, fillTris, invertSelection as invertMask, keep as keepPaint, maskPolygon, maskTris, newLayer, pngOf, sample, select as selectMask, setOf, undo as undoSet, type Brush, type Channel, type PaintLayer, type SelOp as MaskOp, type TexSet } from './paint';
+import { addLoops, connect as connectPolys, gridFill, loopCut, loopOf, members, merge as mergeVerts, meshCheck, moveOnSurface, poles, relax, rotateEdge, shapeLoop, slide, subdivide, surfaceOf, type Done, type Geo, type Sel as SoupSel } from './polygeo';
+
+export type Mode = 'checker' | 'stretch' | 'islands';
+export const TEXTURE_RESOLUTIONS = [64, 128, 256, 512, 1024, 2048, 4096, 8192] as const;
+export const setTextureResolution = (textureResolution: number) => set({ textureResolution });
+/** Blender's select modes (1 2 3), plus whole UV islands (4). */
+export type SelectMode = 'vert' | 'edge' | 'face' | 'island';
+/** Blender's edit-mode selection on one part: vertex, edge and face (triangle) ids of its output (`topoOf`), kept
+ *  consistent with each other. `of`: the output positions it was made on. */
+export interface CompSel { part: number; of: number[]; verts: Set<number>; edges: Set<number>; faces: Set<number> }
+/** A menu row: an action, or (`kind`) a section heading or a line of information (`tone`: 0 green … 1 red; `title`: its tooltip). */
+export interface MenuItem { label: string; run: () => void; kbd?: string; off?: boolean; kind?: 'head' | 'info'; tone?: number; title?: string }
+export type UvScope = 'part' | 'all';
+
+/** The 3D view's lighting and overlays. An environment map brings its own grade (see HDRI_PRESETS);
+ *  choosing None puts the workspace lights back. */
+export interface Scene {
+  background: string;
+  ambient: number;
+  key: number;
+  exposure: number;
+  hdriUrl: string | null;
+  /** Preset id, `custom` for a loaded file, or '' when there is no map. */
+  hdriId: string;
+  hdriName: string;
+  hdriBackground: boolean;
+  hdriStrength: number;
+  /** Yaw of the map, radians, so its bright light sits on the front-left. */
+  hdriRotation: number;
+  /** Backdrop blur, 0..1. Softens a 1K plate into a studio sweep. */
+  hdriBlur: number;
+  wireframe: boolean;
+  showEdges: boolean;
+  showVertices: boolean;
+  showSeams: boolean;
+  showGrid: boolean;
+  showAxes: boolean;
+  /** Blender's Viewport Shading: lights and environment (Studio), a lit sphere by normal (MatCap), or unlit (Flat). */
+  lighting: 'studio' | 'matcap' | 'flat';
+  matcap: string;
+  /** The backdrop: the app's (Theme), or `background` (Custom); the environment map shows instead when `hdriBackground`. */
+  bg: 'theme' | 'custom';
+  backface: boolean;
+  outline: boolean;
+  specular: boolean;
+  xray: boolean;
+  xrayAlpha: number;
+  shadow: boolean;
+  shadowAmount: number;
+  /** Cavity, Blender's Workbench passes: valleys darker, ridges lighter (each 0…2). World = screen-space AO over
+   *  `cavityDistance` (in halves of the model, Blender's 0.2 on its default cube), Screen = curvature (crisp lines on
+   *  every edge, from the normals a pixel apart), Both. */
+  cavity: boolean;
+  cavityType: 'world' | 'screen' | 'both';
+  cavityDistance: number;
+  ridge: number;
+  valley: number;
+}
+
+export interface HdriPreset {
+  label: string;
+  url: string;
+  rotation: number;
+  strength: number;
+  blur: number;
+  exposure: number;
+  ambient: number;
+  key: number;
+  sky: string;
+  ground: string;
+  keyColor: string;
+}
+
+// Grades measured from the bundled plates: mean luminance and where the hot pixels sit.
+// The yaw turns that key onto the front-left of the default camera. Strength and exposure
+// keep the subject in a photoshoot range instead of letting the plate's practicals clip it.
+const deg = (d: number) => d * Math.PI / 180;
+export const HDRI_PRESETS = {
+  studio_small_09: { label: 'Soft studio', url: '/hdri/studio_small_09_1k.hdr', rotation: deg(55), strength: 0.72, blur: 0.62, exposure: 1, ambient: 0.18, key: 0.55, sky: '#f4f0e8', ground: '#3a342e', keyColor: '#fff6ec' },
+  studio_small_04: { label: 'Dramatic studio', url: '/hdri/studio_small_04_1k.hdr', rotation: deg(-172), strength: 0.48, blur: 0.3, exposure: 1.05, ambient: 0.1, key: 0.9, sky: '#e6e0d6', ground: '#161311', keyColor: '#fff1e4' },
+  venice_sunset: { label: 'Venice sunset', url: '/hdri/venice_sunset_1k.hdr', rotation: deg(59), strength: 0.58, blur: 0.16, exposure: 0.92, ambient: 0.16, key: 0.4, sky: '#ffd2a8', ground: '#3a2a22', keyColor: '#ffd8b0' },
+  dikhololo_night: { label: 'Night sky', url: '/hdri/dikhololo_night_1k.hdr', rotation: deg(-149), strength: 1.85, blur: 0.2, exposure: 1.3, ambient: 0.32, key: 0.6, sky: '#c9d4e6', ground: '#12151c', keyColor: '#d5e2ff' },
+} as const satisfies Record<string, HdriPreset>;
+export type HdriId = keyof typeof HDRI_PRESETS;
+
+const CUSTOM_GRADE: Omit<HdriPreset, 'label' | 'url'> = { rotation: 0, strength: 0.85, blur: 0.45, exposure: 1, ambient: 0.22, key: 0.6, sky: '#f3efe8', ground: '#2c2824', keyColor: '#fff4e8' };
+/** Fill colours for the current map. Presets carry their own; a loaded file uses a neutral studio. */
+export const sceneGrade = (id: string): Omit<HdriPreset, 'label' | 'url'> => (id in HDRI_PRESETS ? HDRI_PRESETS[id as HdriId] : CUSTOM_GRADE);
+
+// without a plate, Studio is Blender's Solid studio light as it ships (shading.ts): Key scales its four lights, Ambient
+// adds a fill it doesn't have, Exposure scales the result
+const WORK_LIGHT = { ambient: 0, key: 1, exposure: 1 };
+const HDRI_TYPE = 'Environment maps are .hdr or .exr files';
+const dropHdri = (url: string | null) => { if (url?.startsWith('blob:')) URL.revokeObjectURL(url.split('#')[0]); };
+
+export interface Part {
+  name: string;
+  soup: Float32Array;
+  /** Every seam, two xyz endpoints (6 numbers) per edge: the island borders an unwrap left, and the marked ones. */
+  seams: number[];
+  /** The seams marked by hand: Auto Unwrap starts over from these. */
+  marked: number[];
+  /** The seams the part's current UVs were made with: a seam edit re-solves only what differs from these. */
+  solved: number[];
+  /** The mesh itself. Off: hidden in both views. */
+  visible: boolean;
+  /** The checker preview. Off: the part stays, drawn as a plain shaded surface. */
+  textured: boolean;
+  /** Seamed by hand (Clear all seams): its islands are the seams alone, laid flat as they are; Auto Unwrap ends it. */
+  manual?: boolean;
+  /** Per soup triangle: the file's polygon it came from (quads and n-gons drawn as Blender shows them). */
+  poly?: Int32Array;
+  /** Per polygon: its corner count in the file. */
+  sides?: Int32Array;
+  /** The file's own normals per soup corner (Smooth view shades with them, as Blender does); carried through a Move
+   *  (`carryNormals`), dropped once a Poly Doc tool rebuilds the geometry, which then shades with normals of its own. */
+  normals?: Float32Array;
+  /** Changed (or opened) in Poly Doc, which never unwraps: its output is the bare mesh until UV Magician unwraps it. */
+  stale?: boolean;
+}
+
+/** An undo step: the UVs, and the result (Stitch makes two islands one). */
+interface Snap { uvs: Float32Array[]; result: Output | null }
+interface PartSnap { parts: Part[]; uvs: Float32Array[]; result: Output | null; csel: CompSel | null; activePart: number; uvScope: UvScope; past: Snap[]; future: Snap[] }
+
+interface State {
+  source: string | null;
+  /** The source file's unit in cm (FBX UnitScaleFactor; 100 = metres), written back on export. */
+  unit: number;
+  parts: Part[];
+  params: Params;
+  result: Output | null;
+  /** The UVs as edited by hand, per part (the result's own stay as the engine made them). */
+  uvs: Float32Array[];
+  /** Bumps on every UV edit, so views redraw without copying arrays every drag frame. */
+  uvRev: number;
+  edited: boolean;
+  /** Bumps on every new result: the 3D view refits the camera. */
+  rev: number;
+  past: Snap[];
+  future: Snap[];
+  /** Parts before each seam or cut change, for undo once there's no UV edit left to undo. */
+  partsPast: PartSnap[];
+  partsFuture: PartSnap[];
+  /** The islands the selection touches (derived from csel): what the island tools work on. */
+  selected: number[];
+  selectMode: SelectMode;
+  csel: CompSel | null;
+  /** The last view request (frame, look along an axis): the view it's for acts on each new n. */
+  viewReq: { view: '3d' | 'uv'; op: ViewOp; n: number };
+  /** A menu at the pointer: a list (right click, Ctrl+E) or a pie (Q). */
+  menu: { x: number; y: number; title: string; items: MenuItem[]; pie?: boolean } | null;
+  /** B: the next left drag box-selects, wherever it starts. */
+  boxArmed: boolean;
+  /** G R S in progress. */
+  xform: Xform | null;
+  /** Live Unwrap: moving pinned UVs lays their islands out again around them as they go. */
+  liveUnwrap: boolean;
+  /** After a Cut, Stitch, Unwrap Selection or Clear seams: turn the islands it made straight (Align Axis), pack the
+   *  part again. Remembered between sessions. */
+  afterAlign: boolean;
+  afterPack: boolean;
+  /** Pinned UV corners per part (P), for the output positions they were pinned on. */
+  pins: Record<number, { of: number[]; corners: Set<number> }>;
+  /** Shape data copied from one island for reuse on islands with matching corner topology. */
+  shapeClipboard: number[] | null;
+  /** The part whose UVs the UV view shows while uvScope is 'part'. */
+  activePart: number;
+  /** Parts highlighted in the Parts list, like a layers panel. */
+  layerSel: number[];
+  /** The part a Shift-click in the Parts list ranges from. */
+  layerAnchor: number;
+  /** UV view: just the active part, or the whole model (each part's square as a tile, or the shared atlas). */
+  uvScope: UvScope;
+  mode: Mode;
+  /** Resolution of the checker preview texture. */
+  textureResolution: number;
+  /** Colours picked in the background wheel, newest first. */
+  recentColors: string[];
+  scene: Scene;
+  unfold: number;
+  /** Progressive model loading/unwrapping status; completed parts are already usable in both views. */
+  loading: { phase: 'read' | 'unwrap' | 'pack' | 'error'; total: number; complete: number; active: string | null; error?: string; done: boolean[] } | null;
+  busy: string | null;
+  error: string | null;
+  server: 'unknown' | 'up' | 'down';
+  shapes: string[];
+  /** Which tool fills the window: the UV unwrapper or Poly Doc (the pill tabs). */
+  workspace: Workspace;
+  /** Poly Doc's view: each polygon flat with the wire, smooth shaded without it (as the model will look), or Health
+   *  (every face green to red by how solid it is). */
+  docView: DocView;
+  /** Poly Doc's face colour outside Health: one grey, or a colour per part (Blender's Random). */
+  docColor: 'single' | 'random';
+  /** The panel column's width (px), and the 3D view's share of the views in UV Magician: the dividers, remembered. */
+  dockWidth: number;
+  viewSplit: number;
+  /** Poly Doc's current tool (the options bar shows it) and the tools' settings. */
+  docTool: DocTool | null;
+  /** File › Open Recent: the newest files first (their contents or handles live in IndexedDB, `recent.ts`). */
+  recent: { name: string; time: number }[];
+  /** UV Magician's last strip tool (its options bar shows it). */
+  uvTool: string | null;
+  docOpts: { slide: number; angle: number; relax: number };
+  /** Even Out lets the selection's border vertices slide along the border (else they stay put). */
+  slideBorders: boolean;
+  /** Poly Doc's G: the vertices being dragged (soup ids), from the geometry the drag began with; null when not moving. */
+  docMove: DocMove | null;
+  /** G keeps the moved vertices on the model's surface (Blender's snap to face), so dragging evens spacing, not shape. */
+  moveOnSurface: boolean;
+  /** Poly Doc marks poles on the model (3 edges blue, 5 or more red). */
+  showPoles: boolean;
+  /** What the last Poly Doc fix did, in words (shown under its buttons). */
+  fixNote: string | null;
+  /** Export writes triangles (a fixed triangulation for baking) instead of the polygons. */
+  triangulate: boolean;
+  /** Van Gogh's tool and brush: a value per channel and which channels it paints (`on`); size is % of the model (on the
+   *  model) or of the texture (in the texture view); Wand and Bucket take a face, an island or the whole part (`by`). */
+  paint: { tool: PaintTool; color: string; rough: number; metal: number; on: Record<Channel, boolean>; size: number; flow: number; hardness: number; by: FillBy };
+  /** Parts expanded in Van Gogh's Parts tree. */
+  paintOpen: number[];
+  /** The channel the UV view shows (picked under the part in Parts). */
+  paintChannel: Shown;
+  /** The baked ambient occlusion shades the model (Substance shows it as soon as it's baked). */
+  paintAO: boolean;
+  /** Bumped when a texture set's layers or paint change, so the panel and the UV view read them again. */
+  paintRev: number;
+}
+export type Workspace = 'uv' | 'doc' | 'paint';
+export type PaintTool = 'marquee' | 'lasso' | 'wand' | 'brush' | 'erase' | 'bucket' | 'picker';
+export type FillBy = 'face' | 'island' | 'part';
+export type DocView = 'wire' | 'smooth' | 'health';
+interface DocMove { part: number; verts: number[]; base: Geo; normals?: Float32Array; marked: number[]; mouse: [number, number] | null; pivot: [number, number, number]; axis: 0 | 1 | 2 | null; snap: (p: [number, number, number]) => [number, number, number]; reselect: { faces?: number[]; verts?: number[]; edges?: [number, number][] }; moved: boolean }
+/** The 3D view's camera, for tools that turn mouse movement into world movement: a screen delta (px) at a point's depth. */
+export const view3d: { worldDelta: ((dx: number, dy: number, at: [number, number, number]) => [number, number, number]) | null } = { worldDelta: null };
+export type DocTool = 'move' | 'dissolve' | 'limited' | 'quads' | 'connect' | 'merge' | 'collapse' | 'rotate' | 'grid' | 'relax' | 'subdivide' | 'loopcut' | 'slide' | 'space' | 'straighten' | 'circle';
+/** A number kept in the browser between sessions, within bounds. */
+function saved(key: string, fallback: number, min: number, max: number) {
+  try { const v = Number(localStorage.getItem(key)); return localStorage.getItem(key) !== null && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback; } catch { return fallback; }
+}
+const keep = (key: string, v: number) => { try { localStorage.setItem(key, String(v)); } catch { /* private mode */ } };
+export const setDockWidth = (w: number) => { const dockWidth = Math.round(Math.min(520, Math.max(220, w))); set({ dockWidth }); keep('dockWidth', dockWidth); };
+export const setViewSplit = (f: number) => { const viewSplit = Math.min(0.8, Math.max(0.2, f)); set({ viewSplit }); keep('viewSplit', viewSplit); };
+const savedWorkspace = (): Workspace => { try { return (['doc', 'paint'] as const).find((w) => w === localStorage.getItem('workspace')) ?? 'uv'; } catch { return 'uv'; } };
+
+export const useApp = create<State>(() => ({
+  source: null, unit: 100, parts: [], params: { sharp: 45, tol: 0.08, seam_weight: 0.1, join: true, one_atlas: false }, activePart: 0, layerSel: [], layerAnchor: 0, uvScope: 'part', result: null, uvs: [], uvRev: 0, edited: false,
+  rev: 0, past: [], future: [], partsPast: [], partsFuture: [], selected: [], selectMode: 'face', csel: null, viewReq: { view: '3d', op: 'all', n: 0 }, menu: null, boxArmed: false, xform: null, liveUnwrap: true, afterAlign: saved('afterAlign', 1, 0, 1) === 1, afterPack: saved('afterPack', 1, 0, 1) === 1, pins: {}, shapeClipboard: null, mode: 'checker', textureResolution: 1024, recentColors: [],
+  scene: { background: '#111111', ...WORK_LIGHT, hdriUrl: null, hdriId: '', hdriName: '', hdriBackground: false, hdriStrength: 1, hdriRotation: 0, hdriBlur: 0, wireframe: false, showEdges: true, showVertices: true, showSeams: true, showGrid: false, showAxes: false,
+    lighting: 'studio', matcap: 'clay', bg: 'theme', backface: false, outline: false, specular: true, xray: false, xrayAlpha: 0.5, shadow: false, shadowAmount: 0.4, cavity: false, cavityType: 'both', cavityDistance: 0.2, ridge: 1, valley: 1 }, unfold: 0,
+  busy: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 290, 220, 520), viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, moveOnSurface: true,
+  paint: { tool: 'brush', color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: true, metal: true }, size: 3, flow: 0.6, hardness: 0.5, by: 'island' }, paintChannel: 'material', paintRev: 0, paintOpen: [0], paintAO: true,
+}));
+const set = useApp.setState, get = useApp.getState;
+export const updateScene = (scene: Partial<Scene>) => set((s) => ({ scene: { ...s.scene, ...scene } }));
+export const rememberColor = (background: string) => {
+  const hex = background.toLowerCase();
+  set((s) => ({ recentColors: [hex, ...s.recentColors.filter((c) => c !== hex)].slice(0, 8) }));
+};
+/** A bundled plate, or '' to take the map off and put the workspace lights back. */
+export const setSceneHdriPreset = (id: string) => {
+  const prev = get().scene.hdriUrl;
+  if (!(id in HDRI_PRESETS)) {
+    dropHdri(prev);
+    updateScene({ hdriUrl: null, hdriId: '', hdriName: '', hdriBackground: false, hdriStrength: 1, hdriRotation: 0, hdriBlur: 0, ...WORK_LIGHT });
+    return;
+  }
+  const p = HDRI_PRESETS[id as HdriId];
+  if (prev !== p.url) dropHdri(prev);
+  updateScene({
+    hdriUrl: p.url, hdriId: id, hdriName: p.label, hdriBackground: true,
+    hdriStrength: p.strength, hdriRotation: p.rotation, hdriBlur: p.blur, exposure: p.exposure, ambient: p.ambient, key: p.key,
+  });
+};
+export const setSceneHdri = (file: File | null) => {
+  if (!file) return setSceneHdriPreset('');
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  if (ext !== 'hdr' && ext !== 'exr') return set({ error: HDRI_TYPE });
+  dropHdri(get().scene.hdriUrl);
+  const url = URL.createObjectURL(file), g = CUSTOM_GRADE;
+  // The fragment keeps the extension where drei's loader can see it; a blob request drops it.
+  set((s) => ({
+    error: s.error === HDRI_TYPE ? null : s.error,
+    scene: {
+      ...s.scene, hdriUrl: `${url}#${encodeURIComponent(file.name)}`, hdriId: 'custom', hdriName: file.name, hdriBackground: true,
+      hdriStrength: g.strength, hdriRotation: g.rotation, hdriBlur: g.blur, exposure: g.exposure, ambient: g.ambient, key: g.key,
+    },
+  }));
+};
+
+// One job at a time; the status bar shows what's running and why the last one failed.
+async function task(label: string, job: () => Promise<void>) {
+  set({ busy: label, error: null });
+  try {
+    await job();
+    set({ server: 'up' });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    set((s) => ({ error: message, server: e instanceof ServerDown ? 'down' : s.server,
+      loading: s.loading ? { ...s.loading, phase: 'error', error: message } : null }));
+  } finally {
+    set({ busy: null });
+  }
+}
+
+// Only the latest request may land: a slow earlier operation must not overwrite a newer part edit.
+let latest = 0;
+async function solve(refit = true) {
+  const { parts, params } = get(), me = ++latest;
+  if (!parts.length) return;
+  const previous = get().result;
+  if (!previous) {
+    const preview = { parts: parts.map(placeholder), stats: { islands: 0, tris: 0, flips: 0, mean_stretch: 0, max_stretch: 0, good_area: 0, overlap: 0, efficiency: 0, ms: 0 } };
+    set((s) => ({ result: preview, uvs: preview.parts.map((p) => new Float32Array(p.uvs)), uvRev: s.uvRev + 1, rev: s.rev + 1 }));
+  }
+  set((s) => ({ loading: { phase: 'unwrap', total: parts.length, complete: 0, active: 'All meshes (Rust parallel)', done: parts.map(() => !!previous) } }));
+  const result = await api.unwrap(parts.map((p) => ({ ...p, seams: p.marked })), params);
+  if (me !== latest) return;
+  set((s) => ({
+    result, uvs: result.parts.map((p) => new Float32Array(p.uvs)), uvRev: s.uvRev + 1, edited: false, parts: s.parts.map((p, i) => (result.parts[i] ? { ...withBorders(p, result.parts[i]), stale: false } : p)),
+    rev: refit ? s.rev + 1 : s.rev, past: [], future: [], csel: null, activePart: Math.min(s.activePart, result.parts.length - 1), loading: null,
+  }));
+}
+
+/** Poly Doc's view of parts: the bare mesh as the output, no unwrap (all parts, or just one after an edit). Each is
+ *  marked stale so UV Magician unwraps it when you go back there. */
+function meshOnly(only?: number) {
+  const s = get(), stats = { islands: 0, tris: 0, flips: 0, mean_stretch: 0, max_stretch: 0, good_area: 0, overlap: 0, efficiency: 0, ms: 0 };
+  const outs = s.parts.map((p, i) => (only === undefined || i === only || !s.result?.parts[i] ? placeholder(p) : s.result.parts[i]));
+  set((st) => ({
+    result: { parts: outs, stats: st.result?.stats ?? stats }, uvs: outs.map((o, i) => (only === undefined || i === only ? new Float32Array(o.uvs) : st.uvs[i])), uvRev: st.uvRev + 1,
+    parts: st.parts.map((p, i) => (only === undefined || i === only ? { ...p, stale: true } : p)), loading: null,
+    ...(only === undefined ? { rev: st.rev + 1, activePart: 0 } : {}),
+  }));
+}
+
+const placeholder = (part: Part): PartOut => {
+  const tris = Math.floor(part.soup.length / 9);
+  return { positions: Array.from(part.soup), uvs: Array(tris * 6).fill(0), stretch: Array(tris).fill(0), island: Array(tris).fill(-1), source: Array.from({ length: tris }, (_, t) => t) };
+};
+
+function uvArea(uv: ArrayLike<number>) {
+  let area = 0;
+  for (let i = 0; i + 5 < uv.length; i += 6) area += Math.abs((uv[i + 2] - uv[i]) * (uv[i + 5] - uv[i + 1]) - (uv[i + 4] - uv[i]) * (uv[i + 3] - uv[i + 1])) * 0.5;
+  return area;
+}
+
+function refreshStats(parts: PartOut[], previous: Output['stats'], oneAtlas: boolean, ms: number): Stats {
+  let islands = 0, tris = 0, flips = 0, max_stretch = 0, weightedStretch = 0, worldArea = 0, goodArea = 0, totalUvArea = 0, perPartEfficiency = 0;
+  for (const p of parts) {
+    islands += new Set(p.island).size;
+    tris += p.stretch.length;
+    perPartEfficiency += uvArea(p.uvs);
+    totalUvArea += uvArea(p.uvs);
+    for (let t = 0; t < p.stretch.length; t++) {
+      const e = p.stretch[t];
+      if (e < 0) { flips++; continue; }
+      const o = t * 9, ax = p.positions[o], ay = p.positions[o + 1], az = p.positions[o + 2];
+      const bx = p.positions[o + 3], by = p.positions[o + 4], bz = p.positions[o + 5];
+      const cx = p.positions[o + 6], cy = p.positions[o + 7], cz = p.positions[o + 8];
+      const abx = bx - ax, aby = by - ay, abz = bz - az, acx = cx - ax, acy = cy - ay, acz = cz - az;
+      const a = Math.hypot(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx) * 0.5;
+      worldArea += a; weightedStretch += e * a; if (e < 0.05) goodArea += a; max_stretch = Math.max(max_stretch, e);
+    }
+  }
+  return { ...previous, islands, tris, flips, max_stretch, mean_stretch: worldArea ? weightedStretch / worldArea : 0,
+    good_area: worldArea ? goodArea / worldArea : 0, efficiency: oneAtlas ? totalUvArea : (parts.length ? perPartEfficiency / parts.length : 0), ms };
+}
+
+/** Replace one part's chart output while retaining every other part's UV edits and atlas allocation. */
+async function unwrapPart(partIndex: number) {
+  const before = get(), part = before.parts[partIndex], result = before.result;
+  if (!part || !result) return;
+  const me = ++latest, params = before.params;
+  set((s) => ({ loading: { phase: 'unwrap', total: 1, complete: 0, active: part.name, done: s.parts.map((_, i) => i !== partIndex) } }));
+  const output = await api.unwrap([{ ...part, seams: part.marked }], { ...params, one_atlas: false });
+  const currentPart = get().parts[partIndex];
+  if (me !== latest || currentPart?.soup !== part.soup || currentPart?.seams !== part.seams) return;
+  const raw = output.parts[0];
+  let partUvs = new Float32Array(raw.uvs);
+  if (params.one_atlas) {
+    const oldUvs = before.uvs[partIndex];
+    if (oldUvs?.length) {
+      let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
+      for (let i = 0; i < oldUvs.length; i += 2) { u0 = Math.min(u0, oldUvs[i]); u1 = Math.max(u1, oldUvs[i]); v0 = Math.min(v0, oldUvs[i + 1]); v1 = Math.max(v1, oldUvs[i + 1]); }
+      for (let i = 0; i < partUvs.length; i += 2) { partUvs[i] = u0 + partUvs[i] * (u1 - u0); partUvs[i + 1] = v0 + partUvs[i + 1] * (v1 - v0); }
+    }
+  }
+  land(partIndex, raw, partUvs, part.seams, output.stats.ms, false);
+}
+
+/** An edge's key in a seam list (6 numbers per edge, at `o`): its two endpoints, in a fixed order. */
+function edgeKey(list: number[], o: number) {
+  const a = `${list[o]},${list[o + 1]},${list[o + 2]}`, b = `${list[o + 3]},${list[o + 4]},${list[o + 5]}`;
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+const keysOf = (list: number[]) => { const m = new Map<string, number>(); for (let o = 0; o < list.length; o += 6) m.set(edgeKey(list, o), o); return m; };
+/** A seam list with these edges (6 numbers each) added, taken out, or toggled; the same list if nothing changed. */
+function editSeams(list: number[], edges: number[], how: 'add' | 'remove' | 'toggle'): number[] {
+  const keys = keysOf(list), drop = new Set<number>(), add: number[] = [];
+  for (let o = 0; o < edges.length; o += 6) {
+    const at = keys.get(edgeKey(edges, o));
+    if (at !== undefined) { if (how !== 'add') drop.add(at); }
+    else if (how !== 'remove') { add.push(...edges.slice(o, o + 6)); keys.set(edgeKey(edges, o), -1); }
+  }
+  if (!drop.size && !add.length) return list;
+  const out: number[] = [];
+  for (let o = 0; o < list.length; o += 6) if (!drop.has(o)) for (let k = 0; k < 6; k++) out.push(list[o + k]);
+  for (const x of add) out.push(x);
+  return out;
+}
+/** Symmetric difference of two seam lists: the edges toggled from one to the other. */
+function seamDiff(a: number[], b: number[]) {
+  const ka = keysOf(a), kb = keysOf(b), out: number[] = [];
+  for (const [o, k] of [...ka].map(([k, o]) => [o, k] as const)) if (!kb.has(k)) out.push(...a.slice(o, o + 6));
+  for (const [k, o] of kb) if (!ka.has(k)) out.push(...b.slice(o, o + 6));
+  return out;
+}
+/** A part after a fresh unwrap: its seams are every island border on the model (where the two sides differ in UV),
+ *  plus the marked ones, as if each had been marked in Blender; clearing one joins the islands there. */
+function withBorders(p: Part, out: PartOut): Part {
+  const seams = editSeams(seamSegments(out.positions, out.uvs, false), p.marked, 'add');
+  return { ...p, seams, solved: seams, manual: false };
+}
+
+/** Work a seam edit into the part's UVs as they are: only the islands an added or removed seam touches are solved
+ *  again and laid back where they were; every other island, hand edits and all, stays. Unwrap starts over instead. */
+async function reseamPart(partIndex: number, join: number[] = []) {
+  const before = get(), part = before.parts[partIndex], out = before.result?.parts[partIndex], uvs = before.uvs[partIndex];
+  if (!part || !out || !uvs) return;
+  const changed = [...seamDiff(part.solved, part.seams), ...join];
+  if (!changed.length) return;
+  const me = ++latest, t0 = performance.now();
+  set((s) => ({ loading: { phase: 'unwrap', total: 1, complete: 0, active: part.name, done: s.parts.map((_, i) => i !== partIndex) } }));
+  const pins = [...(pinsOf(before, partIndex) ?? [])];
+  const r = await api.reseam({ positions: out.positions, uvs: Array.from(uvs), stretch: out.stretch, island: out.island, seams: part.seams, changed, pins, manual: part.manual }, before.params);
+  const now = get();
+  if (me !== latest || now.result !== before.result || now.parts[partIndex]?.seams !== part.seams) return;
+  land(partIndex, { ...out, ...r }, new Float32Array(r.uvs), part.seams, performance.now() - t0, true);
+  await tidy(partIndex, uvs);
+}
+
+/** After a seam edit landed: the islands it changed (any corner moved from `before`) turned straight, the part packed
+ *  again, as the Align / Pack switches say; part of the edit's undo step. */
+async function tidy(part: number, before: Float32Array) {
+  const s = get(), a = s.uvs[part];
+  if (!s.result || !a || a.length !== before.length || (!s.afterAlign && !s.afterPack)) return;
+  const isl = islandsOf(s.result), changed = new Set(isl.flatMap((x, id) =>
+    x.part === part && x.corners.some((c) => a[c * 2] !== before[c * 2] || a[c * 2 + 1] !== before[c * 2 + 1]) ? [id] : []));
+  if (s.afterAlign) for (const id of changed) straighten(a, isl[id].corners);
+  if (s.afterPack) {
+    // the changed islands into the free space round the rest (fast, nothing else moves); no room: pack it all
+    const atlas = isl.flatMap((x, id) => (s.params.one_atlas || x.part === part ? [{ id, a: s.uvs[x.part], corners: x.corners }] : []));
+    if (!placeChanged(atlas.filter((x) => !changed.has(x.id)), atlas.filter((x) => changed.has(x.id)))) (await packed(part))();
+  }
+  set((st) => ({ uvRev: st.uvRev + 1 }));
+}
+
+/** One part's new output into the result, island ids renumbered across parts; every other part keeps its UVs.
+ *  `keep`: a reseam, the part's hand edits carry over (and its selection: same positions, same topology). */
+function land(partIndex: number, raw: PartOut, partUvs: Float32Array, seams: number[], ms: number, keep: boolean) {
+  const before = get(), result = before.result!, params = before.params;
+  const nextParts = result.parts.slice();
+  nextParts[partIndex] = { ...raw, uvs: Array.from(partUvs) };
+  let nextId = 0;
+  for (let i = 0; i < nextParts.length; i++) {
+    const p = nextParts[i], local = [...new Set(p.island)].sort((a, b) => a - b), map = new Map(local.map((id) => [id, nextId++]));
+    nextParts[i] = { ...p, island: p.island.map((id) => map.get(id)!) };
+  }
+  const nextUvs: Float32Array[] = before.uvs.map((a) => a.slice());
+  nextUvs[partIndex] = partUvs;
+  const nextResult: Output = { parts: nextParts, stats: refreshStats(nextParts, result.stats, params.one_atlas, ms) };
+  set((s) => ({ result: nextResult, uvs: nextUvs, uvRev: s.uvRev + 1, edited: keep && s.edited, loading: null, past: [], future: [],
+    parts: s.parts.map((p, i) => (i !== partIndex ? p : keep ? { ...p, solved: seams, stale: false } : { ...withBorders(p, raw), stale: false })) }));
+}
+
+// ---- loading, unwrapping, exporting ----
+export const connect = () => task('Connecting to engine…', async () => {
+  void recentFiles().then((r) => set({ recent: r.map(({ name, time }) => ({ name, time })) }));
+  const before = latest;
+  set({ shapes: await api.shapes() });
+  if (latest === before && !get().parts.length) await loadShape(get().shapes[0]); // nothing opened meanwhile
+});
+export const unwrap = () => task('Unwrapping…', async () => {
+  if (get().loading) return;
+  const { activePart, parts } = get();
+  if (parts.length) await unwrapPart(activePart);
+});
+export const loadShape = (name: string) => task(`Unwrapping ${name}…`, async () => {
+  const me = ++latest;
+  set({ loading: { phase: 'read', total: 0, complete: 0, active: null, done: [] }, source: name });
+  const soup = new Float32Array(await api.shape(name));
+  if (me !== latest) return;
+  const parts = [{ name, soup, seams: [], marked: [], solved: [], visible: true, textured: true }];
+  setModelSize([soup]);
+  set({ source: name, unit: 100, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: [0], layerAnchor: 0, uvScope: 'part', csel: null, fixNote: null });
+  if (get().workspace === 'doc') meshOnly(); else await solve();
+});
+export const openFile = (file: File) => task(`Unwrapping ${file.name}…`, async () => {
+  const me = ++latest;
+  set({ loading: { phase: 'read', total: 0, complete: 0, active: file.name, done: [] }, source: file.name });
+  const { parts: imported, unit } = await readParts(file);
+  if (me !== latest) return;
+  const parts = imported.map((p) => ({ ...p, seams: [], marked: [], solved: [], visible: true, textured: true }));
+  setModelSize(parts.map((p) => p.soup));
+  set({ source: file.name, unit, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: parts.length ? [0] : [], layerAnchor: 0, uvScope: 'part', csel: null, fixNote: null });
+  if (get().workspace === 'doc') meshOnly(); else await solve();
+});
+export const setParams = (p: Partial<Params>) => {
+  const old = get().params, changed = Object.keys(p);
+  set({ params: { ...old, ...p } });
+  // The current full-model solve will read these values after a pending file read.
+  // During a solve, defer recomputing until the user explicitly asks for it afterward.
+  if (get().loading) return;
+  if (changed.length === 1 && changed[0] === 'one_atlas') void repack();
+  else void unwrap();
+};
+
+/** Ctrl+O: the system's open dialog (with a handle to reopen the file by, where the browser has one), else a file input. */
+export async function pickFile() {
+  let picked: Awaited<ReturnType<typeof pickWithHandle>>;
+  try { picked = await pickWithHandle(); } catch (e) { set({ error: `Couldn't open that file: ${(e as Error).message}` }); return; }
+  if (picked === 'cancelled') return;
+  if (picked) return openRemembered(picked.file, picked.handle);
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.fbx,.obj,.glb,.gltf,.stl';
+  input.onchange = () => input.files?.[0] && openRemembered(input.files[0]);
+  input.click();
+}
+/** Open a file and put it at the top of File › Open Recent. */
+async function openRemembered(file: File, handle?: FileSystemFileHandle) {
+  await remember(file, handle);
+  set({ recent: (await recentFiles()).map(({ name, time }) => ({ name, time })) });
+  return openFile(file);
+}
+/** File › Open Recent › a file: read it again (from disk, or the kept copy) and open it. */
+export const openRecent = (name: string) => task(`Opening ${name}…`, async () => {
+  const r = (await recentFiles()).find((x) => x.name === name);
+  if (!r) return;
+  let file: File;
+  try { file = await reopen(r); } catch (e) {
+    await forgetRecent(name);
+    set({ recent: (await recentFiles()).map(({ name, time }) => ({ name, time })) });
+    throw new Error(`${name} couldn't be opened again (moved or deleted?): it's off the recent list. ${(e as Error).message}`);
+  }
+  await openRemembered(file, r.handle);
+});
+export const clearRecent = async () => { await clearRecentFiles(); set({ recent: [] }); };
+
+const baseName = () => (get().source ?? 'mesh').replace(/\.[^.]+$/, '');
+// Every part with its current UVs; with one atlas they share a material, so Painter gives them one texture set.
+function exportParts(): ExportPart[] | null {
+  const { result, uvs, parts, params } = get();
+  if (!result) return null;
+  if (result.parts.length !== parts.length || uvs.length !== parts.length) throw new Error('Export stopped: the unwrapped mesh count does not match the imported part count.');
+  const tri = get().triangulate;
+  return parts.map((p, i) => ({ name: p.name, material: params.one_atlas ? baseName() : p.name, out: result.parts[i], uv: uvs[i],
+    faces: tri || !p.poly ? undefined : polygonsOf(result.parts[i].source, p.poly),
+    normals: p.normals?.length === p.soup.length ? outNormals(result.parts[i].positions, result.parts[i].source, p.soup, p.normals) : undefined }));
+}
+export const setTriangulate = (triangulate: boolean) => set({ triangulate });
+export const exportFbx = () => task('Exporting FBX…', async () => {
+  await unwrapChanged();
+  const ps = exportParts();
+  if (ps) download(toFbx(ps, get().params.sharp, get().unit), `${baseName()}-unwrapped.fbx`);
+});
+export const exportObjParts = () => task('Exporting OBJ parts…', async () => {
+  await unwrapChanged();
+  const ps = exportParts();
+  if (ps) download(zipFiles(toObjs(ps, get().params.sharp, get().unit)).buffer as ArrayBuffer, `${baseName()}-unwrapped-obj.zip`);
+});
+
+// ---- parts and seams ----
+export function setPartVisible(i: number, visible: boolean) {
+  set({ parts: get().parts.map((p, j) => (j === i ? { ...p, visible } : p)) });
+}
+export function setPartTextured(i: number, textured: boolean) {
+  set({ parts: get().parts.map((p, j) => (j === i ? { ...p, textured } : p)) });
+}
+/** Click a part row. Shift selects the range from the anchor. Ctrl toggles that part. */
+export function selectPart(i: number, shift = false, ctrl = false) {
+  set((s) => {
+    let layerSel: number[], active = i, layerAnchor = i;
+    if (ctrl) {
+      const has = s.layerSel.includes(i);
+      layerSel = (has ? s.layerSel.filter((j) => j !== i) : [...s.layerSel, i]).sort((a, b) => a - b);
+      if (has) active = layerSel.includes(s.activePart) ? s.activePart : (layerSel.at(-1) ?? s.activePart);
+    } else if (shift) {
+      const a = Math.min(s.layerAnchor, i), b = Math.max(s.layerAnchor, i);
+      layerSel = Array.from({ length: b - a + 1 }, (_, k) => a + k);
+      layerAnchor = s.layerAnchor;
+    } else layerSel = [i];
+    return { activePart: active, uvScope: 'part', csel: shift || ctrl ? s.csel : null, layerSel, layerAnchor };
+  });
+}
+export const selectAllParts = () => set((s) => ({ layerSel: s.parts.map((_, i) => i) }));
+export const selectNoParts = () => set({ layerSel: [] });
+/** Hide the parts selected in the list. If every one of them is already hidden, show them. */
+export function hideSelectedParts() {
+  const { parts, layerSel } = get();
+  if (!layerSel.length) return;
+  const on = new Set(layerSel), hide = layerSel.some((i) => parts[i]?.visible);
+  set({ parts: parts.map((p, i) => (on.has(i) ? { ...p, visible: !hide } : p)) });
+}
+/** Hide every part; if every one is already hidden, show them all. */
+export function hideAllParts() {
+  const parts = get().parts, hide = parts.some((p) => p.visible);
+  set({ parts: parts.map((p) => ({ ...p, visible: !hide })) });
+}
+/** Hide every part but the selected ones (Blender's Shift+H), showing those. */
+export function hideOtherParts() {
+  const { parts, layerSel } = get(), on = new Set(layerSel);
+  if (on.size) set({ parts: parts.map((p, i) => ({ ...p, visible: on.has(i) })) });
+}
+/** Right click on the parts list: on a part not selected, that part is picked first, as a file list does. */
+export function partsMenu(x: number, y: number, row: number | null) {
+  if (row !== null && !get().layerSel.includes(row)) selectPart(row);
+  const { parts, layerSel } = get(), none = !layerSel.length;
+  const hidden = !none && layerSel.every((i) => !parts[i]?.visible), allHidden = parts.every((p) => !p.visible);
+  pointer.x = x; pointer.y = y;
+  openMenu('Parts', [
+    { label: 'Select all', run: selectAllParts, off: !parts.length },
+    { label: 'Select none', run: selectNoParts, off: none },
+    { label: hidden ? 'Show selected' : 'Hide selected', run: hideSelectedParts, off: none },
+    { label: 'Hide others', run: hideOtherParts, off: none },
+    { label: allHidden ? 'Show all' : 'Hide all', run: hideAllParts, off: !parts.length },
+    { label: 'Clear all seams', run: () => void clearAllSeams(), off: !get().result?.parts[get().activePart] },
+  ]);
+}
+/** Bring one part's UVs up on their own (picking a part, or an island of it, in 3D or the parts list). */
+export const showPart = (i: number) => set({ activePart: i, uvScope: 'part' });
+export const setUvScope = (uvScope: UvScope) => set({ uvScope });
+
+/** Gap between part tiles in the whole-model UV view, in UV units (a tile is 1). */
+export const TILE = 1.2;
+/**
+ * Where each part's UVs sit in the UV view: an offset in UV units, or null when not shown. One part at a time,
+ * or the whole model: the shared atlas as is, or each part's own square as a tile in a grid (top row first).
+ */
+export function uvTiles(): { at: ([number, number] | null)[]; cols: number; rows: number } {
+  const { parts, params, activePart, uvScope, loading } = get();
+  const shown = parts.map((p, i) => p.visible && (uvScope === 'all' || i === activePart));
+  if (uvScope === 'part' || (params.one_atlas && !loading)) return { at: shown.map((s) => (s ? [0, 0] : null)), cols: 1, rows: 1 };
+  const order = shown.flatMap((s, i) => (s ? [i] : [])), cols = Math.max(1, Math.ceil(Math.sqrt(order.length))), rows = Math.max(1, Math.ceil(order.length / cols));
+  const at: ([number, number] | null)[] = parts.map(() => null);
+  order.forEach((i, k) => { at[i] = [(k % cols) * TILE, (rows - 1 - Math.floor(k / cols)) * TILE]; });
+  return { at, cols, rows };
+}
+
+const partSnapshot = (st: State): PartSnap => ({ parts: st.parts, result: st.result, uvs: st.uvs.map((a) => a.slice()), csel: st.csel,
+  activePart: st.activePart, uvScope: st.uvScope, past: st.past, future: st.future });
+const keepParts = () => set((st) => ({
+  partsPast: [...st.partsPast.slice(-19), partSnapshot(st)],
+  partsFuture: [], past: [], future: [],
+}));
+
+/** The edges a Cut or a Stitch works on, as edge ids: the selected edges (vertex and edge modes); with faces
+ *  selected, for a Cut their outline (edges with one side selected), for a Stitch the edges between them. A Stitch
+ *  keeps only edges that are apart now: a seam, or UVs torn apart by hand. */
+function sewEdges(c: CompSel, stitch: boolean): number[] {
+  const s = get(), t = topoOf(c.of), a = s.uvs[c.part], seams = keysOf(s.parts[c.part]?.seams ?? []);
+  const faceMode = s.selectMode === 'face' || s.selectMode === 'island';
+  const inSel = (e: number) => t.edgeTris[e].filter((f) => c.faces.has(f)).length;
+  const ids = [...c.edges].filter((e) => !faceMode || (stitch ? inSel(e) >= 2 : inSel(e) === 1 && t.edgeTris[e].length > 1));
+  if (!stitch) return ids;
+  // apart: a seam, or the two sides' corners at either end don't share a UV
+  const apart = (e: number) => {
+    const ends = [t.ends[e * 2], t.ends[e * 2 + 1]], key = edgeKey(edgeXyz(t, [e]), 0);
+    if (seams.has(key)) return true;
+    const [f, g] = t.edgeTris[e];
+    if (g === undefined) return false;
+    return ends.some((v) => {
+      const cf = [0, 1, 2].map((k) => f * 3 + k).find((k) => t.vid[k] === v)!, cg = [0, 1, 2].map((k) => g * 3 + k).find((k) => t.vid[k] === v)!;
+      return a[cf * 2] !== a[cg * 2] || a[cf * 2 + 1] !== a[cg * 2 + 1];
+    });
+  };
+  return ids.filter(apart);
+}
+/** Edge ids as a seam list: two xyz endpoints (6 numbers) each. */
+const edgeXyz = (t: Topo, ids: number[]) => ids.flatMap((e) => [...t.pos.slice(t.ends[e * 2] * 3, t.ends[e * 2] * 3 + 3), ...t.pos.slice(t.ends[e * 2 + 1] * 3, t.ends[e * 2 + 1] * 3 + 3)]);
+
+/** Cut (snip): the edges become seams; Stitch: they stop being seams and the two sides meet again (a tear made by
+ *  hand too). Only the islands they touch are solved again; one undo step. */
+function sew(stitch: boolean) {
+  const cur = liveSel();
+  if (!cur || get().loading) return;
+  const edges = edgeXyz(topoOf(cur.of), sewEdges(cur, stitch));
+  if (!edges.length) return;
+  const i = cur.part, how = stitch ? 'remove' : 'add';
+  keepParts();
+  set({ parts: get().parts.map((p, j) => (j !== i ? p : { ...p, seams: editSeams(p.seams, edges, how), marked: editSeams(p.marked, edges, how) })) });
+  void task(stitch ? 'Stitching…' : 'Cutting…', () => reseamPart(i, stitch ? edges : []));
+}
+export const cutSelection = () => sew(false);
+export const stitchSelection = () => sew(true);
+
+/** Start over by hand: every seam on the active part cleared, auto and marked, its UVs laid flat from none (closed
+ *  shells projected). From here islands are only what C cuts and V stitches; Auto Unwrap goes back to automatic. */
+export const clearAllSeams = () => task('Clearing seams…', async () => {
+  const s = get(), i = s.activePart, part = s.parts[i], out = s.result?.parts[i], uvs = s.uvs[i];
+  if (!part || !out || !uvs || s.loading) return;
+  keepParts();
+  set({ parts: get().parts.map((p, j) => (j === i ? { ...p, seams: [], marked: [], manual: true } : p)) });
+  const me = ++latest, t0 = performance.now();
+  const r = await api.reseam({ positions: out.positions, uvs: Array.from(uvs), stretch: out.stretch, island: out.island, seams: [], changed: [], pins: [],
+    faces: out.island.map((_, t) => t), manual: true }, s.params);
+  if (me !== latest || get().result !== s.result) return;
+  land(i, { ...out, ...r }, new Float32Array(r.uvs), [], performance.now() - t0, true);
+  await tidy(i, uvs);
+});
+
+/** Clear the seams marked by hand on the active part (the islands they cut join again). */
+export function clearSeams() {
+  const active = get().activePart, current = get().parts[active];
+  if (!current?.marked.length || get().loading) return;
+  keepParts();
+  set({ parts: get().parts.map((p, j) => (j === active ? { ...p, seams: editSeams(p.seams, p.marked, 'remove'), marked: [] } : p)) });
+  void task(`Re-solving seams on ${current.name}…`, () => reseamPart(active));
+}
+
+// ---- selection: Blender's edit-mode selection, one set shared by the 3D and UV views ----
+/** The selection, if it still belongs to the part's current output (unwrapping the part again ends it). */
+export function liveSel(s: State = get()): CompSel | null {
+  const c = s.csel;
+  return c && s.result?.parts[c.part]?.positions === c.of ? c : null;
+}
+type Kind = 'verts' | 'edges' | 'faces';
+/** What a mode picks: vertices, edges or faces (island mode: faces, whole islands at a time). */
+export const kindOf = (m: SelectMode): Kind => (m === 'vert' ? 'verts' : m === 'edge' ? 'edges' : 'faces');
+
+/** A selection of one kind with the other two flushed from it, as Blender does: in vertex mode an edge is selected
+ *  when both its ends are and a face when its three corners are; in edge mode a face when its three edges are;
+ *  in face mode the edges and corners of the selected faces. */
+function flushed(part: number, of: number[], kind: Kind, own: Iterable<number>): CompSel {
+  const t = topoOf(of), nt = t.vid.length / 3, ne = t.ends.length / 2;
+  const verts = new Set<number>(), edges = new Set<number>(), faces = new Set<number>();
+  if (kind === 'verts') {
+    for (const v of own) verts.add(v);
+    for (let e = 0; e < ne; e++) if (verts.has(t.ends[e * 2]) && verts.has(t.ends[e * 2 + 1])) edges.add(e);
+    for (let f = 0; f < nt; f++) if (verts.has(t.vid[f * 3]) && verts.has(t.vid[f * 3 + 1]) && verts.has(t.vid[f * 3 + 2])) faces.add(f);
+  } else if (kind === 'edges') {
+    for (const e of own) { edges.add(e); verts.add(t.ends[e * 2]); verts.add(t.ends[e * 2 + 1]); }
+    for (let f = 0; f < nt; f++) if (edges.has(t.edge[f * 3]) && edges.has(t.edge[f * 3 + 1]) && edges.has(t.edge[f * 3 + 2])) faces.add(f);
+  } else {
+    for (const f of own) { faces.add(f); for (let k = 0; k < 3; k++) { verts.add(t.vid[f * 3 + k]); edges.add(t.edge[f * 3 + k]); } }
+  }
+  return { part, of, verts, edges, faces };
+}
+const polyMembers = new WeakMap<Int32Array, Map<number, number[]>>();
+/** Every triangle of the polygons these triangles belong to (output ids; a triangle with no polygon is its own). */
+function wholePolygons(out: PartOut, poly: Int32Array | undefined, faces: Iterable<number>): number[] {
+  if (!poly) return [...faces];
+  const pid = polygonsOf(out.source, poly);
+  let m = polyMembers.get(pid);
+  if (!m) { m = new Map(); pid.forEach((p, f) => { if (p >= 0) (m!.get(p) ?? m!.set(p, []).get(p)!).push(f); }); polyMembers.set(pid, m); }
+  const out2 = new Set<number>();
+  for (const f of faces) for (const g of pid[f] >= 0 ? m.get(pid[f])! : [f]) out2.add(g);
+  return [...out2];
+}
+/** Only the polygons whose every triangle is among these faces. */
+function completePolygons(out: PartOut, poly: Int32Array | undefined, faces: Set<number>): number[] {
+  if (!poly) return [...faces];
+  const pid = polygonsOf(out.source, poly), whole = wholePolygons(out, poly, faces), missing = new Set<number>();
+  for (const f of whole) if (!faces.has(f)) missing.add(pid[f]);
+  return whole.filter((f) => !missing.has(pid[f]));
+}
+/** Every face connected to these across shared edges: Poly Doc's Select Linked (it has no islands, it doesn't unwrap). */
+function wholeMesh(positions: number[], faces: Iterable<number>): number[] {
+  const t = topoOf(positions), seen = new Uint8Array(t.vid.length / 3), out: number[] = [];
+  for (const f of faces) if (!seen[f]) { seen[f] = 1; out.push(f); }
+  for (let i = 0; i < out.length; i++) for (let k = 0; k < 3; k++) for (const g of t.edgeTris[t.edge[out[i] * 3 + k]]) if (!seen[g]) { seen[g] = 1; out.push(g); }
+  return out;
+}
+/** Linked faces: the whole island in UV Magician, the whole connected piece of mesh in Poly Doc. */
+const linked = (out: PartOut, faces: Iterable<number>) => (get().workspace === 'doc' ? wholeMesh(out.positions, faces) : wholeIslands(out.island, faces));
+/** Every face of the islands these faces are on. */
+function wholeIslands(island: number[], faces: Iterable<number>) {
+  const ids = new Set<number>(), out: number[] = [];
+  for (const f of faces) ids.add(island[f]);
+  island.forEach((id, f) => { if (ids.has(id)) out.push(f); });
+  return out;
+}
+/** Faces with a corner on one of these vertices. */
+function facesAround(t: Topo, verts: Set<number>) {
+  const out = new Set<number>();
+  for (let c = 0; c < t.vid.length; c++) if (verts.has(t.vid[c])) out.add((c / 3) | 0);
+  return out;
+}
+
+/** set: replace · add · sub: take away · toggle: Shift+click (off if all already on). */
+export type SelOp = 'set' | 'add' | 'sub' | 'toggle';
+/** Change one part's selection by elements of the mode's kind: vertex, edge or face ids of its output (island
+ *  mode: any face of each island). */
+export function selectElems(part: number, ids: Iterable<number>, op: SelOp = 'set', polygons = true) {
+  const s = get(), out = s.result?.parts[part];
+  if (!out) return;
+  const kind = kindOf(s.selectMode), cur = liveSel(s), own = new Set(op !== 'set' && cur?.part === part ? cur[kind] : []);
+  // a face is its whole polygon, however it was picked (click, box, all, linked, the UV view), as in Blender
+  // (not for whole islands in UV Magician: a seam can run through a quad, and an island must stay exactly itself)
+  const pick = s.selectMode === 'island' ? wholeIslands(out.island, ids) : kind === 'faces' && polygons ? wholePolygons(out, s.parts[part]?.poly, ids) : [...ids];
+  const allOn = pick.length > 0 && pick.every((x) => own.has(x));
+  for (const x of pick) { if (op === 'sub' || (op === 'toggle' && allOn)) own.delete(x); else own.add(x); }
+  set({ csel: own.size ? flushed(part, out.positions, kind, own) : null, activePart: part, uvScope: 'part' });
+}
+/** Select by faces, whatever the mode (in vertex mode their corners, in edge mode their edges). */
+function selectFaces(part: number, faces: number[], op: SelOp, polygons = true) {
+  const out = get().result?.parts[part];
+  if (!out) return;
+  const kind = kindOf(get().selectMode);
+  selectElems(part, kind === 'faces' ? faces : flushed(part, out.positions, 'faces', faces)[kind], op, polygons);
+}
+export function showWorkspace(workspace: Workspace) {
+  // Poly Doc has no islands (it doesn't unwrap): island select mode becomes face mode there
+  if (workspace === 'doc' && get().selectMode === 'island') setSelectMode('face');
+  set(workspace === 'uv' ? { workspace } : { workspace, unfold: 0 });
+  try { localStorage.setItem('workspace', workspace); } catch { /* private mode */ }
+  if (workspace !== 'doc') void unwrapStale(); // Van Gogh paints through the UVs
+}
+/** UV Magician picks up what Poly Doc changed: every part if none has UVs yet, else each changed part on its own. */
+const unwrapStale = () => task('Unwrapping what Poly Doc changed…', unwrapChanged);
+/** The parts Poly Doc left mesh-only, unwrapped (export needs their UVs too). */
+async function unwrapChanged() {
+  const { parts } = get(), stale = parts.flatMap((p, i) => (p.stale ? [i] : []));
+  if (!stale.length) return;
+  if (stale.length === parts.length) return solve();
+  for (const i of stale) await unwrapPart(i);
+}
+/** Poly Doc: select every face of the active part whose polygon has `min`..`max` sides (tris 3..3, quads 4..4, n-gons 5..∞). */
+export function selectPolygons(min: number, max: number) {
+  const { result, activePart, parts } = get(), out = result?.parts[activePart];
+  if (!out) return;
+  const sides = sidesOf(polygonsOf(out.source, parts[activePart]?.poly), parts[activePart]?.sides), faces: number[] = [];
+  sides.forEach((n, t) => { if (n >= min && n <= max) faces.push(t); });
+  if (!faces.length) return set({ csel: null });
+  selectFaces(activePart, faces, 'set');
+  viewOp('3d', 'selected');
+}
+/** A Poly Doc fix on the selection's part: the triangles stay, their grouping into polygons changes (one undo step). */
+const polys = (n: number) => `${n} polygon${n === 1 ? '' : 's'}`;
+function regroup(what: string, edit: (soup: Float32Array, cur: Polys, c: CompSel, t: Topo, src: number[]) => Polys | null, why: (kinds: string) => string) {
+  const s = get(), c = liveSel(s), out = c && s.result?.parts[c.part], part = c && s.parts[c.part];
+  if (!c || !out || !part) return set({ fixNote: `${what}: select something first.` });
+  const cur = part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9);
+  const tris = [...c.faces].map((f) => out.source[f]), count = (p: Polys) => new Set(tris.map((f) => p.poly[f])).size;
+  const next = edit(part.soup, cur, c, topoOf(out.positions), out.source);
+  if (!next) {
+    const k = [0, 0, 0];
+    for (const p of new Set(tris.map((f) => cur.poly[f]))) k[Math.min(cur.sides[p], 5) - 3]++;
+    return set({ fixNote: `${what}: nothing changed. ${why([k[0] && `${k[0]} triangles`, k[1] && `${k[1]} quads`, k[2] && `${k[2]} n-gons`].filter(Boolean).join(', ') || 'no faces')}` });
+  }
+  keepParts();
+  set({ parts: s.parts.map((p, i) => (i === c.part ? { ...p, poly: next.poly, sides: next.sides } : p)), fixNote: `${what}: ${polys(count(cur))} → ${count(next)}. Ctrl+Z undoes it.` });
+}
+/** X › Dissolve: faces selected → the polygons merge into one per connected patch (Dissolve Faces); edges selected → the
+ *  polygons on either side of each edge merge (Dissolve Edges). */
+export const dissolveSel = () => regroup('Dissolve', (soup, cur, c, t, src) => {
+  if (get().selectMode === 'face' || get().selectMode === 'island') return dissolveFaces(soup, cur, [...c.faces].map((f) => src[f]));
+  const pairs: [number, number][] = [];
+  for (const e of c.edges) {
+    const [a, b] = t.edgeTris[e];
+    if (b !== undefined && t.edgeTris[e].length === 2) pairs.push([src[a], src[b]]);
+  }
+  return dissolve(soup, cur, pairs);
+}, (k) => `The selection (${k}) can't merge into polygons with one clean outline (it would close round a hole), or there's nothing between its faces to dissolve.`);
+/** The active selection in soup terms, as a Poly Doc tool takes it: faces (and their corners) in face mode, edges you
+ *  can see (not a polygon's diagonal) in edge and vertex modes, vertices in vertex mode. */
+function soupSel(): { part: number; g: Geo; sel: SoupSel } | null {
+  const s = get(), c = liveSel(s), out = c && s.result?.parts[c.part], part = c && s.parts[c.part];
+  if (!c || !out || !part) return null;
+  const L = link(out, part.soup), t = topoOf(c.of), cur = part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9);
+  const pid = polygonsOf(out.source, part.poly), faceMode = s.selectMode === 'face' || s.selectMode === 'island';
+  const verts = [...c.verts].map((v) => L.toSoup[v]).filter((v) => v >= 0);
+  const edges = faceMode ? [] : [...c.edges].filter((e) => { const [a, b] = t.edgeTris[e]; return b === undefined || pid[a] < 0 || pid[a] !== pid[b]; })
+    .map((e) => [L.toSoup[t.ends[e * 2]], L.toSoup[t.ends[e * 2 + 1]]] as [number, number]).filter(([a, b]) => a >= 0 && b >= 0);
+  return { part: c.part, g: { soup: part.soup, ...cur },
+    sel: { faces: faceMode ? [...c.faces].map((f) => out.source[f]) : [], verts: s.selectMode === 'vert' || faceMode ? verts : [], edges } };
+}
+/** Select in a part by soup ids (vertices, edge vertex pairs, triangles), switching to the mode that shows them. */
+function selectSoup(part: number, what: { verts?: number[]; edges?: [number, number][]; faces?: number[] }) {
+  const s = get(), out = s.result?.parts[part], p = s.parts[part];
+  if (!out || !p) return;
+  const L = link(out, p.soup), t = topoOf(out.positions);
+  if (what.faces) {
+    if (s.selectMode !== 'face') set({ selectMode: 'face' });
+    return selectFaces(part, what.faces.map((f) => L.triOut[f]).filter((f) => f >= 0), 'set');
+  }
+  set({ selectMode: what.edges ? 'edge' : 'vert' });
+  const ids = what.edges ? what.edges.map(([a, b]) => edgeBetween(t, L.toOut[a], L.toOut[b])) : (what.verts ?? []).map((v) => L.toOut[v]);
+  selectElems(part, ids.filter((x) => x >= 0));
+}
+/** A Poly Doc tool that moves or adds geometry: the part's triangles are replaced (one undo step), shown as the bare
+ *  mesh (no unwrap: UV Magician does that when you go back), and what the tool made selected so the next press keeps
+ *  working on it. Hand-marked seams on edges that no
+ *  longer exist are dropped. */
+const reshape = (what: string, need: string, done: string, why: string, edit: (g: Geo, s: SoupSel) => Done | null, guard = false) => task(`${what}…`, async () => {
+  const at = soupSel();
+  if (!at || !(at.sel.faces.length || at.sel.verts.length || at.sel.edges.length)) return set({ fixNote: `${what}: select ${need} first.` });
+  const r = edit(at.g, at.sel), part = get().parts[at.part];
+  if (!r) return set({ fixNote: `${what}: nothing changed. ${why}` });
+  if (guard) {
+    // a tool meant to make things better never makes them worse: refused if more faces would turn red than before
+    const red = (g: Geo) => { const n = new Map<RuleId, number>(); let total = 0; for (const [, is] of healthReport(g).issues) { const bad = is.filter((i) => i.score >= 0.6); if (bad.length) total++; for (const i of bad) n.set(i.rule, (n.get(i.rule) ?? 0) + 1); } return { total, n }; };
+    const was = red(at.g), now = red(r.geo);
+    if (now.total > was.total) {
+      const worse = [...now.n].filter(([rule, c]) => c > (was.n.get(rule) ?? 0)).map(([rule]) => RULES[rule].name.toLowerCase()).join(', ');
+      return set({ fixNote: `${what}: not applied, it would turn ${now.total - was.total} more face${now.total - was.total === 1 ? '' : 's'} red (${worse}). Try fewer Rounds, Slide borders off, or a smaller patch.` });
+    }
+  }
+  const edges = new Set<string>(), k = (a: ArrayLike<number>, o: number) => `${a[o]},${a[o + 1]},${a[o + 2]}`;
+  for (let f = 0; f < r.geo.soup.length / 9; f++) for (let i = 0; i < 3; i++) {
+    const a = k(r.geo.soup, f * 9 + i * 3), b = k(r.geo.soup, f * 9 + ((i + 1) % 3) * 3);
+    edges.add(a < b ? `${a}|${b}` : `${b}|${a}`);
+  }
+  const marked: number[] = [];
+  for (let o = 0; o < part.marked.length; o += 6) {
+    const a = k(part.marked, o), b = k(part.marked, o + 3);
+    if (edges.has(a < b ? `${a}|${b}` : `${b}|${a}`)) marked.push(...part.marked.slice(o, o + 6));
+  }
+  keepParts();
+  set({ parts: get().parts.map((p, i) => (i === at.part ? { ...p, soup: r.geo.soup, poly: r.geo.poly, sides: r.geo.sides, normals: undefined, marked, seams: marked, solved: [] } : p)), csel: null, fixNote: `${what}: ${done} Ctrl+Z undoes it.` });
+  meshOnly(at.part);
+  // what it made, found again in the new soup by position
+  const t = topoOfSoup(r.geo.soup), vid = (p: number[]) => t.at.get(xyzKey(p[0], p[1], p[2])) ?? -1;
+  selectSoup(at.part, r.faces ? { faces: r.faces } : r.edges ? { edges: r.edges.map(([a, b]) => [vid(a), vid(b)] as [number, number]).filter(([a, b]) => a >= 0 && b >= 0) } : { verts: (r.verts ?? []).map(vid).filter((v) => v >= 0) });
+});
+export const relaxPolySel = () => reshape('Even Out', 'faces', 'spacing evened out; the shape, outline and creases stay.',
+  'Every vertex there is a corner (or on the border with Slide borders off). Select a bigger patch.', (g, s) => relax(g, s, get().docOpts.relax, get().slideBorders), true);
+export const subdivideSel = () => reshape('Subdivide', 'faces', 'each polygon cut into quads.', 'The selected polygons have no simple outline to cut.', subdivide);
+export const connectSel = () => reshape('Connect', 'two vertices of a polygon, or two of its edges', 'new edges cut across.',
+  "Pick two vertices of one polygon that aren't already joined by an edge (vertex mode), or two edges of one polygon (edge mode).", connectPolys);
+export const mergePolySel = (collapse: boolean) => reshape(collapse ? 'Collapse' : 'Merge', collapse ? 'edges' : 'vertices',
+  collapse ? 'each group of edges collapsed to its centre.' : 'merged at their centre.',
+  collapse ? 'Collapse works on selected edges.' : 'Pick at least two vertices.', (g, s) => mergeVerts(g, s, collapse));
+export const rotateEdgeSel = () => reshape('Rotate Edge', 'an edge between two polygons', 'edge turned one step.', 'The edge needs a polygon on each side.', rotateEdge);
+export const addLoopsSel = () => reshape('Add Loops on Curve', 'faceted faces', 'new loops rounding the curve out.', 'It needs a quad on a faceted curve.', (g, s) => addLoops(g, s), true);
+export const loopCutSel = () => reshape('Loop Cut', 'an edge', 'new loop cut across the quads.', 'The selected edge needs a quad beside it.', (g, s) => loopCut(g, s));
+export const slideSel = (f: number) => reshape('Edge Slide', 'edges', 'loop slid along its rails.', 'Select a chain of edges with polygons beside it.', (g, s) => slide(g, s, f));
+export const shapeLoopSel = (how: 'space' | 'straight' | 'circle') => reshape(how === 'space' ? 'Space' : how === 'straight' ? 'Straighten' : 'Circle', 'edges',
+  how === 'space' ? 'vertices spaced evenly along the loop.' : how === 'straight' ? 'loop straightened on the surface.' : 'loop made round.',
+  how === 'circle' ? 'Circle needs a closed loop of edges.' : how === 'straight' ? 'Straighten needs an open chain of edges.' : 'Select a chain of edges.', (g, s) => shapeLoop(g, s, how));
+export const gridFillSel = () => reshape('Grid Fill', "an n-gon (face mode) or a hole's border (edge mode)", 'filled with a quad grid.',
+  'It needs an even number of corners, 6 or more: a polygon in face mode, or a closed loop of open edges in edge mode.', gridFill);
+export const limitedDissolveSel = () => regroup('Limited Dissolve', (soup, cur, c, _t, src) => limitedDissolve(soup, cur, [...c.faces].map((f) => src[f]), get().docOpts.angle),
+  (k) => `The selection (${k}) has no flat neighbours to merge (they meet at more than ${get().docOpts.angle}°).`);
+/** Mesh Check / pole buttons: select what the check found on the active part. */
+export function selectFound(kind: 'nonManifold' | 'open' | 'flipped' | 'zero' | 'duplicate' | 'three' | 'many') {
+  const { activePart: i, parts, result } = get(), p = parts[i], out = result?.parts[i];
+  if (!p || !out) return;
+  const g = { soup: p.soup, ...(p.poly && p.sides ? { poly: p.poly, sides: p.sides } : ownPolygons(p.soup.length / 9)) };
+  if (kind === 'three' || kind === 'many') selectSoup(i, { verts: poles(g)[kind] });
+  else { const m = meshCheck(g); selectSoup(i, kind === 'nonManifold' || kind === 'open' ? { edges: m[kind] } : { faces: m[kind] }); }
+  viewOp('3d', 'selected');
+}
+export const setShowPoles = (showPoles: boolean) => set({ showPoles });
+export const setSlideBorders = (slideBorders: boolean) => set({ slideBorders });
+export const setMoveOnSurface = (moveOnSurface: boolean) => { set({ moveOnSurface }); const m = get().docMove; if (m) updateDocMove(lastMouse[0], lastMouse[1], true); };
+
+// ---- Poly Doc's G: move vertices by hand, on the surface, with Health updating live ----
+const lastMouse: [number, number] = [0, 0];
+let moveFrame = 0;
+/** G: start dragging the selection's vertices (faces: their corners, edges: their ends). */
+export function startDocMove(x?: number, y?: number) {
+  const at = soupSel();
+  if (!at) return set({ fixNote: 'Move: select something first.' });
+  const verts = [...new Set([...at.sel.verts, ...at.sel.edges.flat()])];
+  if (!verts.length) return set({ fixNote: 'Move: select vertices, edges or faces first.' });
+  const t = topoOfSoup(at.g.soup), pivot = [0, 1, 2].map((k) => verts.reduce((s, v) => s + t.pos[v * 3 + k], 0) / verts.length) as [number, number, number];
+  keepParts();
+  const s = get(), mode = s.selectMode, reselect = mode === 'face' || mode === 'island' ? { faces: at.sel.faces } : at.sel.edges.length ? { edges: at.sel.edges } : { verts };
+  // from the strip (no mouse position): the drag counts from where the mouse first moves, so nothing jumps
+  if (x !== undefined && y !== undefined) { lastMouse[0] = x; lastMouse[1] = y; }
+  set({ docTool: 'move', docMove: { part: at.part, verts, base: at.g, normals: s.parts[at.part].normals, marked: s.parts[at.part].marked, mouse: x !== undefined && y !== undefined ? [x, y] : null, pivot, axis: null, snap: surfaceOf(at.g.soup), reselect, moved: false },
+    fixNote: `Move: ${verts.length} vertices follow the mouse${s.moveOnSurface ? ' on the surface' : ''}. X / Y / Z lock an axis; click or Enter keeps it, Esc or right-click cancels.` });
+}
+/** The drag: the vertices at the mouse (per animation frame), from where they began. */
+export function updateDocMove(x: number, y: number, now = false) {
+  lastMouse[0] = x; lastMouse[1] = y;
+  const m0 = get().docMove;
+  if (!m0) return;
+  if (!m0.mouse) return set({ docMove: { ...m0, mouse: [x, y] } });
+  if (moveFrame && !now) return;
+  const apply = () => {
+    moveFrame = 0;
+    const m = get().docMove;
+    if (!m || !m.mouse || !view3d.worldDelta) return;
+    let d = view3d.worldDelta(lastMouse[0] - m.mouse[0], lastMouse[1] - m.mouse[1], m.pivot);
+    if (m.axis !== null) d = d.map((v, k) => (k === m.axis ? v : 0)) as [number, number, number];
+    const geo = moveOnSurface(m.base, m.verts, d, get().moveOnSurface && m.axis === null, m.snap);
+    set({ parts: get().parts.map((p, i) => (i === m.part ? { ...p, soup: geo.soup, normals: m.normals && carryNormals(m.base.soup, m.normals, geo.soup) } : p)), docMove: { ...m, moved: true } });
+    meshOnly(m.part);
+  };
+  if (now) apply(); else moveFrame = requestAnimationFrame(apply);
+}
+/** X / Y / Z while moving: lock to that world axis (again: free). */
+export function docMoveAxis(axis: 0 | 1 | 2) {
+  const m = get().docMove;
+  if (!m) return;
+  set({ docMove: { ...m, axis: m.axis === axis ? null : axis } });
+  updateDocMove(lastMouse[0], lastMouse[1], true);
+}
+/** Click / Enter: keep the move (one undo step), and select what was selected again. */
+export function confirmDocMove() {
+  const m = get().docMove;
+  if (!m) return;
+  cancelAnimationFrame(moveFrame); moveFrame = 0;
+  set({ docMove: null, fixNote: m.moved ? `Move: ${m.verts.length} vertices moved. Ctrl+Z undoes it.` : null });
+  if (!m.moved) { set((s) => ({ partsPast: s.partsPast.slice(0, -1) })); return; }
+  selectSoup(m.part, m.reselect);
+}
+/** Esc / right-click: put everything back as it was before G. */
+export function cancelDocMove() {
+  const m = get().docMove;
+  if (!m) return;
+  cancelAnimationFrame(moveFrame); moveFrame = 0;
+  const past = get().partsPast, snap = past[past.length - 1];
+  set((s) => ({ ...(snap ? restorePart(s, snap) : {}), partsPast: past.slice(0, -1), docMove: null, fixNote: 'Move cancelled.' }));
+  selectSoup(m.part, m.reselect);
+}
+/** Health: select the active part's red faces (score 0.6 and up) and show them. */
+export function selectRed() {
+  const { activePart: i, parts, result } = get(), p = parts[i], out = result?.parts[i];
+  if (!p || !out) return;
+  const score = health(out, { soup: p.soup, ...(p.poly && p.sides ? { poly: p.poly, sides: p.sides } : ownPolygons(p.soup.length / 9)) });
+  set({ selectMode: 'face', docView: 'health' });
+  selectFaces(i, [...score.keys()].filter((t) => score[t] >= 0.6), 'set');
+  viewOp('3d', 'selected');
+}
+export const setDocOpt = (key: keyof State['docOpts'], value: number) => set((s) => ({ docOpts: { ...s.docOpts, [key]: value } }));
+/** Smooth is how the model will look: it turns Cavity on (World + Screen), which can still be switched off there. */
+export const setDocView = (docView: DocView) => set((s) => ({ docView, ...(docView === 'smooth' && { scene: { ...s.scene, cavity: true, cavityType: 'both' as const } }) }));
+export const setDocColor = (docColor: 'single' | 'random') => set((s) => ({ docColor, docView: s.docView === 'health' ? 'wire' : s.docView }));
+/** Z in Poly Doc: the view pie (Blender's shading pie). */
+export const docViewPie = () => openMenu('View', ([['wire', 'Wire'], ['smooth', 'Smooth'], ['health', 'Health']] as const)
+  .map(([v, label]) => ({ label, run: () => setDocView(v) })), true);
+/** Alt+J: the selected lone triangles paired into quads. */
+/** The fixes the right-click menu suggests for a rule (Health's): each the usual cure for what that rule flags. */
+export const triangulateSel = () => regroup('Triangulate', (_soup, cur, c, _t, src) => triangulate(cur, [...c.faces].map((f) => src[f])),
+  (k) => `The selection is ${k}: there's nothing to split.`);
+/** Each selected polygon's outline edges in the soup, longest or shortest first. */
+function outlineEdges(g: Geo, faces: number[]) {
+  const t = topoOfSoup(g.soup), m = members(g.poly), out: { p: number; edges: [number, number, number][] }[] = [];
+  for (const p of new Set(faces.map((f) => g.poly[f]))) {
+    const l = loopOf(t, m.get(p) ?? []);
+    if (!l) continue;
+    out.push({ p, edges: l.map((v, i) => { const w = l[(i + 1) % l.length]; return [v, w, Math.hypot(t.pos[v * 3] - t.pos[w * 3], t.pos[v * 3 + 1] - t.pos[w * 3 + 1], t.pos[v * 3 + 2] - t.pos[w * 3 + 2])] as [number, number, number]; }) });
+  }
+  return { t, out };
+}
+/** A sliver merged into the polygon across its longest edge. */
+export const mergeIntoNeighbourSel = () => regroup('Merge into Neighbour', (soup, cur, c, _t, src) => {
+  const { t, out } = outlineEdges({ soup, ...cur }, [...c.faces].map((f) => src[f])), pairs: [number, number][] = [];
+  for (const { p, edges } of out) {
+    const [a, b] = [...edges].sort((x, y) => y[2] - x[2])[0], e = edgeBetween(t, a, b);
+    const mine = t.edgeTris[e].find((f) => cur.poly[f] === p), other = t.edgeTris[e].find((f) => cur.poly[f] !== p);
+    if (mine !== undefined && other !== undefined) pairs.push([mine, other]);
+  }
+  return pairs.length ? dissolve(soup, cur, pairs) : null;
+}, (k) => `The selection (${k}) has no neighbour across its longest edge, or merging would tangle the outline.`);
+/** A needle's shortest edge collapsed to a point: the triangle goes, its neighbours close up. */
+export const collapseShortestSel = () => reshape('Collapse Shortest Edge', 'faces', 'shortest edge collapsed.', 'The selected faces have no simple outline.',
+  (g, s) => { const edges = outlineEdges(g, s.faces).out.map(({ edges: es }) => { const [a, b] = [...es].sort((x, y) => x[2] - y[2])[0]; return [a, b] as [number, number]; }); return edges.length ? mergeVerts(g, { ...s, edges }, true) : null; });
+/** Relax the selected polygons together with the ring of polygons round them (a lone quad has no inside vertex to move). */
+export const relaxAroundSel = () => reshape('Relax Around', 'faces', 'spacing evened out round the selection.', 'Every vertex there sits on a crease or an open edge.',
+  (g, s) => {
+    const t = topoOfSoup(g.soup), picked = new Set(s.faces.map((f) => g.poly[f])), grown = new Set(picked);
+    g.poly.forEach((p, f) => { if (picked.has(p)) for (let k = 0; k < 3; k++) for (const h of trisOf(t, t.vid[f * 3 + k])) grown.add(g.poly[h]); });
+    const faces: number[] = [];
+    g.poly.forEach((p, f) => { if (grown.has(p)) faces.push(f); });
+    return relax(g, { ...s, faces }, get().docOpts.relax, get().slideBorders);
+  }, true);
+/** Health: select the polygons a rule flags on the active part. */
+export function selectRule(rule: RuleId) {
+  const { activePart: i, parts } = get(), p = parts[i];
+  if (!p) return;
+  const g = { soup: p.soup, ...(p.poly && p.sides ? { poly: p.poly, sides: p.sides } : ownPolygons(p.soup.length / 9)) }, r = ruleCounts(g).get(rule);
+  if (!r) return;
+  const polys = new Set([...r.look, ...r.fix]), faces: number[] = [];
+  g.poly.forEach((q, f) => { if (polys.has(q)) faces.push(f); });
+  selectSoup(i, { faces });
+  viewOp('3d', 'selected');
+}
+export const trisToQuadsSel = () => regroup('Tris to Quads', (soup, cur, c, _t, src) => trisToQuads(soup, cur, [...c.faces].map((f) => src[f])),
+  (k) => `The selection is ${k}: only two triangles side by side, nearly flat, can become a quad.`);
+/** Select whole islands by id (the island tools' Select buttons). `add` toggles them. */
+export function select(ids: number[], add = false) {
+  const { result, activePart } = get();
+  if (!result) return;
+  const isl = islandsOf(result), valid = ids.filter((id) => isl[id]);
+  const part = add || !valid.length ? activePart : isl[valid[0]].part;
+  const faces = valid.filter((id) => isl[id].part === part).flatMap((id) => isl[id].corners.filter((c) => c % 3 === 0).map((c) => c / 3));
+  if (!faces.length && !add) return set({ csel: null });
+  selectFaces(part, faces, add ? 'toggle' : 'set', false); // whole islands, exactly
+}
+
+/** 1 2 3 4: vertex, edge, face or island mode. The selection carries over, as Blender converts it. */
+export function setSelectMode(m: SelectMode) {
+  const s = get(), cur = liveSel(s);
+  if (m === 'island' && s.workspace === 'doc') m = 'face'; // Poly Doc has no islands
+  if (!cur || m === s.selectMode) return set({ selectMode: m });
+  const out = s.result!.parts[cur.part];
+  let own: Iterable<number> = cur[kindOf(m)];
+  if (m === 'island') own = wholeIslands(out.island, cur.faces.size ? cur.faces : facesAround(topoOf(cur.of), cur.verts));
+  // to faces: a polygon counts once every one of its triangles does (all its corners selected), as Blender converts
+  else if (kindOf(m) === 'faces') own = completePolygons(out, s.parts[cur.part]?.poly, new Set(own));
+  const next = flushed(cur.part, cur.of, kindOf(m), own);
+  set({ selectMode: m, csel: next[kindOf(m)].size ? next : null });
+}
+const count = (t: Topo, kind: Kind) => (kind === 'verts' ? t.nv : kind === 'edges' ? t.ends.length / 2 : t.vid.length / 3);
+/** A: everything on the active part. */
+export function selectAll() {
+  const { result, activePart, selectMode } = get(), out = result?.parts[activePart];
+  if (!out) return;
+  selectElems(activePart, Array.from({ length: count(topoOf(out.positions), kindOf(selectMode)) }, (_, i) => i));
+}
+/** Alt+A. */
+export const clearSelection = () => set({ csel: null });
+/** Ctrl+I. */
+export function invertSelection() {
+  const { result, activePart, selectMode } = get(), cur = liveSel(), part = cur?.part ?? activePart, out = result?.parts[part];
+  if (!out) return;
+  const kind = kindOf(selectMode), on = cur?.[kind] ?? new Set<number>();
+  selectElems(part, Array.from({ length: count(topoOf(out.positions), kind) }, (_, i) => i).filter((i) => !on.has(i)));
+}
+/** Ctrl+L: grow the selection to the whole islands it touches (Blender's select linked, delimited by seams). */
+export function selectLinked() {
+  const cur = liveSel(), out = cur && get().result!.parts[cur.part];
+  if (!cur || !out) return;
+  selectFaces(cur.part, linked(out, cur.faces.size ? cur.faces : facesAround(topoOf(cur.of), cur.verts)), 'add', get().workspace === 'doc');
+}
+/** Where the pointer is, for the keys that act on what's under it (L, menus, framing). The views write it. */
+export const pointer = { view: '3d' as '3d' | 'uv', part: -1, tri: -1, u: 0, v: 0, x: 0, y: 0 };
+/** L: the island under the pointer added (Shift+L: taken away). */
+export function selectLinkedUnder(sub = false) {
+  const { result, uvs } = get();
+  if (!result) return;
+  const hit = pointer.view === '3d' ? (pointer.part >= 0 ? { part: pointer.part, tri: pointer.tri } : null) : pickTri(result, uvs, uvTiles().at, pointer.u, pointer.v);
+  if (!hit || hit.tri < 0) return;
+  selectFaces(hit.part, linked(result.parts[hit.part], [hit.tri]), sub ? 'sub' : 'add', get().workspace === 'doc');
+}
+/** Alt+click: the edge loop through an edge (the engine walks the straightest way on at each vertex). */
+export const selectLoop = (part: number, edge: number, add: boolean) => task('Selecting loop…', async () => {
+  const p = get().parts[part], out = get().result?.parts[part];
+  if (!p || !out) return;
+  const edges = await loopEdges(p.soup, out.positions, [edge]);
+  if (get().result?.parts[part]?.positions !== out.positions) return;
+  const sel = flushed(part, out.positions, 'edges', edges), kind = kindOf(get().selectMode);
+  if (sel[kind].size) selectElems(part, sel[kind], add ? 'add' : 'set');
+});
+/** Select › Edge Loops: the loop through every selected edge. */
+export const selectEdgeLoop = () => task('Selecting loops…', async () => {
+  const cur = liveSel(), p = cur && get().parts[cur.part];
+  if (!cur || !p || !cur.edges.size) return;
+  const edges = await loopEdges(p.soup, cur.of, [...cur.edges]);
+  if (liveSel() !== cur) return;
+  selectElems(cur.part, flushed(cur.part, cur.of, 'edges', edges)[kindOf(get().selectMode)], 'add');
+});
+async function loopEdges(soup: Float32Array, of: number[], seeds: number[]) {
+  const t = topoOf(of), xyz = (v: number) => Array.from(t.pos.slice(v * 3, v * 3 + 3)), out = new Set(seeds);
+  for (const e of seeds) {
+    const loop = await api.edgeLoop(soup, [...xyz(t.ends[e * 2]), ...xyz(t.ends[e * 2 + 1])]);
+    for (let o = 0; o + 5 < loop.length; o += 6) {
+      const a = vertexAt(t, loop[o], loop[o + 1], loop[o + 2]), b = vertexAt(t, loop[o + 3], loop[o + 4], loop[o + 5]);
+      const k = a >= 0 && b >= 0 ? edgeBetween(t, a, b) : -1;
+      if (k >= 0) out.add(k);
+    }
+  }
+  return out;
+}
+
+/** Ask a view to frame everything or the selection (Home, numpad .), or (3D) look along an axis or orbit a step. */
+export type ViewOp = 'all' | 'selected' | 'front' | 'back' | 'right' | 'left' | 'top' | 'bottom' | 'orbit-left' | 'orbit-right' | 'orbit-up' | 'orbit-down';
+export const viewOp = (view: '3d' | 'uv', op: ViewOp) => set((s) => ({ viewReq: { view, op, n: s.viewReq.n + 1 } }));
+/** A small menu at the pointer (Ctrl+E). */
+export const openMenu = (title: string, items: MenuItem[], pie = false) => set({ menu: { x: pointer.x, y: pointer.y, title, items, pie } });
+export const closeMenu = () => set({ menu: null });
+export const armBox = () => set({ boxArmed: true });
+/** What the menus offer, for the selection there is. */
+function sewItems(): MenuItem[] {
+  const none = !liveSel();
+  return [
+    { label: 'Cut', kbd: 'C', run: cutSelection, off: none },
+    { label: 'Stitch', kbd: 'V', run: stitchSelection, off: none },
+    { label: 'Unwrap', kbd: 'U', run: () => void unwrapSelected(), off: none },
+    { label: 'Pin', kbd: 'P', run: () => pinSelected(true), off: none },
+    { label: 'Unpin', kbd: 'Alt+P', run: () => pinSelected(false), off: none },
+    { label: 'Select linked', kbd: 'Ctrl+L', run: selectLinked, off: none },
+    { label: 'Select loops', kbd: 'Alt+click', run: () => void selectEdgeLoop(), off: none },
+    { label: 'Pack', kbd: 'Ctrl+P', run: () => void repack() },
+  ];
+}
+/** Right click: the list. */
+export const contextMenu = () => openMenu('Selection', sewItems());
+/** Q: the same as a pie round the pointer. */
+export const pieMenu = () => openMenu('Selection', sewItems(), true);
+/** Ctrl+E: the edge menu. */
+export const edgeMenu = () => openMenu('Edge', sewItems().slice(0, 2).concat(sewItems()[6]));
+
+// The islands the selection touches: what the island tools (align, stack, relax…) and the island count work on.
+useApp.subscribe((s, prev) => {
+  if (s.csel === prev.csel && s.result === prev.result && s.selectMode === prev.selectMode) return;
+  const c = liveSel(s), out = c && s.result!.parts[c.part], ids = new Set<number>();
+  if (c && out) {
+    if (s.selectMode === 'face' || s.selectMode === 'island') for (const f of c.faces) ids.add(out.island[f]);
+    else { const t = topoOf(c.of); for (let k = 0; k < t.vid.length; k++) if (c.verts.has(t.vid[k])) ids.add(out.island[(k / 3) | 0]); }
+  }
+  const selected = [...ids].filter((id) => id >= 0).sort((a, b) => a - b);
+  if (selected.length !== s.selected.length || selected.some((x, i) => x !== s.selected[i])) set({ selected });
+});
+
+// ---- UV edits: one undo step each; drags snapshot once, then move in place ----
+const snapshot = (): Snap => ({ uvs: get().uvs.map((a) => a.slice()), result: get().result });
+export function beginEdit() { set((s) => ({ past: [...s.past.slice(-49), snapshot()], future: [] })); }
+const touched = () => set((s) => ({ uvRev: s.uvRev + 1, edited: true }));
+
+/** The UV corners the selection moves: the selected faces' own corners (face and island modes), else every corner
+ *  of a selected vertex (Blender's synced selection: a vertex's UVs move together). */
+function eachSelected(fn: (a: Float32Array, c: number) => void) {
+  const s = get(), c = liveSel(s), a = c && s.uvs[c.part];
+  if (!c || !a) return;
+  if (s.selectMode === 'face' || s.selectMode === 'island') { for (const f of c.faces) for (let k = 0; k < 3; k++) fn(a, f * 3 + k); return; }
+  const t = topoOf(c.of);
+  for (let k = 0; k < t.vid.length; k++) if (c.verts.has(t.vid[k])) fn(a, k);
+}
+function selectionCenter(): [number, number] | null {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  eachSelected((a, c) => { x0 = Math.min(x0, a[c * 2]); x1 = Math.max(x1, a[c * 2]); y0 = Math.min(y0, a[c * 2 + 1]); y1 = Math.max(y1, a[c * 2 + 1]); });
+  return x0 === Infinity ? null : [(x0 + x1) / 2, (y0 + y1) / 2];
+}
+
+// ---- G R S: Blender's modal transforms of the selected UVs, and pins ----
+export type XformKind = 'move' | 'rotate' | 'scale';
+/** A transform in progress: the corners it moves and where they started, the pivot (the selection's box centre),
+ *  where the mouse started and is now (the part's UV units), an axis lock, typed digits, Ctrl snapping, and the
+ *  readout the UV view shows. */
+export interface Xform {
+  kind: XformKind; part: number; corners: number[]; orig: Float32Array; pivot: [number, number];
+  start: [number, number]; mouse: [number, number]; axis: 'x' | 'y' | null; typed: string; snap: boolean; info: string;
+  /** The part's UVs when it started (cancel puts all of them back: a live unwrap moves more than the selection). */
+  whole: Float32Array;
+  /** Moving pins with Live Unwrap on: just the pins move, their islands follow. */
+  live: boolean;
+}
+/** Ctrl snaps: a 1/32 UV step, 5°, a 0.1 scale step. */
+const SNAP = { move: 1 / 32, rotate: 5, scale: 0.1 };
+
+/** The pointer in the part's own UV units (the view shows parts side by side as tiles). */
+function partUV(part: number, u: number, v: number): [number, number] {
+  const at = uvTiles().at[part] ?? [0, 0];
+  return [u - at[0], v - at[1]];
+}
+/** G, R or S with the pointer over the UV view: the selection follows the mouse until a click or Enter (Esc or a
+ *  right click puts it back). Pressing another of G R S mid-way switches to it. */
+export function startXform(kind: XformKind) {
+  const s = get(), x = s.xform;
+  if (x) return update({ ...x, kind, typed: '', start: x.mouse });
+  const c = liveSel(s), pivot = selectionCenter();
+  if (s.loading || pointer.view !== 'uv' || !c || !pivot) return;
+  let corners: number[] = [];
+  eachSelected((_, k) => corners.push(k));
+  // with Live Unwrap, the selected pins move and the rest of their islands follows (Blender's pin drag)
+  const pins = pinsOf(s, c.part), pinned = pins ? corners.filter((k) => pins.has(k)) : [];
+  const live = s.liveUnwrap && pinned.length > 0;
+  if (live) corners = pinned;
+  const a = s.uvs[c.part], start = partUV(c.part, pointer.u, pointer.v);
+  beginEdit();
+  update({ kind, part: c.part, corners, orig: Float32Array.from(corners.flatMap((k) => [a[k * 2], a[k * 2 + 1]])), pivot, start, mouse: start, axis: null,
+    typed: '', snap: false, info: '', whole: a.slice(), live });
+}
+/** Apply a transform state, and with Live Unwrap ask for its islands around the moved pins. */
+function update(x: Xform) {
+  const y = applyXform(x);
+  set({ xform: y });
+  if (y.live) liveSolve(y);
+}
+
+// Live Unwrap: one engine request at a time (LSCM around the pins), each with the pins where they are by then; a
+// cancel makes any answer still on its way stale.
+let liveNext: Xform | null = null, liveBusy = false, liveGen = 0;
+function liveSolve(x: Xform) {
+  liveNext = x;
+  if (!liveBusy) void liveRun();
+}
+async function liveRun() {
+  liveBusy = true;
+  while (liveNext) {
+    const x = liveNext, gen = liveGen;
+    liveNext = null;
+    const s = get(), out = s.result?.parts[x.part], part = s.parts[x.part], pins = pinsOf(s, x.part), a = s.uvs[x.part];
+    if (!out || !part || !pins || !a) continue;
+    // just the dragged islands' triangles go: the engine's work follows the island, not the part
+    const ids = new Set(x.corners.map((c) => out.island[(c / 3) | 0])), faces = out.island.flatMap((id, f) => (ids.has(id) ? [f] : []));
+    const sub = {
+      positions: faces.flatMap((f) => out.positions.slice(f * 9, f * 9 + 9)), uvs: faces.flatMap((f) => Array.from(a.subarray(f * 6, f * 6 + 6))),
+      stretch: faces.map((f) => out.stretch[f]), island: faces.map((f) => out.island[f]),
+      pins: faces.flatMap((f, i) => [0, 1, 2].flatMap((k) => (pins.has(f * 3 + k) ? [i * 3 + k] : []))),
+    };
+    try {
+      const r = await api.reseam({ ...sub, seams: part.seams, changed: [], faces: faces.map((_, i) => i), live: true }, s.params);
+      const now = get(), b = now.uvs[x.part];
+      if (gen !== liveGen || now.result !== s.result || !b) continue;
+      faces.forEach((f, i) => { for (let k = 0; k < 3; k++) { const c = f * 3 + k; if (!pins.has(c)) { b[c * 2] = r.uvs[(i * 3 + k) * 2]; b[c * 2 + 1] = r.uvs[(i * 3 + k) * 2 + 1]; } } });
+      set((st) => ({ uvRev: st.uvRev + 1 }));
+    } catch { /* the drag goes on: a failed live solve just isn't shown */ }
+  }
+  liveBusy = false;
+}
+export const setLiveUnwrap = (liveUnwrap: boolean) => set({ liveUnwrap });
+export const setAfterAlign = (afterAlign: boolean) => { set({ afterAlign }); keep('afterAlign', +afterAlign); };
+export const setAfterPack = (afterPack: boolean) => { set({ afterPack }); keep('afterPack', +afterPack); };
+/** The corners where the transform puts them now; returns it with its readout. */
+function applyXform(x: Xform): Xform {
+  const a = get().uvs[x.part], [pu, pv] = x.pivot, [su, sv] = x.start, [mu, mv] = x.mouse;
+  const typed = x.typed !== '' && x.typed !== '-' && Number.isFinite(+x.typed) ? +x.typed : null;
+  const axis = x.axis ? ` along ${x.axis.toUpperCase()}` : '';
+  let map: (u: number, v: number) => [number, number], info: string;
+  if (x.kind === 'move') {
+    let du = mu - su, dv = mv - sv;
+    if (typed !== null) [du, dv] = x.axis === 'y' ? [0, typed] : [typed, 0];
+    else {
+      if (x.snap) { du = Math.round(du / SNAP.move) * SNAP.move; dv = Math.round(dv / SNAP.move) * SNAP.move; }
+      if (x.axis === 'x') dv = 0;
+      if (x.axis === 'y') du = 0;
+    }
+    map = (u, v) => [u + du, v + dv];
+    info = `Move  D: ${du.toFixed(4)}  ${dv.toFixed(4)}${axis}`;
+  } else if (x.kind === 'rotate') {
+    let deg = typed ?? ((Math.atan2(mv - pv, mu - pu) - Math.atan2(sv - pv, su - pu)) * 180) / Math.PI;
+    if (typed === null) { deg = ((deg + 540) % 360) - 180; if (x.snap) deg = Math.round(deg / SNAP.rotate) * SNAP.rotate; }
+    const r = (deg * Math.PI) / 180, c = Math.cos(r), sn = Math.sin(r);
+    map = (u, v) => [pu + c * (u - pu) - sn * (v - pv), pv + sn * (u - pu) + c * (v - pv)];
+    info = `Rotate  ${deg.toFixed(2)}°`;
+  } else {
+    const d0 = Math.hypot(su - pu, sv - pv);
+    let f = typed ?? (d0 > 1e-9 ? Math.hypot(mu - pu, mv - pv) / d0 : 1);
+    if (typed === null && x.snap) f = Math.round(f / SNAP.scale) * SNAP.scale;
+    const [fu, fv] = x.axis === 'x' ? [f, 1] : x.axis === 'y' ? [1, f] : [f, f];
+    map = (u, v) => [pu + fu * (u - pu), pv + fv * (v - pv)];
+    info = `Scale  ${fu.toFixed(3)}  ${fv.toFixed(3)}${axis}`;
+  }
+  x.corners.forEach((k, i) => { const [u, v] = map(x.orig[i * 2], x.orig[i * 2 + 1]); a[k * 2] = u; a[k * 2 + 1] = v; });
+  touched();
+  return { ...x, info: `${info}${x.typed ? `  [${x.typed}]` : ''}${x.snap ? '  snap' : ''}${x.live ? '  · live unwrap' : ''}` };
+}
+/** The mouse (the UV view's coordinates) or Ctrl moved mid-transform. */
+export function xformMouse(u: number, v: number, snap: boolean) {
+  const x = get().xform;
+  if (x) update({ ...x, mouse: partUV(x.part, u, v), snap });
+}
+export function xformSnap(snap: boolean) {
+  const x = get().xform;
+  if (x && x.snap !== snap) update({ ...x, snap });
+}
+/** X / Y lock an axis (again: unlock); digits, '.', '-' and Backspace type an exact value. */
+export function xformKey(key: string) {
+  const x = get().xform;
+  if (!x) return;
+  let { axis, typed } = x;
+  if (key === 'x' || key === 'y') axis = axis === key ? null : key;
+  else if (key === 'backspace') typed = typed.slice(0, -1);
+  else if (key === '-') typed = typed.startsWith('-') ? typed.slice(1) : `-${typed}`;
+  else if (/^[0-9.]$/.test(key)) typed += key;
+  else return;
+  update({ ...x, axis, typed });
+}
+/** Click or Enter: keep it (one undo step, taken when it started). */
+export const confirmXform = () => set({ xform: null });
+/** Esc or right click: everything back where it was, and no undo step. */
+export function cancelXform() {
+  const x = get().xform;
+  if (!x) return;
+  liveGen++;
+  liveNext = null;
+  get().uvs[x.part]?.set(x.whole);
+  set((s) => ({ xform: null, past: s.past.slice(0, -1), uvRev: s.uvRev + 1 }));
+}
+
+/** U: the selected faces unwrapped again (their islands made by the seams alone, as Blender's U), pins held, laid
+ *  back where they were; one undo step. */
+export const unwrapSelected = () => task('Unwrapping selection…', async () => {
+  const s = get(), c = liveSel(s), part = c && s.parts[c.part], out = c && s.result?.parts[c.part], uvs = c && s.uvs[c.part];
+  if (!c || !part || !out || !uvs || !c.faces.size || s.loading || s.xform) return;
+  keepParts();
+  const me = ++latest, t0 = performance.now();
+  const r = await api.reseam({ positions: out.positions, uvs: Array.from(uvs), stretch: out.stretch, island: out.island, seams: part.seams, changed: [],
+    pins: [...(pinsOf(s, c.part) ?? [])], faces: [...c.faces], manual: part.manual }, s.params);
+  if (me !== latest || get().result !== s.result) return;
+  land(c.part, { ...out, ...r }, new Float32Array(r.uvs), part.seams, performance.now() - t0, true);
+  await tidy(c.part, uvs);
+});
+
+/** The pinned corners of a part, if they still belong to its current output. */
+export function pinsOf(s: State, part: number): Set<number> | null {
+  const p = s.pins[part];
+  return p && s.result?.parts[part]?.positions === p.of ? p.corners : null;
+}
+/** P pins the selected UVs, Alt+P unpins them: a seam edit then lays their island out again around them. */
+export function pinSelected(on: boolean) {
+  const s = get(), c = liveSel(s);
+  if (!c) return;
+  const corners = new Set(pinsOf(s, c.part) ?? []);
+  eachSelected((_, k) => { if (on) corners.add(k); else corners.delete(k); });
+  set({ pins: { ...s.pins, [c.part]: { of: c.of, corners } } });
+}
+/** Move the selection by (du, dv) in place, mid-drag (call beginEdit first). */
+export function nudge(du: number, dv: number) {
+  eachSelected((a, c) => { a[c * 2] += du; a[c * 2 + 1] += dv; });
+  touched();
+}
+/** Linear map [[a, b], [c, d]] about the selection's centre: rotate, flip, scale. */
+function transform(m: [number, number, number, number]) {
+  const ctr = selectionCenter();
+  if (!ctr) return;
+  beginEdit();
+  eachSelected((a, c) => {
+    const x = a[c * 2] - ctr[0], y = a[c * 2 + 1] - ctr[1];
+    a[c * 2] = ctr[0] + m[0] * x + m[1] * y;
+    a[c * 2 + 1] = ctr[1] + m[2] * x + m[3] * y;
+  });
+  touched();
+}
+export const rotateSel = (deg: number) => { const r = (deg * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r); transform([c, -s, s, c]); };
+export const flipSel = (horizontal = true) => transform(horizontal ? [-1, 0, 0, 1] : [1, 0, 0, -1]);
+export const scaleSel = (f: number) => transform([f, 0, 0, f]);
+
+export const repack = () => task('Packing…', async () => {
+  if (get().loading || !get().result) return;
+  const apply = await packed(get().activePart);
+  beginEdit();
+  apply();
+  touched();
+});
+
+/** The part's islands packed (everything into one square with One atlas, else the part's own); returns the write. */
+async function packed(part: number) {
+  const { result, uvs } = get(), isl = islandsOf(result!), { one_atlas } = get().params;
+  const g = isl.flatMap((x, id) => (one_atlas || x.part === part ? [id] : []));
+  const out = g.length ? await api.pack(g.map((id) => isl[id].corners.flatMap((c) => [uvs[isl[id].part][c * 2], uvs[isl[id].part][c * 2 + 1]]))) : [];
+  return () => g.forEach((id, k) => isl[id].corners.forEach((c, j) => { uvs[isl[id].part][c * 2] = out[k][j * 2]; uvs[isl[id].part][c * 2 + 1] = out[k][j * 2 + 1]; }));
+}
+
+// ---- Island-level UV tools: each operation applies to the selection as one undo step ----
+type Box = { u0: number; v0: number; u1: number; v1: number };
+/** The selected islands, each with its part's UV array and its corners. */
+function selIslands() {
+  const { result, uvs, selected, activePart } = get();
+  if (!result) return [];
+  const isl = islandsOf(result);
+  return selected.flatMap((id) => isl[id]?.part === activePart ? [{ id, a: uvs[activePart], part: activePart, corners: isl[id].corners }] : []);
+}
+function boxOf(a: Float32Array, cs: number[]): Box {
+  let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
+  for (const c of cs) { u0 = Math.min(u0, a[c * 2]); u1 = Math.max(u1, a[c * 2]); v0 = Math.min(v0, a[c * 2 + 1]); v1 = Math.max(v1, a[c * 2 + 1]); }
+  return { u0, v0, u1, v1 };
+}
+const moveBy = (a: Float32Array, cs: number[], du: number, dv: number) => { for (const c of cs) { a[c * 2] += du; a[c * 2 + 1] += dv; } };
+/** Turn and scale corners about (cu, cv): angle in radians, factor k. */
+function spin(a: Float32Array, cs: number[], th: number, k = 1) {
+  const b = boxOf(a, cs), cu = (b.u0 + b.u1) / 2, cv = (b.v0 + b.v1) / 2, c = Math.cos(th) * k, s = Math.sin(th) * k;
+  for (const i of cs) {
+    const x = a[i * 2] - cu, y = a[i * 2 + 1] - cv;
+    a[i * 2] = cu + c * x - s * y;
+    a[i * 2 + 1] = cv + s * x + c * y;
+  }
+}
+/** One undo step over the selected islands. */
+function editIslands(fn: (sel: ReturnType<typeof selIslands>) => void) {
+  const sel = selIslands();
+  if (!sel.length) return;
+  beginEdit();
+  fn(sel);
+  touched();
+}
+
+export type Edge = 'left' | 'right' | 'top' | 'bottom' | 'center' | 'middle' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+/** Line islands up on one edge (or centre line) of their joint box; a lone island goes to the square's. */
+export const alignSel = (edge: Edge) => editIslands((sel) => {
+  const boxes = sel.map((s) => boxOf(s.a, s.corners));
+  const all = sel.length > 1 ? boxes.reduce((p, b) => ({ u0: Math.min(p.u0, b.u0), v0: Math.min(p.v0, b.v0), u1: Math.max(p.u1, b.u1), v1: Math.max(p.v1, b.v1) }))
+    : { u0: 0, v0: 0, u1: 1, v1: 1 };
+  sel.forEach((s, i) => {
+    const b = boxes[i];
+    const left = edge === 'left' || edge.endsWith('left'), right = edge === 'right' || edge.endsWith('right');
+    const top = edge === 'top' || edge.startsWith('top-'), bottom = edge === 'bottom' || edge.startsWith('bottom-');
+    const du = left ? all.u0 - b.u0 : right ? all.u1 - b.u1 : edge === 'center' ? (all.u0 + all.u1 - b.u0 - b.u1) / 2 : 0;
+    const dv = bottom ? all.v0 - b.v0 : top ? all.v1 - b.v1 : edge === 'middle' ? (all.v0 + all.v1 - b.v0 - b.v1) / 2 : 0;
+    moveBy(s.a, s.corners, du, dv);
+  });
+});
+
+/** Equal gaps between islands along u or v, the outermost two staying put; if they don't fit side by side in
+ *  that span, equal steps between their centres instead. */
+export const distributeSel = (axis: 'u' | 'v') => editIslands((sel) => {
+  if (sel.length < 3) return;
+  const lo = axis === 'u' ? 'u0' : 'v0', hi = axis === 'u' ? 'u1' : 'v1', mid = (b: Box) => (b[lo] + b[hi]) / 2;
+  const items = sel.map((s) => ({ s, b: boxOf(s.a, s.corners) })).sort((x, y) => mid(x.b) - mid(y.b));
+  const first = items[0].b, last = items[items.length - 1].b, n = items.length - 1;
+  const gap = (last[hi] - first[lo] - items.reduce((k, x) => k + x.b[hi] - x.b[lo], 0)) / n;
+  let at = first[hi] + gap;
+  items.slice(1, -1).forEach(({ s, b }, i) => {
+    const d = gap >= 0 ? at - b[lo] : mid(first) + ((mid(last) - mid(first)) * (i + 1)) / n - mid(b);
+    moveBy(s.a, s.corners, axis === 'u' ? d : 0, axis === 'v' ? d : 0);
+    at += b[hi] - b[lo] + gap;
+  });
+});
+
+/** Border edges of an island (corner pairs on one triangle only, matched by their UVs). */
+function borderEdges(a: Float32Array, cs: number[]): [number, number][] {
+  const key = (c: number) => `${a[c * 2]},${a[c * 2 + 1]}`, seen = new Map<string, [number, number] | null>();
+  for (let k = 0; k < cs.length; k += 3) {
+    for (let j = 0; j < 3; j++) {
+      const p = cs[k + j], q = cs[k + (j + 1) % 3], kp = key(p), kq = key(q), e = kp < kq ? `${kp}|${kq}` : `${kq}|${kp}`;
+      seen.set(e, seen.has(e) ? null : [p, q]);
+    }
+  }
+  return [...seen.values()].filter((x): x is [number, number] => x !== null);
+}
+
+/** Rectangle parameterization for one disk-like triangle chart, solved on its own corner graph. */
+function rectangleLayout(s: ReturnType<typeof selIslands>[number], even: boolean): number[] | null {
+  const key = (c: number) => `${s.a[c * 2]},${s.a[c * 2 + 1]}`;
+  const edges = borderEdges(s.a, s.corners), adjacent = new Map<string, Set<string>>(), uv = new Map<string, [number, number]>();
+  for (const [p, q] of edges) {
+    const a = key(p), b = key(q);
+    uv.set(a, [s.a[p * 2], s.a[p * 2 + 1]]); uv.set(b, [s.a[q * 2], s.a[q * 2 + 1]]);
+    if (!adjacent.has(a)) adjacent.set(a, new Set()); if (!adjacent.has(b)) adjacent.set(b, new Set());
+    adjacent.get(a)!.add(b); adjacent.get(b)!.add(a);
+  }
+  if (adjacent.size < 4 || [...adjacent.values()].some((n) => n.size !== 2)) return null;
+  const start = adjacent.keys().next().value as string, loop = [start];
+  let prev = '', current = start;
+  for (let i = 0; i < adjacent.size; i++) {
+    const next = [...adjacent.get(current)!].find((k) => k !== prev);
+    if (!next || next === start) break;
+    loop.push(next); prev = current; current = next;
+  }
+  if (loop.length !== adjacent.size || [...adjacent.get(loop[loop.length - 1])!].every((k) => k !== start)) return null;
+  let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity, area = 0;
+  for (let i = 0; i < loop.length; i++) {
+    const [u, v] = uv.get(loop[i])!, [x, y] = uv.get(loop[(i + 1) % loop.length])!;
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v); area += u * y - x * v;
+  }
+  if (u1 - u0 < 1e-12 || v1 - v0 < 1e-12) return null;
+  // The four anchors are the existing boundary vertices nearest the original box corners.
+  const corners: [number, number][] = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]], chosen = new Set<number>();
+  const anchors = corners.map((p, target) => {
+    let best = -1, distance = Infinity;
+    loop.forEach((k, i) => { if (chosen.has(i)) return; const q = uv.get(k)!, d = (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2; if (d < distance) { best = i; distance = d; } });
+    chosen.add(best); return { at: best, target };
+  }).sort((a, b) => a.at - b.at);
+  const positive = area > 0;
+  for (let i = 0; i < anchors.length; i++) {
+    const a = anchors[i].target, b = anchors[(i + 1) % anchors.length].target;
+    if (((b - a + 4) % 4 === 1) !== positive) return null;
+  }
+  const boundary = new Map<string, [number, number]>();
+  for (let a = 0; a < anchors.length; a++) {
+    const from = anchors[a], to = anchors[(a + 1) % anchors.length], count = (to.at - from.at + loop.length) % loop.length || loop.length;
+    let total = 0;
+    for (let j = 0; j < count; j++) total += even ? 1 : Math.hypot(uv.get(loop[(from.at + j) % loop.length])![0] - uv.get(loop[(from.at + j + 1) % loop.length])![0], uv.get(loop[(from.at + j) % loop.length])![1] - uv.get(loop[(from.at + j + 1) % loop.length])![1]);
+    let run = 0;
+    const p = corners[from.target], q = corners[to.target];
+    for (let j = 0; j <= count; j++) {
+      const k = loop[(from.at + j) % loop.length], t = total ? run / total : j / count;
+      boundary.set(k, [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+      if (j < count) run += even ? 1 : Math.hypot(uv.get(k)![0] - uv.get(loop[(from.at + j + 1) % loop.length])![0], uv.get(k)![1] - uv.get(loop[(from.at + j + 1) % loop.length])![1]);
+    }
+  }
+  const ids = new Map<string, number>(), points: [number, number][] = [], links: Set<number>[] = [];
+  const id = (c: number) => { const k = key(c); let i = ids.get(k); if (i === undefined) { i = points.length; ids.set(k, i); points.push([s.a[c * 2], s.a[c * 2 + 1]]); links.push(new Set()); } return i; };
+  for (let i = 0; i < s.corners.length; i += 3) {
+    const tri = [id(s.corners[i]), id(s.corners[i + 1]), id(s.corners[i + 2])];
+    for (let j = 0; j < 3; j++) { links[tri[j]].add(tri[(j + 1) % 3]); links[tri[(j + 1) % 3]].add(tri[j]); }
+  }
+  const fixed = new Set<number>();
+  for (const [k, p] of boundary) { const i = ids.get(k); if (i === undefined) return null; points[i] = p; fixed.add(i); }
+  let curU = Float64Array.from(points, (p) => p[0]), curV = Float64Array.from(points, (p) => p[1]);
+  let nextU = new Float64Array(curU.length), nextV = new Float64Array(curV.length);
+  for (let iteration = 0; iteration < 600; iteration++) {
+    nextU.set(curU); nextV.set(curV); let delta = 0;
+    for (let i = 0; i < curU.length; i++) if (!fixed.has(i) && links[i].size) {
+      let u = 0, v = 0; for (const j of links[i]) { u += curU[j] / links[i].size; v += curV[j] / links[i].size; }
+      delta = Math.max(delta, Math.abs(u - curU[i]), Math.abs(v - curV[i])); nextU[i] = u; nextV[i] = v;
+    }
+    [curU, nextU] = [nextU, curU]; [curV, nextV] = [nextV, curV]; if (delta < 1e-8) break;
+  }
+  const out: number[] = [];
+  for (const c of s.corners) { const i = ids.get(key(c))!; out.push(curU[i], curV[i]); }
+  return out;
+}
+
+/** Rectify a selected single-boundary chart; Gridify additionally spaces each boundary edge evenly. */
+export function rectifySel(gridify = false) {
+  const sel = selIslands(), layouts = sel.map((s) => rectangleLayout(s, gridify));
+  if (!layouts.some(Boolean)) return;
+  beginEdit();
+  sel.forEach((s, i) => { const layout = layouts[i]; if (layout) s.corners.forEach((c, j) => { s.a[c * 2] = layout[j * 2]; s.a[c * 2 + 1] = layout[j * 2 + 1]; }); });
+  touched();
+}
+/** Straighten (Align Axis): turn each island so its outline's main straight-edge direction runs along u or v. */
+export const straightenSel = () => editIslands((sel) => { for (const s of sel) straighten(s.a, s.corners); });
+function straighten(a: Float32Array, corners: number[]) {
+  const bins = new Float64Array(180); // half-degree bins over 0..90°
+  for (const [p, q] of borderEdges(a, corners)) {
+    const du = a[q * 2] - a[p * 2], dv = a[q * 2 + 1] - a[p * 2 + 1];
+    const deg = ((Math.atan2(dv, du) * 180) / Math.PI % 90 + 90) % 90;
+    bins[Math.min(179, Math.floor(deg * 2))] += Math.hypot(du, dv);
+  }
+  let best = 0;
+  for (let i = 1; i < 180; i++) if (bins[i] > bins[best]) best = i;
+  const deg = (best + 0.5) / 2;
+  spin(a, corners, (-(deg > 45 ? deg - 90 : deg) * Math.PI) / 180);
+}
+
+/** Orient each island's longest UV axis horizontally using its covariance. */
+export const orientSel = () => editIslands((sel) => {
+  for (const s of sel) {
+    let xx = 0, yy = 0, xy = 0, cu = 0, cv = 0;
+    for (const c of s.corners) { cu += s.a[c * 2] / s.corners.length; cv += s.a[c * 2 + 1] / s.corners.length; }
+    for (const c of s.corners) { const x = s.a[c * 2] - cu, y = s.a[c * 2 + 1] - cv; xx += x * x; yy += y * y; xy += x * y; }
+    if (xx + yy > 1e-18) spin(s.a, s.corners, -Math.atan2(2 * xy, xx - yy) / 2);
+  }
+});
+
+/** World 3D direction per island as seen in UV: area-weighted gradient of one world axis over the island. */
+function worldGradient(positions: number[], a: Float32Array, cs: number[], axis: number): [number, number] {
+  let gu = 0, gv = 0;
+  for (let k = 0; k < cs.length; k += 3) {
+    const [p0, p1, p2] = [cs[k], cs[k + 1], cs[k + 2]];
+    const u1 = a[p1 * 2] - a[p0 * 2], v1 = a[p1 * 2 + 1] - a[p0 * 2 + 1], u2 = a[p2 * 2] - a[p0 * 2], v2 = a[p2 * 2 + 1] - a[p0 * 2 + 1];
+    const det = u1 * v2 - u2 * v1;
+    if (Math.abs(det) < 1e-14) continue;
+    const y1 = positions[p1 * 3 + axis] - positions[p0 * 3 + axis], y2 = positions[p2 * 3 + axis] - positions[p0 * 3 + axis];
+    // the plane y = gu·u + gv·v through the triangle, weighted by its UV area
+    gu += ((y1 * v2 - y2 * v1) / det) * Math.abs(det);
+    gv += ((u1 * y2 - u2 * y1) / det) * Math.abs(det);
+  }
+  return [gu, gv];
+}
+/** Orient World: turn each island so the model's up (or, for a face lying flat, its front) points up in UV. */
+export const orientWorldSel = () => editIslands((sel) => {
+  const r = get().result!;
+  for (const s of sel) {
+    const pos = r.parts[s.part].positions;
+    let g = worldGradient(pos, s.a, s.corners, 1);
+    const z = worldGradient(pos, s.a, s.corners, 2);
+    if (Math.hypot(...g) < 0.3 * Math.hypot(...z)) g = z;
+    if (Math.hypot(...g) === 0) continue;
+    spin(s.a, s.corners, Math.PI / 2 - Math.atan2(g[1], g[0]));
+  }
+});
+
+/** Island area in 3D and in UV. */
+function areas(positions: number[], a: Float32Array, cs: number[]) {
+  let a3 = 0, a2 = 0;
+  for (let k = 0; k < cs.length; k += 3) {
+    const [p, q, w] = [cs[k], cs[k + 1], cs[k + 2]], P = (i: number, j: number) => positions[i * 3 + j];
+    const e1 = [0, 1, 2].map((j) => P(q, j) - P(p, j)), e2 = [0, 1, 2].map((j) => P(w, j) - P(p, j));
+    a3 += Math.hypot(e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]) / 2;
+    a2 += Math.abs((a[q * 2] - a[p * 2]) * (a[w * 2 + 1] - a[p * 2 + 1]) - (a[w * 2] - a[p * 2]) * (a[q * 2 + 1] - a[p * 2 + 1])) / 2;
+  }
+  return { a3, a2 };
+}
+/** Average Island Scales: one texel density for all selected islands (the one they have together). */
+export const averageScalesSel = () => editIslands((sel) => {
+  const r = get().result!, ar = sel.map((s) => areas(r.parts[s.part].positions, s.a, s.corners));
+  const target = Math.sqrt(ar.reduce((n, x) => n + x.a2, 0) / ar.reduce((n, x) => n + x.a3, 0));
+  sel.forEach((s, i) => { if (ar[i].a2 > 0) spin(s.a, s.corners, 0, target / Math.sqrt(ar[i].a2 / ar[i].a3)); });
+});
+
+/** Normalize: scale and move the selection, keeping its proportions, to fill the 0..1 square. */
+export const normalizeSel = () => editIslands((sel) => {
+  const b = sel.map((s) => boxOf(s.a, s.corners)).reduce((p, x) => ({ u0: Math.min(p.u0, x.u0), v0: Math.min(p.v0, x.v0), u1: Math.max(p.u1, x.u1), v1: Math.max(p.v1, x.v1) }));
+  const k = 1 / Math.max(b.u1 - b.u0, b.v1 - b.v0, 1e-12);
+  for (const s of sel) for (const c of s.corners) { s.a[c * 2] = (s.a[c * 2] - b.u0) * k; s.a[c * 2 + 1] = (s.a[c * 2 + 1] - b.v0) * k; }
+});
+
+// ---- Relax, Stitch (engine solvers) and Stack ----
+type Sel = ReturnType<typeof selIslands>[number];
+const islandIn = (r: Output, s: Sel): IslandIn => ({
+  positions: s.corners.flatMap((c) => r.parts[s.part].positions.slice(c * 3, c * 3 + 3)),
+  uvs: s.corners.flatMap((c) => [s.a[c * 2], s.a[c * 2 + 1]]),
+});
+/** Engine work on the selection; its answer lands as one undo step unless the UVs changed meanwhile. */
+async function solveSel(label: string, run: (r: Output, sel: Sel[]) => Promise<() => void>) {
+  const r = get().result, uvs = get().uvs, sel = selIslands();
+  if (!r || !sel.length) return;
+  await task(label, async () => {
+    const apply = await run(r, sel);
+    if (get().result !== r || get().uvs !== uvs) return;
+    beginEdit();
+    apply();
+    touched();
+  });
+}
+const put = (s: Sel, uv: number[]) => s.corners.forEach((c, j) => { s.a[c * 2] = uv[j * 2]; s.a[c * 2 + 1] = uv[j * 2 + 1]; });
+
+/** Relax: each selected island re-flattened (ARAP) from its current layout, staying where it is. */
+export const relaxSel = () => solveSel('Relaxing…', async (r, sel) => {
+  const out = await api.relax(sel.map((s) => islandIn(r, s)));
+  return () => sel.forEach((s, i) => put(s, out[i]));
+});
+
+/** An island's shape for fitting: its centre, main axis (radians) and up to 256 of its points about the centre. */
+function shapeOf(a: Float32Array, cs: number[]) {
+  let cu = 0, cv = 0, xx = 0, yy = 0, xy = 0;
+  for (const c of cs) { cu += a[c * 2] / cs.length; cv += a[c * 2 + 1] / cs.length; }
+  const pts: [number, number][] = [], step = Math.max(1, Math.floor(cs.length / 256));
+  cs.forEach((c, i) => {
+    const x = a[c * 2] - cu, y = a[c * 2 + 1] - cv;
+    xx += x * x; yy += y * y; xy += x * y;
+    if (i % step === 0) pts.push([x, y]);
+  });
+  return { cu, cv, th: Math.atan2(2 * xy, xx - yy) / 2, pts };
+}
+/** Stack: islands like the first selected one (the other selected, or with one selected every one like it on its
+ *  part) laid on top of it: main axes lined up, then whichever quarter turn, mirrored or not, fits its shape best. */
+export function stackSel() {
+  const { result, uvs, selected } = get();
+  if (!result || !selected.length) return;
+  const isl = islandsOf(result), facts = islandFacts(), base = selected[0];
+  const ids = (selected.length > 1 ? selected.slice(1) : facts.map((_, j) => j)).filter((j) => j !== base && alike(facts[base], facts[j]));
+  if (!ids.length) return;
+  const at = (id: number) => uvs[isl[id].part], t = shapeOf(at(base), isl[base].corners);
+  beginEdit();
+  for (const id of ids) {
+    const a = at(id), cs = isl[id].corners, s = shapeOf(a, cs);
+    let best: number[] = [], bd = Infinity;
+    for (let q = 0; q < 4; q++) for (const m of [1, -1]) {
+      // R(t.th + q·90°) · diag(1, m) · R(−s.th)
+      const p = t.th + (q * Math.PI) / 2, c1 = Math.cos(p), s1 = Math.sin(p), c2 = Math.cos(s.th), s2 = Math.sin(s.th);
+      const M = [c1 * c2 + s1 * m * s2, c1 * s2 - s1 * m * c2, s1 * c2 - c1 * m * s2, s1 * s2 + c1 * m * c2];
+      let d = 0;
+      for (const [x, y] of s.pts) {
+        const u = M[0] * x + M[1] * y, v = M[2] * x + M[3] * y;
+        let n = Infinity;
+        for (const [tx, ty] of t.pts) n = Math.min(n, (u - tx) ** 2 + (v - ty) ** 2);
+        d += n;
+      }
+      if (d < bd) { bd = d; best = M; }
+    }
+    for (const c of cs) {
+      const x = a[c * 2] - s.cu, y = a[c * 2 + 1] - s.cv;
+      a[c * 2] = t.cu + best[0] * x + best[1] * y;
+      a[c * 2 + 1] = t.cv + best[2] * x + best[3] * y;
+    }
+  }
+  touched();
+}
+
+/** Shuffle island positions while keeping every island's shape intact. */
+export const shuffleSel = () => editIslands((sel) => {
+  if (sel.length < 2) return;
+  const centers = sel.map((s) => { const b = boxOf(s.a, s.corners); return [(b.u0 + b.u1) / 2, (b.v0 + b.v1) / 2] as const; });
+  const order = centers.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  sel.forEach((s, i) => moveBy(s.a, s.corners, centers[order[i]][0] - centers[i][0], centers[order[i]][1] - centers[i][1]));
+});
+
+/** Set selected islands to a common width while preserving each island's aspect ratio. */
+export const stretchSel = () => editIslands((sel) => {
+  const boxes = sel.map((s) => boxOf(s.a, s.corners));
+  const width = boxes.reduce((n, b) => n + b.u1 - b.u0, 0) / boxes.length;
+  sel.forEach((s, i) => {
+    const b = boxes[i], w = b.u1 - b.u0;
+    if (w <= 1e-12) return;
+    const mid = (b.u0 + b.u1) / 2, scale = width / w;
+    for (const c of s.corners) s.a[c * 2] = mid + (s.a[c * 2] - mid) * scale;
+  });
+});
+
+/** Circularize each selected island's outline loop, keeping its interior vertices in place. */
+export const circleBoundarySel = () => editIslands((sel) => {
+  for (const s of sel) {
+    const edges = borderEdges(s.a, s.corners), adjacent = new Map<string, Set<string>>(), coords = new Map<string, [number, number]>();
+    const key = (c: number) => `${s.a[c * 2]},${s.a[c * 2 + 1]}`;
+    for (const [p, q] of edges) {
+      const a = key(p), b = key(q);
+      coords.set(a, [s.a[p * 2], s.a[p * 2 + 1]]); coords.set(b, [s.a[q * 2], s.a[q * 2 + 1]]);
+      (adjacent.get(a) ?? adjacent.set(a, new Set()).get(a)!).add(b);
+      (adjacent.get(b) ?? adjacent.set(b, new Set()).get(b)!).add(a);
+    }
+    const unseen = new Set(adjacent.keys()), moved = new Map<string, [number, number]>();
+    while (unseen.size) {
+      const start = unseen.values().next().value as string, stack = [start], loop: string[] = [];
+      unseen.delete(start);
+      while (stack.length) { const k = stack.pop()!; loop.push(k); for (const n of adjacent.get(k) ?? []) if (unseen.delete(n)) stack.push(n); }
+      if (loop.length < 3) continue;
+      const c = loop.reduce((p, k) => [p[0] + coords.get(k)![0] / loop.length, p[1] + coords.get(k)![1] / loop.length], [0, 0]);
+      const radius = loop.reduce((n, k) => n + Math.hypot(coords.get(k)![0] - c[0], coords.get(k)![1] - c[1]) / loop.length, 0);
+      for (const k of loop) { const [u, v] = coords.get(k)!, angle = Math.atan2(v - c[1], u - c[0]); moved.set(k, [c[0] + radius * Math.cos(angle), c[1] + radius * Math.sin(angle)]); }
+    }
+    for (const c of s.corners) { const uv = moved.get(key(c)); if (uv) { s.a[c * 2] = uv[0]; s.a[c * 2 + 1] = uv[1]; } }
+  }
+});
+
+/** Copy an island's normalized UV shape for later pasting onto matching corner topology. */
+export function copyShapeSel() {
+  const s = selIslands()[0];
+  if (!s) return;
+  const b = boxOf(s.a, s.corners), w = Math.max(b.u1 - b.u0, 1e-12), h = Math.max(b.v1 - b.v0, 1e-12);
+  set({ shapeClipboard: s.corners.flatMap((c) => [(s.a[c * 2] - b.u0) / w, (s.a[c * 2 + 1] - b.v0) / h]) });
+}
+/** Paste the copied shape onto selected islands without changing their current bounds. */
+export const pasteShapeSel = () => {
+  const clip = get().shapeClipboard, selected = selIslands();
+  if (!clip || !selected.length || selected.some((s) => s.corners.length * 2 !== clip.length)) return;
+  editIslands((sel) => sel.forEach((s) => {
+    const b = boxOf(s.a, s.corners), w = b.u1 - b.u0, h = b.v1 - b.v0;
+    s.corners.forEach((c, i) => { s.a[c * 2] = b.u0 + clip[i * 2] * w; s.a[c * 2 + 1] = b.v0 + clip[i * 2 + 1] * h; });
+  }));
+};
+
+/** Expand or shrink selected island outlines by a UV distance using averaged boundary normals. */
+export const offsetBoundarySel = (distance = 0.005) => editIslands((sel) => {
+  for (const s of sel) {
+    const key = (c: number) => `${s.a[c * 2]},${s.a[c * 2 + 1]}`;
+    let cu = 0, cv = 0;
+    for (const c of s.corners) { cu += s.a[c * 2] / s.corners.length; cv += s.a[c * 2 + 1] / s.corners.length; }
+    const normals = new Map<string, [number, number]>();
+    for (const [p, q] of borderEdges(s.a, s.corners)) {
+      const du = s.a[q * 2] - s.a[p * 2], dv = s.a[q * 2 + 1] - s.a[p * 2 + 1], len = Math.hypot(du, dv);
+      if (len < 1e-12) continue;
+      let nu = dv / len, nv = -du / len;
+      const mu = (s.a[p * 2] + s.a[q * 2]) / 2, mv = (s.a[p * 2 + 1] + s.a[q * 2 + 1]) / 2;
+      if (nu * (mu - cu) + nv * (mv - cv) < 0) { nu = -nu; nv = -nv; }
+      for (const c of [p, q]) { const k = key(c), n = normals.get(k) ?? [0, 0]; n[0] += nu; n[1] += nv; normals.set(k, n); }
+    }
+    const moved = new Map<string, [number, number]>();
+    for (const [k, [nu, nv]] of normals) { const len = Math.hypot(nu, nv); if (len > 1e-12) moved.set(k, [distance * nu / len, distance * nv / len]); }
+    for (const c of s.corners) { const d = moved.get(key(c)); if (d) { s.a[c * 2] += d[0]; s.a[c * 2 + 1] += d[1]; } }
+  }
+});
+
+/** Bring UV copies of shared 3D vertices together across selected islands. */
+export const alignSeamsSel = () => editIslands((sel) => {
+  const groups = new Map<string, { a: Float32Array; corners: number[]; islands: Set<number> }>();
+  for (const s of sel) {
+    const pos = get().result!.parts[s.part].positions;
+    for (const c of s.corners) {
+      const k = `${s.part}|${pos[c * 3].toFixed(6)},${pos[c * 3 + 1].toFixed(6)},${pos[c * 3 + 2].toFixed(6)}`;
+      const g = groups.get(k) ?? { a: s.a, corners: [], islands: new Set<number>() };
+      g.corners.push(c); g.islands.add(s.id); groups.set(k, g);
+    }
+  }
+  for (const g of groups.values()) if (g.islands.size > 1) {
+    const uv = g.corners.reduce((p, c) => [p[0] + g.a[c * 2] / g.corners.length, p[1] + g.a[c * 2 + 1] / g.corners.length], [0, 0]);
+    for (const c of g.corners) { g.a[c * 2] = uv[0]; g.a[c * 2 + 1] = uv[1]; }
+  }
+});
+
+/** Weld selected UV corners within a small threshold, matching Mio3's merge-by-distance action. */
+export const mergeSel = (threshold = 0.0001) => editIslands((sel) => {
+  for (const s of sel) {
+    const byCell = new Map<string, number[]>(), parent = new Map<number, number>();
+    const root = (x: number): number => { const p = parent.get(x); if (p === undefined) { parent.set(x, x); return x; } if (p === x) return x; const r = root(p); parent.set(x, r); return r; };
+    const join = (a: number, b: number) => { const x = root(a), y = root(b); if (x !== y) parent.set(y, x); };
+    for (const c of s.corners) {
+      const u = s.a[c * 2], v = s.a[c * 2 + 1], x = Math.floor(u / threshold), y = Math.floor(v / threshold);
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (const other of byCell.get(`${x + dx},${y + dy}`) ?? []) {
+        if (Math.hypot(u - s.a[other * 2], v - s.a[other * 2 + 1]) <= threshold) join(c, other);
+      }
+      const k = `${x},${y}`; byCell.set(k, [...(byCell.get(k) ?? []), c]);
+    }
+    const sums = new Map<number, [number, number, number]>();
+    for (const c of s.corners) { const r = root(c), n = sums.get(r) ?? [0, 0, 0]; n[0] += s.a[c * 2]; n[1] += s.a[c * 2 + 1]; n[2]++; sums.set(r, n); }
+    for (const c of s.corners) { const [u, v, n] = sums.get(root(c))!; s.a[c * 2] = u / n; s.a[c * 2 + 1] = v / n; }
+  }
+});
+
+/** Order selected islands by their 3D X position in one compact row. */
+export const sortSel = () => editIslands((sel) => {
+  if (sel.length < 2) return;
+  const r = get().result!, boxes = sel.map((s) => boxOf(s.a, s.corners));
+  const items = sel.map((s, i) => {
+    const p = r.parts[s.part].positions, c = [0, 0, 0];
+    for (const k of s.corners) for (let j = 0; j < 3; j++) c[j] += p[k * 3 + j] / s.corners.length;
+    return { s, b: boxes[i], x: c[0] };
+  }).sort((a, b) => a.x - b.x || a.s.id - b.s.id);
+  const gap = Math.max(...boxes.map((b) => b.u1 - b.u0)) * 0.08;
+  const centerV = boxes.reduce((n, b) => n + (b.v0 + b.v1) / 2, 0) / boxes.length;
+  let u = Math.min(...boxes.map((b) => b.u0));
+  for (const { s, b } of items) {
+    moveBy(s.a, s.corners, u - b.u0, centerV - (b.v0 + b.v1) / 2);
+    u += b.u1 - b.u0 + gap;
+  }
+});
+
+/** Symmetrize a selected side onto its matching side across a 3D axis, mirroring one UV axis. */
+export const symmetrizeSel = (worldAxis: 0 | 1 | 2, uvAxis: 0 | 1, snap = false) => editIslands((sel) => {
+  const r = get().result;
+  if (!r || !sel.length) return;
+  const all = islandsOf(r), selectedSide = new Map<number, number>();
+  for (const s of sel) {
+    const p = r.parts[s.part].positions;
+    let lo = Infinity, hi = -Infinity;
+    for (let i = worldAxis; i < p.length; i += 3) { lo = Math.min(lo, p[i]); hi = Math.max(hi, p[i]); }
+    const mid = (lo + hi) / 2, mean = s.corners.reduce((n, c) => n + (p[c * 3 + worldAxis] - mid) / s.corners.length, 0);
+    selectedSide.set(s.id, mean);
+  }
+  const dominant = [...selectedSide.values()].reduce((n, x) => n + x, 0) >= 0 ? 1 : -1;
+  const sourceIds = new Set(sel.filter((s) => selectedSide.get(s.id)! * dominant > 1e-7).map((s) => s.id));
+  for (const source of sel) {
+    if (!sourceIds.has(source.id)) continue;
+    const part = r.parts[source.part], pos = part.positions;
+    let lo = Infinity, hi = -Infinity, extent = 1;
+    for (let i = worldAxis; i < pos.length; i += 3) { lo = Math.min(lo, pos[i]); hi = Math.max(hi, pos[i]); }
+    const mid = (lo + hi) / 2;
+    for (let j = 0; j < 3; j++) { let a = Infinity, b = -Infinity; for (let i = j; i < pos.length; i += 3) { a = Math.min(a, pos[i]); b = Math.max(b, pos[i]); } extent = Math.max(extent, b - a); }
+    const eps = extent * 1e-5, key = (x: number, y: number, z: number) => `${Math.round(x / eps)},${Math.round(y / eps)},${Math.round(z / eps)}`;
+    const pointCorners = new Map<string, number[]>();
+    for (let c = 0; c < pos.length / 3; c++) { const k = key(pos[c * 3], pos[c * 3 + 1], pos[c * 3 + 2]); const list = pointCorners.get(k) ?? []; list.push(c); pointCorners.set(k, list); }
+    const side = selectedSide.get(source.id)! >= 0 ? 1 : -1, candidates = new Map<number, number>();
+    for (const c of source.corners) {
+      const xyz = [pos[c * 3], pos[c * 3 + 1], pos[c * 3 + 2]];
+      if ((xyz[worldAxis] - mid) * side <= 1e-7) continue;
+      xyz[worldAxis] = 2 * mid - xyz[worldAxis];
+      for (const d of pointCorners.get(key(xyz[0], xyz[1], xyz[2])) ?? []) { const id = part.island[Math.floor(d / 3)]; if (!sourceIds.has(id)) candidates.set(id, (candidates.get(id) ?? 0) + 1); }
+    }
+    const targetId = [...candidates].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
+    if (targetId === undefined) continue;
+    const target = all[targetId], targetUV = get().uvs[target.part], sources = new Map<string, [number, number]>(), center = 0.5;
+    for (const c of source.corners) {
+      const xyz = [pos[c * 3], pos[c * 3 + 1], pos[c * 3 + 2]];
+      if ((xyz[worldAxis] - mid) * side <= 1e-7) continue;
+      xyz[worldAxis] = 2 * mid - xyz[worldAxis];
+      const u = source.a[c * 2], v = source.a[c * 2 + 1];
+      sources.set(key(xyz[0], xyz[1], xyz[2]), uvAxis === 0 ? [2 * center - u, v] : [u, 2 * center - v]);
+    }
+    for (const c of target.corners) {
+      const k = c * 3, uv = sources.get(key(pos[k], pos[k + 1], pos[k + 2]));
+      if (!uv) continue;
+      const d = Math.hypot(targetUV[c * 2] - uv[0], targetUV[c * 2 + 1] - uv[1]);
+      if (!snap || d < 0.02) { targetUV[c * 2] = uv[0]; targetUV[c * 2 + 1] = uv[1]; }
+    }
+  }
+});
+
+/** Select islands with effectively no UV area. */
+export function selectZeroArea() {
+  const { result: r, activePart } = get();
+  if (!r) return;
+  const isl = islandsOf(r), uvs = get().uvs;
+  select(isl.flatMap((s, id) => s.part === activePart && areas(r.parts[s.part].positions, uvs[s.part], s.corners).a2 < 1e-12 ? [id] : []));
+}
+
+// ---- selecting islands by where they are and what they are ----
+/** Each island's 3D centre (in its part's frame: x relative to the part's middle), triangle count and area. */
+function islandFacts() {
+  const r = get().result;
+  if (!r) return [];
+  const mid = r.parts.map((p) => { let lo = Infinity, hi = -Infinity; for (let i = 0; i < p.positions.length; i += 3) { lo = Math.min(lo, p.positions[i]); hi = Math.max(hi, p.positions[i]); } return (lo + hi) / 2; });
+  return islandsOf(r).map(({ part, corners }) => {
+    const p = r.parts[part].positions, c = [0, 0, 0];
+    for (const k of corners) for (let j = 0; j < 3; j++) c[j] += p[k * 3 + j] / corners.length;
+    c[0] -= mid[part];
+    return { part, c, tris: corners.length / 3, area: areas(p, get().uvs[part], corners).a3 };
+  });
+}
+/** Islands of the shown parts on one side of each part's middle (−X or +X). */
+export function selectSide(sign: -1 | 1) {
+  const { parts, activePart } = get();
+  select(islandFacts().flatMap((f, id) => (f.part === activePart && parts[f.part]?.visible && f.c[0] * sign > 0 ? [id] : [])));
+}
+/** Add each selected island's mirror twin across its part's middle (X). */
+export function selectMirror() {
+  const facts = islandFacts(), { selected } = get(), out = new Set(selected);
+  for (const id of selected) {
+    const f = facts[id], m = [-f.c[0], f.c[1], f.c[2]];
+    let best = -1, bd = Infinity;
+    facts.forEach((g, j) => { if (g.part === f.part && j !== id) { const d = Math.hypot(g.c[0] - m[0], g.c[1] - m[1], g.c[2] - m[2]); if (d < bd) { bd = d; best = j; } } });
+    if (best >= 0) out.add(best);
+  }
+  select([...out]);
+}
+type Fact = ReturnType<typeof islandFacts>[number];
+const closeEnough = (x: number, y: number) => Math.abs(x - y) <= 0.1 * Math.max(x, y);
+/** Same part, triangle count and area within 10%. */
+const alike = (f: Fact, g: Fact) => f.part === g.part && closeEnough(f.tris, g.tris) && closeEnough(f.area, g.area);
+/** Add islands like the selected ones. */
+export function selectSimilar() {
+  const facts = islandFacts(), { selected } = get();
+  select(facts.flatMap((g, j) => (selected.some((id) => alike(facts[id], g)) ? [j] : [])));
+}
+/** Islands with triangles turned over in UV (a mirrored texture there): flagged by the engine, or wound the other
+ *  way from the engine's own layout since (an island flipped by hand). The engine may wind an island's halves
+ *  either way, so its layout, not a fixed winding, is the reference. */
+export function selectFlipped() {
+  const r = get().result, { uvs, activePart } = get();
+  if (!r) return;
+  const wind = (a: ArrayLike<number>, p: number, q: number, w: number) => Math.sign((a[q * 2] - a[p * 2]) * (a[w * 2 + 1] - a[p * 2 + 1]) - (a[w * 2] - a[p * 2]) * (a[q * 2 + 1] - a[p * 2 + 1]));
+  select(islandsOf(r).flatMap(({ part, corners }, id) => {
+    if (part !== activePart) return [];
+    const [now, was, st] = [uvs[part], r.parts[part].uvs, r.parts[part].stretch];
+    for (let k = 0; k < corners.length; k += 3) {
+      const [p, q, w] = [corners[k], corners[k + 1], corners[k + 2]];
+      if (st[p / 3] < 0 || wind(now, p, q, w) * wind(was, p, q, w) < 0) return [id];
+    }
+    return [];
+  }));
+}
+
+export function undo() {
+  const { past, partsPast } = get();
+  if (!past.length) {
+    // no hand edit of UVs left: take back the last seam or cut instead
+    if (!partsPast.length) return;
+    const target = partsPast[partsPast.length - 1];
+    set((s) => ({ ...restorePart(s, target), partsPast: partsPast.slice(0, -1), partsFuture: [partSnapshot(s), ...s.partsFuture], loading: null, edited: false }));
+    return;
+  }
+  set((s) => ({ future: [snapshot(), ...s.future], past: s.past.slice(0, -1), ...restore(s, past[past.length - 1]) }));
+}
+export function redo() {
+  const { future, partsFuture } = get();
+  if (future.length) {
+    set((s) => ({ past: [...s.past, snapshot()], future: s.future.slice(1), ...restore(s, future[0]) }));
+    return;
+  }
+  if (!partsFuture.length) return;
+  const target = partsFuture[0];
+  set((s) => ({ ...restorePart(s, target), partsFuture: partsFuture.slice(1), partsPast: [...s.partsPast, partSnapshot(s)], loading: null, edited: false }));
+}
+// island ids change with the result: the selection only carries over when it's the same one
+const restore = (s: State, p: Snap) => ({ uvs: p.uvs, result: p.result, uvRev: s.uvRev + 1 });
+const restorePart = (s: State, p: PartSnap) => ({ parts: p.parts, result: p.result, uvs: p.uvs.map((a) => a.slice()), csel: p.csel,
+  activePart: p.activePart, uvScope: p.uvScope, past: p.past, future: p.future, uvRev: s.uvRev + 1 });
+
+// ---- Van Gogh: painting textures ----
+export const setPaint = (p: Partial<State['paint']>) => set((s) => ({ paint: { ...s.paint, ...p } }));
+/** Part `i`'s texture set (Base Color and one empty layer, at the texture resolution, the first time). */
+export const texSet = (i: number) => setOf(get().parts[i].soup, get().textureResolution);
+const repaint = () => set((s) => ({ paintRev: s.paintRev + 1 }));
+/** The model's bounding box diagonal, which the brush size is a share of. */
+const span = new WeakMap<Output, number>();
+function modelSize(r: Output) {
+  if (!span.has(r)) {
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const p of r.parts) for (let i = 0; i < p.positions.length; i++) { lo[i % 3] = Math.min(lo[i % 3], p.positions[i]); hi[i % 3] = Math.max(hi[i % 3], p.positions[i]); }
+    span.set(r, Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1);
+  }
+  return span.get(r)!;
+}
+/** What the brush lays down: each channel it's on for, with its value (0..255). */
+function brushOf(r: Output): Brush {
+  const p = get().paint, hex = (k: number) => parseInt(p.color.slice(k, k + 2), 16), values: Brush['values'] = {};
+  if (p.on.color) values.color = [hex(1), hex(3), hex(5)];
+  if (p.on.rough) values.rough = [p.rough * 255];
+  if (p.on.metal) values.metal = [p.metal * 255];
+  return { radius: (p.size / 100) * modelSize(r), flow: p.flow, hardness: p.hardness, erase: p.tool === 'erase', values };
+}
+/** The texture sets each paint undo step changed (a selection can change several), newest last. */
+const painted: TexSet[][] = [];
+const step = (...ts: TexSet[]) => { for (const t of ts) keepPaint(t); painted.push(ts); };
+export type PaintMods = { shift: boolean; alt: boolean; ctrl: boolean };
+/** Photoshop's: Shift adds to the selection, Alt takes away, plain replaces it. */
+const opOfMods = (m: PaintMods): MaskOp => (m.shift ? 'add' : m.alt ? 'sub' : 'set');
+const visibleParts = () => get().parts.flatMap((p, i) => (p.visible && get().result?.parts[i] && get().uvs[i] ? [i] : []));
+/** The triangles the Wand or Bucket takes from a click on triangle `tri` of part `i`: its polygon, its island, or the part. */
+function trisBy(i: number, tri: number) {
+  const out = get().result!.parts[i], by = get().paint.by;
+  if (by === 'part') return out.island.map((_, t) => t);
+  if (by === 'island') return out.island.flatMap((x, t) => (x === out.island[tri] ? [t] : []));
+  const pid = polygonsOf(out.source, get().parts[i].poly);
+  return pid[tri] < 0 ? [tri] : Array.from(pid).flatMap((p, t) => (p === pid[tri] ? [t] : []));
+}
+/** The selection, document-wide as Photoshop's: replacing it (op set) leaves nothing selected on the parts `masks`
+ *  doesn't name; adding or taking away changes only those it names. One undo step. */
+function selectDoc(masks: Map<number, Uint8Array>, op: MaskOp) {
+  const ids = op === 'set' ? visibleParts() : [...masks.keys()], ts = ids.map(texSet);
+  painted.push(ts);
+  ids.forEach((i, k) => selectMask(ts[k], masks.get(i) ?? new Uint8Array(ts[k].size * ts[k].size), op));
+  repaint();
+}
+/** Ctrl+D (and Ctrl+A: everything selected is the same as no selection, for painting). */
+export function deselectPaint() {
+  const ts = visibleParts().map(texSet).filter((t) => t.sel);
+  if (!ts.length) return;
+  painted.push(ts);
+  for (const t of ts) selectMask(t, null, 'set');
+  repaint();
+}
+/** Ctrl+Shift+I: what was selected isn't, and the other way round (nothing happens without a selection). */
+export function invertPaintSelection() {
+  const ts = visibleParts().map(texSet);
+  if (!ts.some((t) => t.sel)) return;
+  painted.push(ts);
+  for (const t of ts) invertMask(t);
+  repaint();
+}
+/** Marquee or Lasso on the model: the texels of each visible part whose point passes `keep` (inside the shape on screen,
+ *  and seen, not hidden behind other surface). */
+export function selectPaintOnModel(keep: (x: number, y: number, z: number) => boolean, mods: PaintMods) {
+  const { result, uvs } = get(), masks = new Map<number, Uint8Array>();
+  if (!result) return;
+  for (const i of visibleParts()) {
+    const out = result.parts[i], m = maskTris(texSet(i), out.positions, uvs[i], out.island.map((_, t) => t), keep);
+    if (m.some((x) => x)) masks.set(i, m);
+  }
+  selectDoc(masks, opOfMods(mods));
+}
+/** Marquee or Lasso in the texture view: a polygon in part `i`'s UVs. */
+export function selectPaintInUV(i: number, poly: [number, number][], mods: PaintMods) {
+  if (poly.length < 3 || !get().uvs[i]) return;
+  selectDoc(new Map([[i, maskPolygon(texSet(i), poly)]]), opOfMods(mods));
+}
+/** Ctrl+click: part `i` becomes the one the panels show, opened in the Parts tree. */
+export function pickPaintPart(i: number) {
+  set((s) => ({ activePart: i, paintOpen: s.paintOpen.includes(i) ? s.paintOpen : [...s.paintOpen, i] }));
+}
+export const togglePaintOpen = (i: number) => set((s) => ({ paintOpen: s.paintOpen.includes(i) ? s.paintOpen.filter((x) => x !== i) : [...s.paintOpen, i] }));
+let last: { part: number; at: number[]; uv: boolean } | null = null;
+/** A press on part `i`, triangle `tri`, at world point `at` (on the model) or null (in the texture view), UV (u, v):
+ *  every tool's click, on either view. True when a drag should follow (Brush, Eraser). */
+export function paintPress(i: number, tri: number, at: [number, number, number] | null, uv: [number, number], mods: PaintMods) {
+  const { result, uvs, paint } = get(), out = result?.parts[i];
+  if (!out || !uvs[i]) return false;
+  if (mods.ctrl) { pickPaintPart(i); return false; }
+  const s = texSet(i);
+  // the Eyedropper, or Alt+click with a painting tool (Photoshop's): take the colour (and roughness, metallic) under it
+  if (paint.tool === 'picker' || (mods.alt && (paint.tool === 'brush' || paint.tool === 'bucket'))) {
+    const v = sample(s, uv[0], uv[1]);
+    setPaint(s.channels.length > 1 ? v : { color: v.color });
+    return false;
+  }
+  if (paint.tool === 'wand') { selectDoc(new Map([[i, maskTris(s, out.positions, uvs[i], trisBy(i, tri))]]), opOfMods(mods)); return false; }
+  if (paint.tool === 'bucket') {
+    step(s);
+    fillTris(s, out.positions, uvs[i], trisBy(i, tri), brushOf(result!));
+    repaint();
+    return false;
+  }
+  if (paint.tool !== 'brush' && paint.tool !== 'erase') return false;
+  step(s);
+  last = { part: i, at: at ?? uv, uv: !at };
+  if (at) dab(s, out.positions, uvs[i], at, brushOf(result!));
+  else dabUV(s, uv[0], uv[1], uvRadius(s), brushOf(result!));
+  return true;
+}
+/** The brush's radius on the model (world units), for the cursor. */
+export const brushRadius = () => { const r = get().result; return r ? brushOf(r).radius : 0; };
+/** In the texture view the brush is a share of the texture's width. */
+const uvRadius = (s: TexSet) => Math.max(0.5, (get().paint.size / 100) * s.size);
+/** The drag went on to world point `at` (or UV `uv` in the texture view): dabs every quarter radius along the way, so a
+ *  fast stroke has no gaps. */
+export function paintDrag(i: number, at: [number, number, number] | null, uv: [number, number]) {
+  const { result, uvs } = get(), out = result?.parts[i];
+  if (!out || !uvs[i] || !last || last.part !== i || last.uv === !!at) return;
+  const b = brushOf(result!), s = texSet(i), from = last.at, to = at ?? uv;
+  const r = at ? b.radius : uvRadius(s) / s.size;
+  const steps = Math.max(1, Math.ceil(Math.hypot(...to.map((x, k) => x - from[k])) / (r / 4)));
+  for (let k = 1; k <= steps; k++) {
+    const p = to.map((x, c) => from[c] + ((x - from[c]) * k) / steps);
+    if (at) dab(s, out.positions, uvs[i], p, b); else dabUV(s, p[0], p[1], uvRadius(s), b);
+  }
+  last.at = to;
+}
+// ponytail: the texture view and panel catch up when the stroke ends, not per dab (a 1K redraw per mouse move)
+export const paintEnd = () => { if (last) repaint(); last = null; };
+/** A Brush or Eraser stroke is under way. */
+export const painting = () => !!last;
+export function undoPaint() {
+  for (const s of painted.pop() ?? []) undoSet(s);
+  repaint();
+}
+/** Alt+Backspace (Fill) or Delete (Clear): the active layer of each part with a selection, inside it; with no
+ *  selection, the active part's whole layer. */
+export function fillPaintSelection(erase = false) {
+  const r = get().result;
+  if (!r) return;
+  const sel = visibleParts().map(texSet).filter((t) => t.sel);
+  const ts = sel.length ? sel : get().parts[get().activePart] ? [texSet(get().activePart)] : [];
+  step(...ts);
+  for (const t of ts) fillAll(t, { ...brushOf(r), flow: 1, erase });
+  repaint();
+}
+/** Layer edits on the active part's set, each one undo step (`undoable` false: part of a step already taken). */
+function layers(f: (s: TexSet) => void, undoable = true) {
+  if (!get().parts[get().activePart]) return;
+  const s = texSet(get().activePart);
+  if (undoable) step(s);
+  f(s);
+  composite(s);
+  repaint();
+}
+export const addPaintLayer = () => layers((s) => { s.layers.splice(s.active + 1, 0, newLayer(s.layers.length + 1)); s.active++; });
+export const deletePaintLayer = () => layers((s) => { if (s.layers.length > 1) { s.layers.splice(s.active, 1); s.active = Math.min(s.active, s.layers.length - 1); } });
+/** Ctrl+J: a copy of the active layer above it. */
+export const duplicatePaintLayer = () => layers((s) => {
+  const l = s.layers[s.active];
+  s.layers.splice(s.active + 1, 0, { ...newLayer(0), name: `${l.name} copy`, opacity: l.opacity, px: Object.fromEntries(Object.entries(l.px).map(([c, a]) => [c, a!.slice()])) });
+  s.active++;
+});
+/** Layer `from` dragged to stack position `to` (0 = bottom), Photoshop's drag in the Layers panel; it stays the active one. */
+export const movePaintLayerTo = (from: number, to: number) => layers((s) => {
+  if (from === to || to < 0 || to >= s.layers.length) return;
+  const [l] = s.layers.splice(from, 1);
+  s.layers.splice(to, 0, l);
+  s.active = to;
+});
+/** Ctrl+] / Ctrl+[: the active layer up or down one. */
+export const movePaintLayer = (d: 1 | -1) => { const a = texSet(get().activePart).active; movePaintLayerTo(a, a + d); };
+export const editPaintLayer = (j: number, l: Partial<Pick<PaintLayer, 'name' | 'visible' | 'opacity'>>, undoable = true) => layers((s) => { s.layers[j] = { ...s.layers[j], ...l }; }, undoable);
+/** The start of an opacity drag: one undo step for the whole drag. */
+export const beginPaintEdit = () => { if (get().parts[get().activePart]) step(texSet(get().activePart)); };
+export const pickPaintLayer = (j: number) => { texSet(get().activePart).active = j; repaint(); };
+/** Part `i` gets Roughness and Metallic channels (PBR, glTF's metal/rough), or loses them. */
+export function setPbr(i: number, on: boolean) {
+  set({ activePart: i });
+  layers((s) => { s.channels = on ? ['color', 'rough', 'metal'] : ['color']; });
+  if (!on && (get().paintChannel === 'rough' || get().paintChannel === 'metal')) set({ paintChannel: 'material' });
+}
+/** Show part `i`'s channel `ch` in the UV view. */
+export const pickPaintChannel = (i: number, ch: Shown) => set({ activePart: i, paintChannel: ch, uvScope: 'part' });
+/** Every channel of the active part, one PNG each (Base Color sRGB, Roughness and Metallic greyscale). */
+export const exportPaint = () => task('Writing the textures…', async () => {
+  const { parts, activePart } = get();
+  if (!parts[activePart]) return;
+  const s = texSet(activePart);
+  for (const ch of s.channels) download(await pngOf(s, ch), `${baseName()}-${parts[activePart].name}-${CHANNELS[ch].file}.png`);
+});
+
+// ---- baking and generators (Substance's Bake Mesh Maps and smart masks) ----
+/** Bake AO and edge maps for every visible part, every part casting occlusion on the others. */
+export const bakePaint = () => task('Baking mesh maps…', async () => {
+  const { result, uvs } = get();
+  if (!result) return;
+  const all = visibleParts(), positions = all.map((i) => result.parts[i].positions);
+  for (const [k, i] of all.entries()) {
+    const s = texSet(i), out = result.parts[i];
+    set({ busy: `Baking ${get().parts[i].name} (${k + 1} of ${all.length})…` });
+    setBaked(s, await bake(s.size, out.positions, positions, texelSurface(s.size, out.positions, uvs[i]), (f) => set({ busy: `Baking ${get().parts[i].name} (${k + 1} of ${all.length}) ${Math.round(f * 100)}%` })));
+    // generator layers follow the new maps
+    for (const l of s.layers) if (l.gen) generate(s, l);
+    composite(s);
+  }
+  set({ paintAO: true });
+  repaint();
+});
+export const setPaintAO = (paintAO: boolean) => set((s) => ({ paintAO, paintRev: s.paintRev + 1 })); // the texture view's Material mode too
+/** Each generator's starting look: worn bare metal on edges, brown grime in crevices, plain dark occlusion. */
+const GEN_START: Record<GenKind, { name: string } & Omit<Gen, 'kind' | 'clip'>> = {
+  edge: { name: 'Edge Wear', amount: 0.45, soft: 0.15, width: 0.008, grunge: 0.5, scale: 0.03, color: '#c9c5bd', rough: 0.35, metal: 1 },
+  dirt: { name: 'Dirt', amount: 0.4, soft: 0.3, width: 0.012, grunge: 0.4, scale: 0.05, color: '#3d3226', rough: 0.9, metal: 0 },
+  ao: { name: 'Ambient Occlusion', amount: 0.6, soft: 0.6, width: 0.01, grunge: 0, scale: 0.05, color: '#000000', rough: 0.8, metal: 0 },
+};
+/** A generator layer above the active one, inside the selection if there is one (the active part must be baked). */
+export function addGenerator(kind: GenKind) {
+  if (!get().parts[get().activePart] || !texSet(get().activePart).bake) return;
+  layers((s) => {
+    const { name, ...g } = GEN_START[kind], l = { ...newLayer(0), name, gen: { kind, ...g, clip: s.sel } };
+    generate(s, l);
+    s.layers.splice(s.active + 1, 0, l);
+    s.active++;
+  });
+}
+/** The active generator layer's settings changed: made again (`undoable` false: inside a slider drag's step). */
+export const editGen = (g: Partial<Gen>, undoable = true) => layers((s) => {
+  const l = s.layers[s.active];
+  if (!l.gen) return;
+  s.layers[s.active] = { ...l, gen: { ...l.gen, ...g } };
+  generate(s, s.layers[s.active]);
+}, undoable);

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The editor window: core APIs (window, events, paths). The engine's own commands are allowed without listing them.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

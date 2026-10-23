@@ -1,0 +1,13 @@
+node_modules
+dist
+*.tsbuildinfo
+engine/target
+*.log
+testdata
+engine/geom/target
+target
+src-tauri/target
+src-tauri/gen/schemas
+out
+*.zip
+.claude/settings.local.json

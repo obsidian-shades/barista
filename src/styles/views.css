@@ -1,0 +1,60 @@
+/* The two views (3D, UV layout): a header bar like espresso's view title bars, then the canvas. */
+.view { display: grid; grid-template-rows: 30px minmax(0, 1fr); min-width: 0; background: var(--canvas); border-right: 1px solid var(--line); }
+.vbar { display: flex; align-items: center; gap: 12px; padding: 0 10px; min-width: 0; overflow: visible; position: relative; z-index: 5; background: var(--chrome); border-bottom: 1px solid var(--line); }
+.vbar .slider { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--muted); font-size: var(--fs-s); }
+.vbar input[type="range"] { width: 160px; height: auto; padding: 0; border: 0; background: none; accent-color: var(--accent); }
+.vbody { position: relative; min-height: 0; overflow: hidden; }
+.vbody > div { position: absolute !important; inset: 0; } /* the R3F canvas wrapper */
+.vbar > .hint { font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.vtools { display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
+/* the UV header stays inside its column however narrow the divider makes it: the title gives way first, then the tools clip */
+.uvbar { overflow: hidden; }
+.uvbar > .caps { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uvbar .vtools { flex-shrink: 1; min-width: 0; overflow: hidden; }
+.vbar > .caps { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex-shrink: 0; max-width: 60%; }
+.vtools button { min-height: 22px; padding: 0 7px; font-size: var(--fs-s); color: #cfcfcf; white-space: nowrap; }
+.vtools .sep { width: 1px; height: 16px; background: var(--hair); margin: 0 4px; }
+.uvbody canvas { position: absolute; inset: 0; touch-action: none; cursor: default; }
+/* a spinner over the UVs while they're being worked out (shown after a beat, so quick edits don't flash it) */
+.vbody > .uv-spin { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; background: #0000; animation: uv-dim .2s .15s both; }
+.uv-spinner { width: 34px; height: 34px; border: 3px solid #ffffff2a; border-top-color: var(--accent); border-radius: 50%; animation: uv-spin .8s linear infinite; }
+.uv-spin .err { padding: 8px 12px; background: #24272bf2; border: 1px solid var(--edge-hi); border-radius: 6px; color: #ff8a80; }
+@keyframes uv-dim { from { opacity: 0; } to { opacity: 1; background: #0000002e; } }
+@keyframes uv-spin { to { transform: rotate(360deg); } }
+.vtools .seg { display: flex; border: 1px solid var(--hair); border-radius: 3px; overflow: hidden; }
+.vtools .seg button { border-radius: 0; }
+.vtools .seg button[aria-pressed="true"] { background: var(--hair); color: #fff; }
+/* Poly Doc's Flat | Smooth in the 3D header */
+.vbar .seg { display: flex; margin-left: auto; border: 1px solid var(--hair); border-radius: 3px; overflow: hidden; }
+.vbar .seg button { border-radius: 0; min-height: 22px; padding: 0 10px; font-size: var(--fs-s); }
+.vbar .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.vbar .scene-btn { flex: 0 0 auto; min-height: 22px; padding: 0 8px; font-size: var(--fs-s); color: #cfcfcf; border: 1px solid var(--hair); }
+.vbar .scene-btn[aria-expanded="true"] { background: var(--hair); color: #fff; }
+.scene-pop { width: 280px; max-height: calc(100vh - 16px); overflow: auto; background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-m); color: var(--fg); }
+.scene-body { display: grid; gap: 8px; padding: 10px; }
+.settings.scene-flags { grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+/* Blender's Viewport Shading: full-width segmented choices, the MatCap spheres, the option toggles */
+.seg3 { display: flex; border: 1px solid var(--hair); border-radius: var(--r-s); overflow: hidden; }
+.seg3 button { flex: 1; min-height: 24px; padding: 0 6px; border: 0; border-radius: 0; font-size: var(--fs-s); color: #cfcfcf; }
+.seg3 button + button { border-left: 1px solid var(--hair); }
+.seg3 button[aria-checked="true"] { background: var(--accent); color: #fff; }
+.seg3 button:disabled { opacity: .35; }
+.matcaps { display: grid; grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap: 4px; padding: 6px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
+.matcaps button { padding: 2px; min-height: 0; justify-content: center; border: 1px solid transparent; border-radius: 6px; background: none; }
+.matcaps button[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.matcaps img { display: block; border-radius: 50%; }
+.settings.scene-opts { gap: 4px; }
+.boxsel { position: absolute; pointer-events: none; border: 1px dashed #d0d0d0; background: #ffffff10; }
+.vbody > .xform-info { position: absolute; inset: auto auto 10px 10px; display: grid; gap: 2px; padding: 6px 10px; background: #1b1d20e6; border: 1px solid var(--edge-hi); border-radius: 4px; font: 12px/1.4 var(--mono, monospace); color: #fff; pointer-events: none; }
+.xform-info span { color: var(--muted); font: var(--fs-xs) sans-serif; }
+/* The background colour input, drawn as a plain swatch. */
+.cswatch { width: 26px; height: 22px; padding: 0; min-height: 0; border: 1px solid #777; border-radius: var(--r-s); background: none; cursor: pointer; }
+.cswatch:hover { border-color: var(--fg); }
+.cswatch::-webkit-color-swatch-wrapper { padding: 0; }
+.cswatch::-webkit-color-swatch { border: none; border-radius: calc(var(--r-s) - 1px); }
+.lassosel { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.lassosel polygon { fill: #ffffff10; stroke: #e0e0e0; stroke-width: 1; stroke-dasharray: 4 3; }
+/* Van Gogh: the brush in the texture view */
+.brushring { position: absolute; pointer-events: none; transform: translate(-50%, -50%); border: 1px dashed #fff; border-radius: 50%; mix-blend-mode: difference; z-index: 2; }
+.brushring > div { position: absolute; inset: 0; border: 1px solid #fff; border-radius: 50%; }
+canvas.painting { cursor: crosshair; }

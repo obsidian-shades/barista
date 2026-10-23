@@ -1,0 +1,24 @@
+# The unwrap engine (lib) and the HTTP server the editor talks to (bin).
+[package]
+name = "auto-unwrap"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "auto-unwrap-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower-http = { version = "0.6", features = ["compression-gzip"] }
+
+# The solver is all tight float loops: unoptimised builds are ~20x slower, too slow even for tests.
+[profile.dev]
+opt-level = 2

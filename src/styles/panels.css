@@ -1,0 +1,94 @@
+/* The dock and its panels (espresso's dock look: chrome tabs, panel bodies). */
+.dock { display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--chrome); }
+.dock-group { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-bottom: 1px solid var(--line); }
+.dock-group.grow { flex: 1; }
+.dock-group.grow .pbody { overflow: auto; flex: 1; min-height: 0; }
+.dock-tabs { display: flex; flex: 0 0 28px; align-items: stretch; background: var(--chrome); border-bottom: 1px solid var(--line); }
+.dock-tabs [role="tab"] { display: flex; align-items: center; padding: 0 12px; white-space: nowrap; border-right: 1px solid var(--line); }
+.dock-tabs [role="tab"][aria-selected="true"] { background: var(--panel); color: var(--fg); box-shadow: inset 0 2px 0 var(--accent); margin-bottom: -1px; border-bottom: 1px solid var(--panel); }
+.pbody { padding: 10px; display: grid; gap: 8px; align-content: start; }
+.pbody .hint { font-size: var(--fs-xs); line-height: 1.4; }
+button.wide { justify-content: center; background: var(--hair); }
+
+/* Parts list (espresso's layers) */
+.layers { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; overscroll-behavior: contain; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
+.layer { display: grid; grid-template-columns: 28px 28px minmax(0, 1fr) auto; align-items: center; height: 28px; border-bottom: 1px solid #222; cursor: pointer; }
+.layer:hover { background: #ffffff08; }
+.layer.on { background: var(--row-on); }
+.layers.doc .layer { grid-template-columns: 28px minmax(0, 1fr) auto; } /* Poly Doc: no checker toggle */
+.layer.active { box-shadow: inset 2px 0 var(--accent); }
+.layer button { height: 100%; min-height: 0; padding: 0; justify-content: center; border-radius: 0; border: 0; border-right: 1px solid #222; color: #cfcfcf; }
+.layer button[aria-pressed="false"] svg { opacity: .35; }
+.lname { padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ltype { padding-right: 8px; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
+
+/* the automatic unwrap's settings */
+.settings { display: grid; gap: 4px; }
+.settings label { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--fs-s); }
+.settings label span { display: flex; align-items: center; gap: 4px; }
+.settings input[type="number"] { width: 64px; }
+.settings input[type="range"] { width: 100px; height: auto; padding: 0; border: 0; background: none; accent-color: var(--accent); }
+.settings output { width: 44px; text-align: right; font: 11px var(--num); color: var(--fg); }
+.settings label.toggle { justify-content: flex-start; }
+.settings input[type="checkbox"] { height: auto; accent-color: var(--accent); }
+.settings select { width: 148px; }
+button.primary.wide { justify-content: center; }
+
+/* UV tools: Mio3-style button grids */
+.tsec { display: flex; align-items: baseline; justify-content: space-between; margin-top: 2px; }
+.tsec .hint { font-size: var(--fs-xs); color: var(--muted); }
+.tgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+.tgrid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tgrid button { justify-content: center; min-height: 24px; padding: 0 4px; background: var(--hair); font-size: var(--fs-s); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tgrid button:hover:not(:disabled) { background: #4a4a4a; }
+
+
+/* Poly Doc census: one button per polygon kind, its count on the right */
+.censusgrid { display: grid; gap: 4px; margin-bottom: 4px; }
+.census { display: flex; justify-content: space-between; min-height: 28px; padding: 0 10px; }
+.census.warn .num { color: #ffb74d; }
+.fixnote { margin: 6px 0 2px; padding: 6px 8px; font-size: var(--fs-s); color: var(--fg); background: var(--well); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: var(--r-s); }
+.healthbar { display: flex; height: 10px; margin: 2px 0 6px; border-radius: 5px; overflow: hidden; background: var(--well); }
+.healthbar span { min-width: 0; }
+.rules { display: grid; margin-top: 6px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
+.rule { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 8px; border: 0; border-bottom: 1px solid #222; border-radius: 0; background: none; text-align: left; }
+.rule:last-child { border-bottom: 0; }
+.rule .rname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule .num { min-width: 28px; padding: 0 5px; border-radius: 8px; text-align: center; font-size: var(--fs-xs); color: #111; }
+.rule .rfix { background: #e2483a; color: #fff; }
+.rule .rlook { background: #f0c43a; }
+/* Van Gogh: a part's channels sit under it; the active layer's opacity */
+.layer.sub .lname { padding-left: 14px; color: var(--muted); }
+.layer.sub.on .lname { color: var(--fg); }
+.layer > button.ltype { border: 0; border-left: 1px solid #222; padding: 0 8px; width: auto; }
+.lopacity { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.lopacity input { flex: 1; min-width: 0; }
+.layers.tree .layer > button:first-child svg { transition: transform .1s; }
+.pslayers { display: flex; flex-direction: column; gap: 6px; min-height: 0; flex: 1; }
+.pslayers .layers { max-height: none; flex: 1; }
+.layers.thumbs .layer { grid-template-columns: 28px 36px minmax(0, 1fr) auto; height: 40px; }
+.lthumb { width: 30px; height: 30px; border: 1px solid #111; image-rendering: pixelated; }
+.layer.droppable { box-shadow: inset 0 2px var(--accent); }
+.lbar { display: flex; justify-content: flex-end; gap: 2px; border-top: 1px solid var(--line); padding-top: 4px; }
+.lbar button { min-height: 24px; width: 28px; padding: 0; justify-content: center; }
+.options .swatch { width: 18px; height: 18px; border: 1px solid #111; border-radius: 3px; }
+.options .toolname svg { margin-right: 6px; vertical-align: -4px; }
+.gensettings { display: grid; gap: 4px; padding: 6px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
+.gensettings label { display: grid; grid-template-columns: 64px minmax(0, 1fr) 40px; align-items: center; gap: 6px; color: var(--muted); }
+.gensettings input[type="range"] { min-width: 0; }
+.genmark { color: var(--accent); }
+.layer.sub.baked .lname { font-style: italic; }
+/* Van Gogh: the colour wheel (Affinity's) */
+.colorwheel { display: grid; justify-items: center; gap: 6px; position: relative; }
+.colorwheel canvas { touch-action: none; cursor: crosshair; }
+.cwtop { position: absolute; left: 0; top: 0; display: flex; align-items: center; gap: 4px; }
+.cwswatch { width: 22px; height: 22px; border-radius: 50%; border: 1px solid #111; box-shadow: 0 0 0 1px #555; }
+.cwtop button { width: 26px; min-height: 24px; padding: 0; justify-content: center; }
+.cwread { width: 100%; display: flex; justify-content: space-between; align-items: flex-end; font-size: var(--fs-xs); color: var(--muted); }
+.cwread label { display: flex; align-items: center; gap: 4px; }
+.cwread input { width: 70px; font-family: inherit; text-transform: uppercase; }
+.cwflow { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) 44px; align-items: center; gap: 8px; color: var(--muted); }
+/* Van Gogh's dock is taller than most screens: panels keep their size, Layers keeps room, the dock scrolls */
+.paintdock { overflow-y: auto; }
+.paintdock > .dock-group { flex-shrink: 0; }
+.paintdock > .dock-group.grow { min-height: 220px; }

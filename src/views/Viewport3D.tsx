@@ -1,0 +1,912 @@
+// The 3D view: every part with its UVs, island borders and hand seams drawn on it, the selection tinted,
+// and the unfold slider that flattens it into its layout. Navigation as in Blender: middle drag orbits, Shift+middle
+// pans, wheel zooms, numpad views, Home / numpad . frame. Click picks a vertex, edge, face or island
+// (the select mode), Shift toggles, Ctrl takes away, Alt+click an edge loop, left drag box-selects (through the
+// model's hidden side). Right click: the selection menu (Cut, Stitch, Unwrap…).
+import { Bounds, ContactShadows, Environment, Line, OrbitControls, Outlines, useEnvironment } from '@react-three/drei';
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
+import { useCallback, Component, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import * as THREE from 'three';
+import type { Output } from '../api';
+import { checkerCanvas, islandColor, stretchColor } from '../colors';
+import { Morph } from '../morph';
+import { inside } from '../paint';
+import { env as paintEnv, look as paintLook, PAINT_HDRI, setEnv } from '../matview';
+import { health, healthColor } from '../health';
+import { poles } from '../polygeo';
+import { matcapTexture, studioShader, studioUniforms, THEME_BG } from '../shading';
+import { outNormals, ownPolygons, topoOfSoup } from '../polyedit';
+import { brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, texSet, type PaintMods, clearSelection, contextMenu, kindOf, liveSel, pointer, sceneGrade, selectElems, selectLoop, setDocView, setSceneHdri, useApp, view3d, type DocView, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
+import { topoOf, polygonsOf, trisOf } from '../topo';
+import { SceneSettings } from './SceneSettings';
+import { polyContextMenu } from '../shell/PolyTools';
+
+const checker = new THREE.CanvasTexture(checkerCanvas(1024));
+checker.colorSpace = THREE.SRGBColorSpace;
+checker.anisotropy = 8;
+
+/** Blender's selection orange, and its seam red. */
+export const SEL = '#ff8f1f', SEAM = '#e8402a';
+
+/** Floor centre and the longest side of the model, so the grid, axes and ground shadow share one frame. */
+function layoutOf(result: Output | null) {
+  if (!result?.parts.length) return { x: 0, y: 0, z: 0, span: 10 };
+  const bounds = new THREE.Box3();
+  for (const p of result.parts) bounds.union(new THREE.Box3().setFromArray(p.positions));
+  const center = bounds.getCenter(new THREE.Vector3()), size = bounds.getSize(new THREE.Vector3());
+  return { x: center.x, y: bounds.min.y, z: center.z, span: Math.max(size.x, size.y, size.z, 1) };
+}
+
+/** The solid colour owns the background until an environment plate takes it. Keeping both writers
+ *  made the plate flicker back to the flat colour on every slider move. */
+function Backdrop({ color }: { color: string }) {
+  const { scene, gl } = useThree();
+  useLayoutEffect(() => {
+    scene.background = new THREE.Color(color);
+    gl.setClearColor(color, 1);
+  }, [scene, gl, color]);
+  return null;
+}
+
+/** A plate that fails to load would otherwise take the canvas down with it. */
+class EnvBoundary extends Component<{ url: string; children: ReactNode }, { bad: boolean }> {
+  state = { bad: false };
+  static getDerivedStateFromError() { return { bad: true }; }
+  componentDidCatch(err: Error) {
+    useApp.setState({ error: err.message || 'Could not read that environment map' });
+    setSceneHdri(null);
+  }
+  render() { return this.state.bad ? null : this.props.children; }
+}
+
+/** No WebGL (the browser's graphics are off or crashed): say so in the view and keep the rest of the app running. */
+class ViewBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null };
+  static getDerivedStateFromError(e: Error) { return { error: (e.message || String(e)).replace(/\.+$/, '') }; }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="hint" style={{ padding: 16, lineHeight: 1.5 }}>
+        The 3D view couldn’t start: {this.state.error}.<br />
+        The browser’s graphics (WebGL) are off or crashed. Restart the browser; if it stays, check its GPU page
+        (about:support in Firefox, chrome://gpu in Chrome) or update the graphics driver.
+      </div>
+    );
+  }
+}
+
+function envProps(scene: Scene) {
+  const yaw = scene.hdriRotation;
+  return {
+    background: scene.hdriBackground,
+    environmentIntensity: scene.hdriStrength,
+    // The backdrop stays a little dimmer than the light on the model, so the subject separates from the sweep.
+    backgroundIntensity: scene.hdriBackground ? scene.hdriStrength * 0.62 : 0,
+    backgroundBlurriness: scene.hdriBackground ? scene.hdriBlur : 0,
+    environmentRotation: [0, yaw, 0] as [number, number, number],
+    backgroundRotation: [0, yaw, 0] as [number, number, number],
+  };
+}
+
+/** The loaded plate. `map` keeps drei from disposing it when a new one takes its place. */
+function Plate({ url, scene }: { url: string; scene: Scene }) {
+  const texture = useEnvironment({ files: url });
+  return <Environment map={texture} {...envProps(scene)} />;
+}
+
+/** Keep the plate that's already up while the next one loads, so the view doesn't drop to black. */
+function StudioEnvironment({ scene }: { scene: Scene }) {
+  const url = scene.hdriUrl;
+  const hold = useRef<string | null>(null);
+  if (!url) { hold.current = null; return null; }
+  return (
+    <Suspense fallback={hold.current ? <Plate url={hold.current} scene={scene} /> : null}>
+      <EnvBoundary key={url} url={url}>
+        <Remember url={url} hold={hold}><Plate url={url} scene={scene} /></Remember>
+      </EnvBoundary>
+    </Suspense>
+  );
+}
+/** Substance's default viewport (its material view): the model lit by a sunny environment alone (no lamps, no tone
+ *  curve) with its sun casting a shadow, so every plane reads light or dark by where it faces. Van Gogh, Studio, no plate. */
+function PaintStudio({ layout }: { layout: { x: number; y: number; z: number; span: number } }) {
+  const tex = useEnvironment({ files: PAINT_HDRI });
+  const { scene, invalidate } = useThree();
+  const sun = useMemo(() => new THREE.DirectionalLight('#ffffff'), []);
+  useApp((st) => st.paintRev); // `relight()` bumps it
+  useEffect(() => {
+    setEnv(tex);
+    scene.environment = tex;
+    scene.environmentIntensity = paintEnv.scale;
+    scene.environmentRotation.copy(paintEnv.rot);
+    useApp.setState((st) => ({ paintRev: st.paintRev + 1 })); // the texture view's Material mode can draw now
+    invalidate();
+    return () => { if (scene.environment === tex) { scene.environment = null; scene.environmentIntensity = 1; scene.environmentRotation.set(0, 0, 0); } };
+  }, [tex, scene, invalidate]);
+  // the sun from the key, its shadow camera round the model; the plate's turn and level as `relight` left them
+  sun.intensity = paintLook.sun;
+  scene.environmentIntensity = paintEnv.scale;
+  scene.environmentRotation.copy(paintEnv.rot);
+  const c = new THREE.Vector3(layout.x, layout.y + layout.span / 2, layout.z), r = layout.span;
+  sun.position.copy(c).addScaledVector(paintEnv.sun, r * 3);
+  sun.target.position.copy(c);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: r * 0.5, far: r * 6 });
+  sun.shadow.camera.updateProjectionMatrix();
+  sun.shadow.bias = -0.0004; sun.shadow.normalBias = r * 0.002;
+  return <><primitive object={sun} /><primitive object={sun.target} /></>;
+}
+function Remember({ url, hold, children }: { url: string; hold: { current: string | null }; children: ReactNode }) {
+  useLayoutEffect(() => { hold.current = url; }, [url, hold]);
+  return children;
+}
+
+
+/** Poly Doc's views, in the header and the Z pie. */
+export const DOC_VIEWS: [DocView, string, string][] = [
+  ['wire', 'Wire', 'Each polygon flat, with the wireframe: for working on the topology'],
+  ['smooth', 'Smooth', 'Smooth shaded, no wireframe: how the model will look'],
+  ['health', 'Health', 'Every face green (solid) through yellow to red (fix): an all-green model is ready to bake'],
+];
+
+/** Shift adds (toggles on a click), Ctrl takes away, else replace. */
+const opOf = (e: { shiftKey: boolean; ctrlKey: boolean }, click: boolean): SelOp => (e.shiftKey ? (click ? 'toggle' : 'add') : e.ctrlKey ? 'sub' : 'set');
+
+type Box = { x0: number; y0: number; x1: number; y1: number };
+const track = (e: React.PointerEvent) => { pointer.view = '3d'; pointer.x = e.clientX; pointer.y = e.clientY; };
+
+export function Viewport3D() {
+  const result = useApp((s) => s.result), rev = useApp((s) => s.rev), unfold = useApp((s) => s.unfold);
+  const scene = useApp((s) => s.scene), doc = useApp((s) => s.workspace === 'doc'), docView = useApp((s) => s.docView), paintWs = useApp((s) => s.workspace === 'paint');
+  const vis = useApp((s) => s.parts.map((p) => (p.visible ? '1' : '0')).join(''));
+  const layout = useMemo(() => layoutOf(result), [result]);
+  const studio = scene.lighting === 'studio' && !!scene.hdriUrl;
+  // Van Gogh in Studio lighting with no plate picked: Substance's material view (sunny environment, sun shadow, no lamps)
+  const paintStudio = paintWs && scene.lighting === 'studio' && !scene.hdriUrl;
+  const grade = sceneGrade(scene.hdriId);
+  const [box, setBox] = useState<Box | null>(null), [lasso, setLasso] = useState<[number, number][] | null>(null);
+  // the studio materials share these uniforms; every scene change re-renders this and redraws (Redraw)
+  studioUniforms.wbKey.value = scene.key; studioUniforms.wbAmbient.value = scene.ambient;
+  studioUniforms.wbExposure.value = scene.exposure; studioUniforms.wbUseSpec.value = scene.specular;
+  return (
+    <section className="view">
+      <header className="vbar">
+        <span className="caps">3D</span>
+        <span className="hint">{paintWs ? 'Ctrl+click picks a part · Alt+click picks a colour · middle drag orbits, Shift+middle pans' : 'Click selects · drag boxes · middle drag orbits, Shift+middle pans'}</span>
+        {paintWs ? null : doc ? (
+          <span className="seg" role="group" aria-label="View (hold Z)">
+            {DOC_VIEWS.map(([v, label, title]) => <button key={v} aria-pressed={docView === v} title={`${title} (hold Z)`} onClick={() => setDocView(v)}>{label}</button>)}
+          </span>
+        ) : (
+          <label className="slider">
+            Unfold
+            <input type="range" min={0} max={1} step={0.01} value={unfold} aria-label="Unfold" onChange={(e) => useApp.setState({ unfold: +e.target.value })} />
+          </label>
+        )}
+        <SceneSettings />
+      </header>
+      <div className="vbody" onPointerMove={track} onPointerDown={track} onContextMenu={(e) => { e.preventDefault(); if (doc) polyContextMenu(); else contextMenu(); }}>
+        {/* drawn only when something changed (orbit, a store update), not 60 times a second: an idle view costs no GPU */}
+        <ViewBoundary>
+        <Canvas shadows frameloop="demand" camera={{ position: [2.2, 1.6, 3], fov: 45 }} dpr={[1, 2]}
+          onPointerMissed={(e) => e.button === 0 && !e.shiftKey && !e.ctrlKey && clearSelection()}>
+          <Backdrop color={scene.bg === 'custom' ? scene.background : THEME_BG} />
+          {/* Workspace lights stay as they were. A plate takes over: a warm or cool fill at the slider's
+              level, plus one front-left lamp, and the map does the rest of the room. */}
+          <hemisphereLight color={studio ? grade.sky : '#ffffff'} groundColor={studio ? grade.ground : '#333344'} intensity={paintStudio ? 0 : scene.ambient} />
+          <directionalLight position={studio ? [-0.4, 7.9, 6.1] : [3, 4, 5]} intensity={paintStudio ? 0 : scene.key} color={studio ? grade.keyColor : '#ffffff'} />
+          <RendererExposure exposure={scene.exposure} />
+          {scene.lighting === 'studio' && <StudioEnvironment scene={scene} />}
+          {paintStudio && <Suspense fallback={null}><PaintStudio layout={layout} /></Suspense>}
+          <gridHelper key={`grid${layout.span}`} visible={scene.showGrid} position={[layout.x, layout.y, layout.z]} args={[layout.span * 3, 20, '#59616b', '#343a42']} />
+          <axesHelper key={`axes${layout.span}`} visible={scene.showAxes} position={[layout.x, layout.y, layout.z]} args={[layout.span * 0.55]} />
+          {scene.shadow && unfold === 0 && result && (
+            <ContactShadows key={`${rev}:${vis}`} position={[layout.x, layout.y, layout.z]} scale={layout.span * 2.6} far={layout.span * 1.25} blur={2.6} opacity={scene.shadowAmount} resolution={1024} frames={1} color={studio ? '#1c140f' : '#000000'} />
+          )}
+          {result && (
+            <Bounds key={rev} fit margin={1.25}>
+              <Model result={result} unfold={unfold} studio={studio} wireframe={scene.wireframe} showEdges={scene.showEdges} showVertices={scene.showVertices} showSeams={scene.showSeams} />
+            </Bounds>
+          )}
+          {paintWs && <BrushCursor />}
+          {/* the wheel zooms toward what's under the mouse (Blender's Zoom to Mouse Position), about 14% a notch (three's default 5% felt stuck on a big FBX), with no limit either way */}
+          <OrbitControls makeDefault zoomToCursor zoomSpeed={3} minDistance={0} maxDistance={Infinity} mouseButtons={{ LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: -1 as THREE.MOUSE }} />
+          <ClipPlanes span={layout.span} />
+          <Redraw />
+          <Workbench curvature={scene.cavity && scene.cavityType !== 'world'} cavity={scene.cavity && scene.cavityType !== 'screen'} ridge={scene.ridge} valley={scene.valley}
+            distance={scene.cavityDistance} span={layout.span} toneMap={paintStudio ? false : !(scene.lighting === 'studio' && !studio)} />
+          <Navigation setBox={setBox} setLasso={setLasso} />
+        </Canvas>
+        </ViewBoundary>
+        {lasso && <svg className="lassosel"><polygon points={lasso.map((p) => p.join(',')).join(' ')} /></svg>}
+        {box && <div className="boxsel" style={{ left: Math.min(box.x0, box.x1), top: Math.min(box.y0, box.y1), width: Math.abs(box.x1 - box.x0), height: Math.abs(box.y1 - box.y0) }} />}
+      </div>
+    </section>
+  );
+}
+
+type Controls = { target: THREE.Vector3; update: () => void; enabled: boolean };
+
+/** Near and far follow the camera every frame, from how far it is from what it looks at and how big the model is: close
+ *  up nothing gets sliced off by the near plane, far out nothing drops past the far one (a fixed pair, set once when
+ *  framing, cut the model away as you zoomed in on a big FBX). */
+function ClipPlanes({ span }: { span: number }) {
+  const { camera, controls } = useThree() as unknown as { camera: THREE.PerspectiveCamera; controls: Controls | null };
+  useFrame(() => {
+    const d = controls ? camera.position.distanceTo(controls.target) : camera.position.length();
+    const near = Math.max(d / 500, span * 1e-6, 1e-6), far = Math.max(d * 4 + span * 4, near * 10);
+    if (Math.abs(camera.near - near) > near * 0.05 || Math.abs(camera.far - far) > far * 0.05) {
+      camera.near = near; camera.far = far; camera.updateProjectionMatrix();
+    }
+  });
+  return null;
+}
+
+/** Effects write geometry and textures straight into three (positions, UVs, colours): any store change asks for a frame. */
+function Redraw() {
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => useApp.subscribe(() => invalidate()), [invalidate]);
+  return null;
+}
+
+/** Blender's Workbench resolve, every frame: the view drawn to a buffer (linear colour), the part meshes' view-space
+ *  normals, ids and depth to another, then per pixel World cavity (workbench_cavity: Alchemy SSAO, 16 disk samples a
+ *  frame) and Screen curvature (workbench_curvature: normals a pixel apart, soft-clamped), applied as Blender does on
+ *  the linear colour: × clamp((1 − cavity)(1 + edges)(1 + curvature), 0, 4). While nothing changes it draws TAA − 1
+ *  more frames, each jittered under a pixel and with the next 16 cavity samples, and averages them (Blender's TAA):
+ *  edges come out smooth and the cavity without noise. Lengths are in halves of the model (Blender's default cube). */
+const TAA = 8, SSAO = 16;
+const halton = (i: number, b: number) => { let f = 1, r = 0; for (; i > 0; i = Math.floor(i / b)) { f /= b; r += f * (i % b); } return r; };
+// Blender's disk samples (load_samples_buf): Hammersley angle, radius stepped so each frame's 16 cover the disk
+const DISK = Array.from({ length: TAA * SSAO }, (_, i) => {
+  const add = Math.floor(i / SSAO) * 0.499, r = ((i + 0.5 + add) / SSAO) % 1, phi = halton(i, 2) * 2 * Math.PI + add;
+  return new THREE.Vector3(Math.cos(phi), Math.sin(phi), r);
+});
+const QUAD_VERT = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
+const RESOLVE_FRAG = /* glsl */ `
+uniform sampler2D color, normals, depth, prev;
+uniform vec3 disk[${TAA * SSAO}];
+uniform int start;
+uniform float blend, curvRidge, curvValley, cavRidge, cavValley, dist, unit, curvWidth, dpr;
+uniform bool useCurv, useCav;
+uniform vec2 px;
+uniform mat4 proj, projInv;
+varying vec2 vUv;
+float softClamp(float c, float k) { return c < 0.5 / k ? c * (1.0 - c * k) : 0.25 / k; }
+vec3 toView(vec2 uv, float d) { vec4 v = projInv * vec4(vec3(uv, d) * 2.0 - 1.0, 1.0); return v.xyz / v.w; }
+void main() {
+  vec3 c = texture2D(color, vUv).rgb;
+  vec4 nd = texture2D(normals, vUv);
+  if (nd.a > 0.0) {
+    float cav = 0.0, edges = 0.0, curv = 0.0;
+    if (useCav) {
+      float d = texture2D(depth, vUv).r;
+      vec3 P = toView(vUv, d), N = nd.xyz;
+      // per-pixel rotation and radius offset (Blender: a blue-noise texture; here interleaved gradient noise)
+      float a = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+      float b = clamp(fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5, -0.499, 0.499) / ${TAA * SSAO}.0;
+      vec2 rotX = vec2(cos(a), sin(a)), rotY = vec2(-rotX.y, rotX.x);
+      vec2 off = vec2(proj[0][0], proj[1][1]) * dist * unit / (proj[2][3] * P.z + proj[3][3]) * 0.5;
+      for (int i = 0; i < ${SSAO}; i++) {
+        vec3 s = disk[start + i];
+        vec2 uv = vUv + vec2(dot(s.xy, rotX), dot(s.xy, rotY)) * (s.z + b) * off;
+        if (any(greaterThan(abs(uv - 0.5), vec2(0.5)))) continue;
+        float sd = texture2D(depth, uv).r;
+        bool bg = sd == 1.0;
+        vec3 sp = toView(uv, bg ? d : sd);
+        if (bg) sp.z -= dist * unit;
+        vec3 dir = (sp - P) / unit;
+        float len = length(dir);
+        if (len < 1e-6) continue;
+        float fc = dot(dir, N), bias = 0.05 * len + 0.0001, att = 1.0 / (len * (1.0 + len * len));
+        if (fc > -bias) cav += fc * att;
+        if (-fc > bias) edges -= fc * att;
+      }
+      cav = clamp(cav / ${SSAO}.0 * cavValley, 0.0, 1.0);
+      edges = edges / ${SSAO}.0 * cavRidge;
+    }
+    if (useCurv) {
+      // Blender samples 1 px apart, which fades as you zoom in (a bevel spreads over many pixels); here the spacing is
+      // a fixed share of the model on screen, never under 1 px (Blender's look when it's small) nor over 4 px
+      float z = -toView(vUv, texture2D(depth, vUv).r).z;
+      vec2 o = px * clamp(curvWidth * unit * proj[1][1] * 0.5 / (z * px.y), dpr, 4.0 * dpr);
+      vec4 u = texture2D(normals, vUv + vec2(0.0, o.y)), dn = texture2D(normals, vUv - vec2(0.0, o.y));
+      vec4 r = texture2D(normals, vUv + vec2(o.x, 0.0)), l = texture2D(normals, vUv - vec2(o.x, 0.0));
+      if (u.a == dn.a && r.a == l.a && !(u.a == 0.0 && r.a == 0.0)) {
+        float diff = (u.y - dn.y) + (r.x - l.x);
+        curv = diff < 0.0 ? -2.0 * softClamp(-diff, curvValley) : 2.0 * softClamp(diff, curvRidge);
+      }
+    }
+    c *= clamp((1.0 - cav) * (1.0 + edges) * (1.0 + curv), 0.0, 4.0);
+  }
+  gl_FragColor = vec4(mix(texture2D(prev, vUv).rgb, c, blend), 1.0);
+}`;
+const BLIT_FRAG = 'uniform sampler2D tex; varying vec2 vUv; void main() { gl_FragColor = texture2D(tex, vUv);\n#include <tonemapping_fragment>\n#include <colorspace_fragment>\n}';
+
+function Workbench({ curvature, cavity, ridge, valley, distance, span, toneMap }: { curvature: boolean; cavity: boolean; ridge: number; valley: number; distance: number; span: number; toneMap: boolean }) {
+  const { gl, scene, camera, size, invalidate } = useThree();
+  const res = useMemo(() => {
+    const half = { type: THREE.HalfFloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter };
+    const color = new THREE.WebGLRenderTarget(1, 1, { ...half, samples: 4 });
+    // 24-bit depth: a float depth texture beside a half-float colour isn't a framebuffer every driver takes
+    const normalRT = new THREE.WebGLRenderTarget(1, 1, { ...half, depthTexture: new THREE.DepthTexture(1, 1, THREE.UnsignedIntType) });
+    const accum = [new THREE.WebGLRenderTarget(1, 1, half), new THREE.WebGLRenderTarget(1, 1, half)];
+    const normals = new THREE.ShaderMaterial({
+      uniforms: { id: { value: 0 } }, side: THREE.DoubleSide,
+      vertexShader: 'varying vec3 vN; void main() { vN = normalMatrix * normal; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform float id; varying vec3 vN; void main() { vec3 n = normalize(vN) * (gl_FrontFacing ? 1.0 : -1.0); gl_FragColor = vec4(n, id); }',
+    });
+    const resolve = new THREE.ShaderMaterial({
+      uniforms: {
+        color: { value: color.texture }, normals: { value: normalRT.texture }, depth: { value: normalRT.depthTexture }, prev: { value: null },
+        disk: { value: DISK }, start: { value: 0 }, blend: { value: 1 }, curvRidge: { value: 0.5 }, curvValley: { value: 0.7 }, cavRidge: { value: 1 }, cavValley: { value: 1 },
+        // curvature spacing in halves of the model: 1 px when the model spans ~330 px, the size that looked right
+        dist: { value: 0.2 }, unit: { value: 1 }, curvWidth: { value: 0.006 }, dpr: { value: 1 }, useCurv: { value: false }, useCav: { value: false }, px: { value: new THREE.Vector2() },
+        proj: { value: new THREE.Matrix4() }, projInv: { value: new THREE.Matrix4() },
+      },
+      depthTest: false, depthWrite: false, vertexShader: QUAD_VERT, fragmentShader: RESOLVE_FRAG,
+    });
+    const blit = new THREE.ShaderMaterial({ uniforms: { tex: { value: null } }, depthTest: false, depthWrite: false, vertexShader: QUAD_VERT, fragmentShader: BLIT_FRAG });
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), resolve);
+    quad.frustumCulled = false;
+    return { color, normalRT, accum, normals, resolve, blit, quad, ortho: new THREE.Camera() };
+  }, []);
+  useEffect(() => () => {
+    for (const t of [res.color, res.normalRT, ...res.accum]) t.dispose();
+    res.normalRT.depthTexture?.dispose();
+    for (const m of [res.normals, res.resolve, res.blit]) m.dispose();
+    res.quad.geometry.dispose();
+  }, [res]);
+  // a change to any of these starts the accumulation again (the store subscription catches the rest)
+  const st = useRef({ k: 0, ours: false, dirty: true, checked: false, view: new THREE.Matrix4(), proj: new THREE.Matrix4() });
+  useEffect(() => useApp.subscribe(() => { st.current.dirty = true; }), []);
+  useEffect(() => {
+    const u = res.resolve.uniforms;
+    // Blender: curvature control = 0.5 / ridge², 0.7 / valley²; the cavity factors as they are
+    u.curvRidge.value = 0.5 / Math.max(ridge * ridge, 1e-4); u.curvValley.value = 0.7 / Math.max(valley * valley, 1e-4);
+    u.cavRidge.value = ridge; u.cavValley.value = valley; u.dist.value = distance; u.unit.value = span / 2;
+    u.useCurv.value = curvature; u.useCav.value = cavity;
+    if (res.blit.toneMapped !== toneMap) { res.blit.toneMapped = toneMap; res.blit.needsUpdate = true; }
+    st.current.dirty = true;
+    invalidate();
+  }, [res, ridge, valley, distance, span, curvature, cavity, toneMap, invalidate]);
+
+  // priority 1: the frame's drawing is ours
+  useFrame(() => {
+    const s = st.current, dpr = gl.getPixelRatio(), W = Math.round(size.width * dpr), H = Math.round(size.height * dpr);
+    if (res.color.width !== W || res.color.height !== H) { for (const t of [res.color, res.normalRT, ...res.accum]) t.setSize(W, H); s.dirty = true; }
+    camera.updateMatrixWorld();
+    if (!s.ours || s.dirty || !s.view.equals(camera.matrixWorldInverse) || !s.proj.equals(camera.projectionMatrix)) s.k = 0;
+    s.ours = false; s.dirty = false;
+    s.view.copy(camera.matrixWorldInverse); s.proj.copy(camera.projectionMatrix);
+    const k = s.k, P = camera.projectionMatrix as THREE.Matrix4, Pi = (camera as THREE.PerspectiveCamera).projectionMatrixInverse;
+    const keep = P.clone(), keepInv = Pi.clone();
+    // under a pixel: Halton (2, 3), the first frame unjittered
+    if (k > 0) { P.elements[8] += ((halton(k + 1, 2) - 0.5) * 2) / W; P.elements[9] += ((halton(k + 1, 3) - 0.5) * 2) / H; Pi.copy(P).invert(); }
+
+    gl.setRenderTarget(res.color); gl.render(scene, camera);
+    if (curvature || cavity) {
+      // each part mesh its own id, so a part's outline against another doesn't draw as an edge
+      let id = 0;
+      const tagged: [THREE.Object3D, THREE.Object3D['onBeforeRender']][] = [];
+      scene.traverse((o) => {
+        if (!(o instanceof THREE.Mesh) || !o.layers.isEnabled(SOLID)) return;
+        const mine = ++id;
+        tagged.push([o, o.onBeforeRender]);
+        o.onBeforeRender = () => { res.normals.uniforms.id.value = mine; res.normals.uniformsNeedUpdate = true; };
+      });
+      const [over, bg, layers, clear, alpha] = [scene.overrideMaterial, scene.background, camera.layers.mask, gl.getClearColor(new THREE.Color()), gl.getClearAlpha()];
+      scene.overrideMaterial = res.normals; scene.background = null; camera.layers.set(SOLID);
+      gl.setRenderTarget(res.normalRT); gl.setClearColor(0x000000, 0); gl.clear(); gl.render(scene, camera);
+      if (!s.checked) {
+        s.checked = true;
+        const c = gl.getContext(), status = c.checkFramebufferStatus(c.FRAMEBUFFER);
+        if (status !== c.FRAMEBUFFER_COMPLETE) console.warn(`Cavity: this GPU won't draw the normals buffer (framebuffer status 0x${status.toString(16)}), so there is no cavity`);
+      }
+      scene.overrideMaterial = over; scene.background = bg; camera.layers.mask = layers; gl.setClearColor(clear, alpha);
+      for (const [o, f] of tagged) o.onBeforeRender = f;
+    } else { gl.setRenderTarget(res.normalRT); gl.clear(); }
+
+    const u = res.resolve.uniforms, [read, write] = [res.accum[k % 2], res.accum[(k + 1) % 2]];
+    u.proj.value.copy(P); u.projInv.value.copy(Pi); u.start.value = (k % TAA) * SSAO; u.blend.value = 1 / (k + 1);
+    u.prev.value = read.texture; u.px.value.set(1 / W, 1 / H); u.dpr.value = dpr;
+    res.quad.material = res.resolve; gl.setRenderTarget(write); gl.render(res.quad, res.ortho);
+    res.blit.uniforms.tex.value = write.texture;
+    res.quad.material = res.blit; gl.setRenderTarget(null); gl.render(res.quad, res.ortho);
+
+    P.copy(keep); Pi.copy(keepInv);
+    if (k + 1 < TAA) { s.k = k + 1; s.ours = true; invalidate(); }
+  }, 1);
+  return null;
+}
+
+function RendererExposure({ exposure }: { exposure: number }) {
+  const gl = useThree((s) => s.gl);
+  useEffect(() => { gl.toneMapping = THREE.ACESFilmicToneMapping; gl.toneMappingExposure = exposure; }, [gl, exposure]);
+  return null;
+}
+
+/** Camera keys (frame, numpad views and steps) and the left-drag box select. */
+function Navigation({ setBox, setLasso }: { setBox: (b: Box | null) => void; setLasso: (p: [number, number][] | null) => void }) {
+  const { camera, gl, scene, controls } = useThree() as unknown as { camera: THREE.PerspectiveCamera; gl: THREE.WebGLRenderer; scene: THREE.Scene; controls: Controls | null };
+  const viewReq = useApp((s) => s.viewReq);
+  const first = useRef(viewReq.n);
+  // tools that drag in 3D (Poly Doc's G) turn mouse pixels into world units at a point's depth, in the camera's plane
+  useEffect(() => {
+    const fn = (dx: number, dy: number, at: [number, number, number]) => {
+      const per = (2 * camera.position.distanceTo(new THREE.Vector3(...at)) * Math.tan((camera.fov * Math.PI) / 360)) / (gl.domElement.clientHeight || 1);
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0), up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+      return right.multiplyScalar(dx * per).add(up.multiplyScalar(-dy * per)).toArray() as [number, number, number];
+    };
+    view3d.worldDelta = fn;
+    // switching tools mounts the new view before the old 3D scene finishes unmounting: only take back our own hook
+    return () => { if (view3d.worldDelta === fn) view3d.worldDelta = null; };
+  }, [camera, gl]);
+
+  useEffect(() => {
+    if (!controls || viewReq.view !== '3d' || viewReq.n === first.current) return;
+    look(camera, controls, viewReq.op);
+  }, [viewReq, camera, controls]);
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const down = (e: PointerEvent) => {
+      const s = useApp.getState();
+      if (s.workspace === 'paint') return paintShape(e);
+      if (e.button !== 0 || e.altKey || s.unfold > 0 || !s.result) return;
+      if (s.boxArmed) useApp.setState({ boxArmed: false });
+      const r = el.getBoundingClientRect(), x0 = e.clientX - r.left, y0 = e.clientY - r.top;
+      let b: Box | null = null;
+      const move = (m: PointerEvent) => {
+        const x1 = m.clientX - r.left, y1 = m.clientY - r.top;
+        if (!b && Math.hypot(x1 - x0, y1 - y0) < 5) return;
+        b = { x0, y0, x1, y1 };
+        setBox(b);
+      };
+      const up = (u: PointerEvent) => {
+        removeEventListener('pointermove', move);
+        removeEventListener('pointerup', up);
+        setBox(null);
+        if (b) boxSelect(camera, r.width, r.height, b, opOf(u, false), depthOf(gl, scene, camera, r.width, r.height, b));
+      };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+    };
+    // Van Gogh's Marquee and Lasso on the model: drag a rectangle or a free shape; what's inside it on screen and seen
+    // (not hidden behind other surface) is selected, texel by texel. A click without a drag deselects, as in Photoshop.
+    const paintShape = (e: PointerEvent) => {
+      const tool = useApp.getState().paint.tool;
+      if (e.button !== 0 || e.ctrlKey || (tool !== 'marquee' && tool !== 'lasso') || !useApp.getState().result) return;
+      const r = el.getBoundingClientRect(), x0 = e.clientX - r.left, y0 = e.clientY - r.top, mods: PaintMods = { shift: e.shiftKey, alt: e.altKey, ctrl: false };
+      let pts: [number, number][] = [[x0, y0]];
+      const move = (m: PointerEvent) => {
+        const x = m.clientX - r.left, y = m.clientY - r.top;
+        pts = tool === 'marquee' ? [[x0, y0], [x, y0], [x, y], [x0, y]] : [...pts, [x, y]];
+        setLasso(pts);
+      };
+      const up = () => {
+        removeEventListener('pointermove', move);
+        removeEventListener('pointerup', up);
+        setLasso(null);
+        const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+        if (pts.length < 3 || Math.max(...xs) - Math.min(...xs) + Math.max(...ys) - Math.min(...ys) < 4) { if (!mods.shift && !mods.alt) deselectPaint(); return; }
+        const seen = depthOf(gl, scene, camera, r.width, r.height, { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) });
+        const v = new THREE.Vector3();
+        selectPaintOnModel((x, y, z) => {
+          v.set(x, y, z).project(camera);
+          const sx = ((v.x + 1) / 2) * r.width, sy = ((1 - v.y) / 2) * r.height;
+          return v.z < 1 && inside(pts, sx, sy) && seen(sx, sy, v.z);
+        }, mods);
+      };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+    };
+    el.addEventListener('pointerdown', down);
+    return () => el.removeEventListener('pointerdown', down);
+  }, [gl, scene, camera, setBox, setLasso]);
+  return null;
+}
+
+const AXES: Partial<Record<ViewOp, [number, number, number]>> = {
+  front: [0, 0, 1], back: [0, 0, -1], right: [1, 0, 0], left: [-1, 0, 0], top: [0, 1, 1e-4], bottom: [0, -1, 1e-4],
+};
+
+/** Frame everything or the selection, look along an axis, or orbit 15° (numpad 4 6 8 2). */
+function look(camera: THREE.PerspectiveCamera, controls: Controls, op: ViewOp) {
+  const target = controls.target, offset = camera.position.clone().sub(target), step = Math.PI / 12;
+  if (op === 'all' || op === 'selected') {
+    const pts = framePoints(op === 'selected');
+    if (!pts.length) return;
+    const sphere = new THREE.Box3().setFromArray(pts).getBoundingSphere(new THREE.Sphere());
+    const r = Math.max(sphere.radius, 1e-3), dist = (r / Math.sin((camera.fov * Math.PI) / 360)) * 1.1;
+    target.copy(sphere.center);
+    camera.position.copy(sphere.center).addScaledVector(offset.normalize(), dist);
+    // near and far follow from here every frame (ClipPlanes)
+  } else if (AXES[op]) {
+    camera.position.copy(target).addScaledVector(new THREE.Vector3(...AXES[op]!).normalize(), offset.length());
+  } else if (op === 'orbit-left' || op === 'orbit-right') {
+    offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), op === 'orbit-left' ? -step : step);
+    camera.position.copy(target).add(offset);
+  } else {
+    const right = new THREE.Vector3().crossVectors(camera.up, offset).normalize();
+    const turned = offset.clone().applyAxisAngle(right, op === 'orbit-up' ? -step : step);
+    if (Math.abs(turned.clone().normalize().y) < 0.999) camera.position.copy(target).add(turned);
+  }
+  camera.lookAt(target);
+  controls.update();
+}
+
+/** World points to frame: the selected vertices, or every visible part. */
+function framePoints(selected: boolean): number[] {
+  const s = useApp.getState(), c = liveSel(s);
+  if (selected && c?.verts.size) {
+    const t = topoOf(c.of), out: number[] = [];
+    for (const v of c.verts) out.push(t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]);
+    return out;
+  }
+  return s.result ? s.result.parts.flatMap((p, i) => (s.parts[i]?.visible ? p.positions : [])) : [];
+}
+
+/** Layer the part meshes are also on, so the depth pass draws just them. */
+const SOLID = 1;
+/** The model's depth as the camera sees it (one pass of the part meshes), as a test: is this point in front, not
+ *  hidden behind another surface? Box select leaves hidden elements alone, as Blender does outside X-ray. */
+function depthOf(gl: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, w: number, h: number, b: Box) {
+  const dpr = gl.getPixelRatio(), W = Math.max(1, Math.round(w * dpr)), H = Math.max(1, Math.round(h * dpr));
+  // plain depth in a float target (1 − z, so the cleared black reads as far)
+  const rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.FloatType }), mat = new THREE.MeshDepthMaterial({ depthPacking: THREE.BasicDepthPacking, side: THREE.DoubleSide });
+  const [over, bg, layers, clear, alpha] = [scene.overrideMaterial, scene.background, camera.layers.mask, gl.getClearColor(new THREE.Color()), gl.getClearAlpha()];
+  scene.overrideMaterial = mat; scene.background = null; camera.layers.set(SOLID);
+  gl.setRenderTarget(rt); gl.setClearColor(0x000000, 1); gl.clear(); gl.render(scene, camera); gl.setRenderTarget(null);
+  scene.overrideMaterial = over; scene.background = bg; camera.layers.mask = layers; gl.setClearColor(clear, alpha);
+  // read back just the box (and a little round it): the readback is what costs
+  const clampX = (x: number) => Math.min(W, Math.max(0, x)), clampY = (y: number) => Math.min(H, Math.max(0, y));
+  const x0 = clampX(Math.floor(Math.min(b.x0, b.x1) * dpr) - 2), x1 = clampX(Math.ceil(Math.max(b.x0, b.x1) * dpr) + 2);
+  const y0 = clampY(Math.floor(Math.min(b.y0, b.y1) * dpr) - 2), y1 = clampY(Math.ceil(Math.max(b.y0, b.y1) * dpr) + 2);
+  const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0), buf = new Float32Array(rw * rh * 4);
+  gl.readRenderTargetPixels(rt, x0, H - y1, rw, rh, buf);
+  rt.dispose(); mat.dispose();
+  const at = (x: number, y: number) => (x < x0 || x >= x1 || y < y0 || y >= y1 ? 1 : 1 - buf[((y1 - 1 - y) * rw + (x - x0)) * 4]);
+  // in front if no surface within a pixel of it lies nearer (a vertex sits on its own faces' depth)
+  return (sx: number, sy: number, z: number) => {
+    const px = Math.round(sx * dpr), py = Math.round(sy * dpr);
+    let far = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const x = px + dx, y = py + dy;
+      if (x >= 0 && y >= 0 && x < W && y < H) far = Math.max(far, at(x, y));
+    }
+    return (z + 1) / 2 <= far + 1e-4;
+  };
+}
+
+/** Box select: the mode's elements whose vertices (faces: centres) project inside the box and aren't hidden, on the
+ *  part with most. */
+function boxSelect(camera: THREE.Camera, w: number, h: number, b: Box, op: SelOp, seen: (sx: number, sy: number, z: number) => boolean) {
+  const s = useApp.getState(), kind = kindOf(s.selectMode), [x0, x1] = [Math.min(b.x0, b.x1), Math.max(b.x0, b.x1)], [y0, y1] = [Math.min(b.y0, b.y1), Math.max(b.y0, b.y1)];
+  const v = new THREE.Vector3(), inside = (x: number, y: number, z: number) => {
+    v.set(x, y, z).project(camera);
+    const sx = ((v.x + 1) / 2) * w, sy = ((1 - v.y) / 2) * h;
+    return v.z < 1 && sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1 && seen(sx, sy, v.z);
+  };
+  let best: { part: number; ids: number[] } | null = null;
+  s.result?.parts.forEach((p, part) => {
+    if (!s.parts[part]?.visible) return;
+    const t = topoOf(p.positions), vin = new Uint8Array(t.nv), ids: number[] = [];
+    for (let i = 0; i < t.nv; i++) vin[i] = +inside(t.pos[i * 3], t.pos[i * 3 + 1], t.pos[i * 3 + 2]);
+    if (kind === 'verts') for (let i = 0; i < t.nv; i++) { if (vin[i]) ids.push(i); }
+    else if (kind === 'edges') for (let e = 0; e < t.ends.length / 2; e++) { if (vin[t.ends[e * 2]] && vin[t.ends[e * 2 + 1]]) ids.push(e); }
+    else for (let f = 0; f < t.vid.length / 3; f++) {
+      const q = p.positions, o = f * 9;
+      if (inside((q[o] + q[o + 3] + q[o + 6]) / 3, (q[o + 1] + q[o + 4] + q[o + 7]) / 3, (q[o + 2] + q[o + 5] + q[o + 8]) / 3)) ids.push(f);
+    }
+    if (ids.length && (!best || ids.length > best.ids.length)) best = { part, ids };
+  });
+  const hit = best as { part: number; ids: number[] } | null;
+  if (hit) selectElems(hit.part, hit.ids, op);
+  else if (op === 'set') clearSelection();
+}
+
+function Model({ result, unfold, studio, wireframe, showEdges, showVertices, showSeams }: { result: Output; unfold: number; studio: boolean; wireframe: boolean; showEdges: boolean; showVertices: boolean; showSeams: boolean }) {
+  const parts = useApp((s) => s.parts), mode = useApp((s) => s.mode), textureResolution = useApp((s) => s.textureResolution);
+  useEffect(() => { checker.image = checkerCanvas(textureResolution); checker.needsUpdate = true; }, [textureResolution]);
+  // one shared frame for the flat layout: the UV square, sized to the whole model
+  const frame = useMemo(() => {
+    const box = new THREE.Box3();
+    for (const p of result.parts) box.union(new THREE.Box3().setFromArray(p.positions));
+    return box.getBoundingSphere(new THREE.Sphere());
+  }, [result]);
+  return <>{result.parts.map((p, i) => parts[i]?.visible && <PartMesh key={i} index={i} result={result} part={parts[i]} frame={frame} mode={mode} unfold={unfold} studio={studio} wireframe={wireframe} showEdges={showEdges} showVertices={showVertices} showSeams={showSeams} />)}</>;
+}
+
+function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe, showEdges, showVertices, showSeams }: { index: number; result: Output; part: Part; frame: THREE.Sphere; mode: Mode; unfold: number; studio: boolean; wireframe: boolean; showEdges: boolean; showVertices: boolean; showSeams: boolean }) {
+  const out = result.parts[index];
+  const uvs = useApp((s) => s.uvs[index]), uvRev = useApp((s) => s.uvRev), loading = useApp((s) => s.loading);
+  const selectMode = useApp((s) => s.selectMode), csel = useApp((s) => liveSel(s)), sel = csel?.part === index ? csel : null;
+  // Poly Doc: plain grey and the wire always on, as Blender's edit mode shows a mesh
+  const doc = useApp((s) => s.workspace === 'doc'), paint = useApp((s) => s.workspace === 'paint');
+  useApp((s) => (paint ? s.paintRev : 0)); // a layer or channel change redraws
+  const paintAO = useApp((s) => s.paintAO);
+  const ts = paint ? texSet(index) : null, pbr = !!ts?.channels.includes('rough');
+  const docView = useApp((s) => (s.workspace === 'doc' ? s.docView : null)), smooth = docView === 'smooth' || paint, // Van Gogh shades smooth, as the game (and Substance) will
+    sharp = useApp((s) => s.params.sharp);
+  const uvReady = !loading || !!loading.done[index];
+  const invalidate = useThree((s) => s.invalidate);
+
+  const { geo, p3, stretch, islands } = useMemo(() => {
+    const p3 = new Float32Array(out.positions), geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(p3.slice(), 3));
+    const perCorner = (f: (t: number) => [number, number, number]) => {
+      const a = new Float32Array(p3.length);
+      for (let t = 0; t < out.stretch.length; t++) { const rgb = f(t); for (let k = 0; k < 3; k++) a.set(rgb, t * 9 + k * 3); }
+      return new THREE.BufferAttribute(a, 3);
+    };
+    return { geo, p3, stretch: perCorner((t) => stretchColor(out.stretch[t])), islands: perCorner((t) => islandColor(out.island[t])) };
+  }, [out]);
+  useEffect(() => () => geo.dispose(), [geo]);
+
+  // the unfold morph: built when first needed, rebuilt when the layout changes
+  const morph = useRef<{ key: unknown[]; m: Morph } | null>(null);
+  // the unfold the normals were last computed at
+  const shaded = useRef(0);
+  // positions: on the model, or (unfold) rolled out toward the UV layout laid flat
+  useEffect(() => {
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    const pos = geo.attributes.position.array as Float32Array;
+    if (unfold === 0) pos.set(p3);
+    else {
+      const key = [p3, uvs, uvRev, frame];
+      if (!morph.current || morph.current.key.some((k, i) => k !== key[i])) {
+        const { center: c, radius: r } = frame, flat = new Float32Array(p3.length);
+        for (let i = 0; i < p3.length / 3; i++) {
+          flat[i * 3] = c.x + (uvs[i * 2] - 0.5) * 2.4 * r;
+          flat[i * 3 + 1] = c.y + (uvs[i * 2 + 1] - 0.5) * 2.4 * r;
+          flat[i * 3 + 2] = c.z;
+        }
+        morph.current = { key, m: new Morph(p3, flat, uvs) };
+      }
+      morph.current.m.at(unfold, pos);
+    }
+    geo.attributes.position.needsUpdate = true;
+    // normals follow the positions: a UV edit alone (most of them) leaves them as they are
+    if (unfold !== 0 || !geo.attributes.normal || shaded.current !== 0) { geo.computeVertexNormals(); shaded.current = unfold; }
+    invalidate();
+  }, [geo, p3, uvs, uvRev, frame, unfold, invalidate]);
+
+  // Poly Doc's Health view: each face green (solid) to red (fix)
+  const healthy = docView === 'health' && uvReady;
+  const healthAttr = useMemo(() => {
+    if (!healthy) return null;
+    const g = { soup: part.soup, ...(part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9)) };
+    const score = health(out, g), a = new Float32Array(out.positions.length);
+    for (let t = 0; t < score.length; t++) { const rgb = healthColor(score[t]); for (let k = 0; k < 3; k++) a.set(rgb, t * 9 + k * 3); }
+    return new THREE.BufferAttribute(a, 3);
+  }, [healthy, out, part.soup, part.poly, part.sides]);
+  // the faces' colour: the view's colour mode (Blender's Color); cavity is a screen pass (Workbench)
+  const sc = useApp((s) => s.scene), docColor = useApp((s) => s.docColor);
+  const colour = paint ? 'paint' : doc ? (healthy ? 'health' : docColor) : mode;
+  const colorAttr = useMemo(() => {
+    if (!uvReady) return null;
+    const n = out.positions.length / 3, a = new Float32Array(n * 3);
+    const base = colour === 'health' ? healthAttr?.array : colour === 'islands' ? islands.array : colour === 'stretch' ? stretch.array : null;
+    const plain = colour === 'random' ? islandColor(index * 5 + 2) : colour === 'single' ? [0.8, 0.8, 0.8] : [1, 1, 1]; // Blender's Single default
+    for (let c = 0; c < n; c++) a.set(base ? base.subarray(c * 3, c * 3 + 3) : plain, c * 3);
+    return new THREE.BufferAttribute(a, 3);
+  }, [uvReady, out, colour, healthAttr, islands, stretch, index]);
+  useEffect(() => { if (colorAttr) geo.setAttribute('color', colorAttr); }, [geo, colorAttr]);
+
+  const topo = useMemo(() => topoOf(out.positions), [out.positions]);
+  // the file's polygons: an edge inside one (a quad's diagonal, an n-gon's fan) isn't drawn, as in Blender
+  const pid = useMemo(() => polygonsOf(out.source, part.poly), [out.source, part.poly]);
+  const seams = useMemo(() => lineGeo(new Float32Array(part.seams)), [part.seams]);
+  // edit-mode overlays: the wire, every vertex (vertex mode), and the selection
+  const edgesOf = (ids: Iterable<number>) => {
+    const a: number[] = [];
+    for (const e of ids) for (const v of [topo.ends[e * 2], topo.ends[e * 2 + 1]]) a.push(topo.pos[v * 3], topo.pos[v * 3 + 1], topo.pos[v * 3 + 2]);
+    return lineGeo(new Float32Array(a));
+  };
+  // on the model, each polygon shades as one face (its triangles' area-weighted normal), as Blender draws a quad or an
+  // n-gon that isn't quite flat; runs after the positions effect above, which only resets normals when unfolding
+  useEffect(() => {
+    if (unfold !== 0) return;
+    const sum = new Map<number, number[]>(), n = new Float32Array(p3.length), tris = p3.length / 9;
+    const cross = (t: number) => {
+      const o = t * 9, ux = p3[o + 3] - p3[o], uy = p3[o + 4] - p3[o + 1], uz = p3[o + 5] - p3[o + 2], vx = p3[o + 6] - p3[o], vy = p3[o + 7] - p3[o + 1], vz = p3[o + 8] - p3[o + 2];
+      return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+    };
+    for (let t = 0; t < tris; t++) {
+      const c = cross(t), key = pid[t] < 0 ? -1 - t : pid[t], s = sum.get(key);
+      if (s) for (let k = 0; k < 3; k++) s[k] += c[k]; else sum.set(key, c);
+    }
+    const unit = new Map<number, number[]>();
+    for (const [key, s] of sum) { const l = Math.hypot(s[0], s[1], s[2]) || 1; unit.set(key, [s[0] / l, s[1] / l, s[2] / l]); }
+    const keyOf = (t: number) => (pid[t] < 0 ? -1 - t : pid[t]), cos = Math.cos((sharp * Math.PI) / 180);
+    // Smooth with the file's own normals (Blender's shading: its smoothing, sharp edges, custom normals): each output
+    // triangle's corner takes the normal of the nearest corner of the file triangle it came from
+    const fileN = smooth && part.normals?.length === part.soup.length ? outNormals(p3, out.source, part.soup, part.normals) : null;
+    for (let t = 0; t < tris; t++) {
+      const own = unit.get(keyOf(t))!;
+      for (let k = 0; k < 3; k++) {
+        let v = own;
+        const o = t * 9 + k * 3;
+        if (fileN && !Number.isNaN(fileN[o])) v = [fileN[o], fileN[o + 1], fileN[o + 2]];
+        else if (smooth) {
+          // the polygons round this corner that meet its own at less than Sharp edges, each once, by area
+          const s = [0, 0, 0], seen = new Set<number>();
+          for (const f of trisOf(topo, topo.vid[t * 3 + k])) {
+            const key = keyOf(f), u = unit.get(key)!;
+            if (seen.has(key) || u[0] * own[0] + u[1] * own[1] + u[2] * own[2] < cos) continue;
+            seen.add(key);
+            const w = sum.get(key)!;
+            for (let i = 0; i < 3; i++) s[i] += w[i];
+          }
+          const l = Math.hypot(s[0], s[1], s[2]);
+          if (l) v = [s[0] / l, s[1] / l, s[2] / l];
+        }
+        n.set(v, t * 9 + k * 3);
+      }
+    }
+    geo.setAttribute('normal', new THREE.BufferAttribute(n, 3));
+  }, [geo, p3, pid, unfold, uvs, uvRev, smooth, sharp, topo, out.source, part.normals, part.soup]);
+  const flatNow = unfold === 0;
+  // Poly Doc's poles as dots: blue where 3 polygon edges meet, red where 5 or more do
+  const showPoles = useApp((s) => s.showPoles && s.workspace === 'doc');
+  const poleDots = useMemo(() => {
+    if (!showPoles || !flatNow) return null;
+    const g = { soup: part.soup, ...(part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9)) };
+    const p = poles(g), t = topoOfSoup(part.soup), xyz: number[] = [], rgb: number[] = [];
+    for (const [vs, c] of [[p.three, [0.25, 0.6, 1]], [p.many, [1, 0.3, 0.25]]] as const) for (const v of vs) { xyz.push(t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]); rgb.push(...c); }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(xyz, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(rgb, 3));
+    return geo;
+  }, [showPoles, flatNow, part.soup, part.poly, part.sides]);
+  useEffect(() => () => poleDots?.dispose(), [poleDots]);
+  const shown = useCallback((e: number) => {
+    const [a, b] = topo.edgeTris[e];
+    return b === undefined || pid[a] < 0 || pid[a] !== pid[b];
+  }, [topo, pid]);
+  const wire = useMemo(() => edgesOf(Array.from({ length: topo.ends.length / 2 }, (_, i) => i).filter(shown)), [topo, shown]);
+  const allVerts = useMemo(() => lineGeo(new Float32Array(topo.pos)), [topo]);
+  // selected edges as thick lines (WebGL draws plain lines 1 px wide)
+  const selEdges = useMemo(() => (sel?.edges.size ? [...sel.edges].filter(shown).flatMap((e) => [topo.ends[e * 2], topo.ends[e * 2 + 1]].map((v) => [topo.pos[v * 3], topo.pos[v * 3 + 1], topo.pos[v * 3 + 2]] as [number, number, number])) : null), [sel, topo, shown]);
+  const selVerts = useMemo(() => (sel ? lineGeo(new Float32Array([...sel.verts].flatMap((v) => [topo.pos[v * 3], topo.pos[v * 3 + 1], topo.pos[v * 3 + 2]]))) : null), [sel, topo]);
+  const selFaces = useMemo(() => {
+    if (!sel?.faces.size) return null;
+    const tris: number[] = [];
+    for (const f of sel.faces) tris.push(...out.positions.slice(f * 9, f * 9 + 9));
+    return lineGeo(new Float32Array(tris));
+  }, [sel, out]);
+  useEffect(() => () => { for (const g of [seams, wire, allVerts, selVerts, selFaces]) g?.dispose(); }, [seams, wire, allVerts, selVerts, selFaces]);
+  const flat = unfold === 0, editing = !paint && (doc || selectMode !== 'island');
+  const hover = (e: ThreeEvent<PointerEvent>) => {
+    pointer.part = index; pointer.tri = e.faceIndex ?? -1;
+    if (paint && e.face) { cursor.on = true; cursor.p.copy(e.point); cursor.n.copy(e.face.normal); invalidate(); }
+    if (!paint || e.buttons !== 1 || !e.uv || e.faceIndex == null) return;
+    e.stopPropagation();
+    // a drag that began off the model starts painting where it comes onto it, as Photoshop paints from anywhere
+    const tool = useApp.getState().paint.tool;
+    if (painting()) paintDrag(index, e.point.toArray(), [e.uv.x, e.uv.y]);
+    else if ((tool === 'brush' || tool === 'erase') && !e.ctrlKey && !e.altKey && paintPress(index, e.faceIndex, e.point.toArray(), [e.uv.x, e.uv.y], { shift: false, alt: false, ctrl: false })) addEventListener('pointerup', paintEnd, { once: true });
+    invalidate();
+  };
+  // Van Gogh: the nearest hit takes the stroke; it ends wherever the button comes up
+  const press = (e: ThreeEvent<PointerEvent>) => {
+    if (!paint || e.button !== 0 || e.faceIndex == null || !e.uv || !uvReady || unfold !== 0) return;
+    const tool = useApp.getState().paint.tool;
+    if ((tool === 'marquee' || tool === 'lasso') && !e.ctrlKey) return; // the view draws the shape (Navigation)
+    e.stopPropagation();
+    if (paintPress(index, e.faceIndex, e.point.toArray(), [e.uv.x, e.uv.y], { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey })) addEventListener('pointerup', paintEnd, { once: true });
+    invalidate();
+  };
+
+
+  const click = (e: ThreeEvent<MouseEvent>) => {
+    if (paint) return;
+    if (e.delta > 4 || e.faceIndex == null || e.button !== 0) return; // a drag, not a click
+    const progress = useApp.getState().loading;
+    if (progress && !progress.done[index]) return;
+    e.stopPropagation();
+    const t = e.faceIndex, m = useApp.getState().selectMode;
+    // the triangle's nearest edge and corner to the click
+    const c = [0, 1, 2].map((k) => new THREE.Vector3().fromArray(out.positions, t * 9 + k * 3));
+    let be = 0, bd = Infinity, bv = 0, bvd = Infinity;
+    for (let k = 0; k < 3; k++) {
+      const d = new THREE.Line3(c[k], c[(k + 1) % 3]).closestPointToPoint(e.point, true, new THREE.Vector3()).distanceTo(e.point);
+      if (d < bd && shown(topo.edge[t * 3 + k])) { bd = d; be = k; } // a polygon's hidden diagonal isn't an edge to pick
+      const dv = c[k].distanceTo(e.point);
+      if (dv < bvd) { bvd = dv; bv = k; }
+    }
+    if (!flat && (m === 'vert' || m === 'edge')) return; // unfolded, the corners aren't where the model has them
+    const edge = topo.edge[t * 3 + be];
+    if (e.altKey) { if (m === 'vert' || m === 'edge') void selectLoop(index, edge, e.shiftKey); return; }
+    // a face is its whole polygon, as Blender picks it
+    const face = pid[t] < 0 ? [t] : pid.reduce<number[]>((a, p, f) => (p === pid[t] ? (a.push(f), a) : a), []);
+    selectElems(index, m === 'vert' ? [topo.vid[t * 3 + bv]] : m === 'edge' ? [edge] : face, opOf(e, true));
+  };
+
+  return (
+    <group>
+      <mesh geometry={geo} castShadow={paint} receiveShadow={paint} onUpdate={(m) => m.layers.enable(SOLID)} onClick={click} onPointerDown={press} onPointerMove={hover} onPointerOut={() => { if (pointer.part === index) pointer.part = -1; cursor.on = false; invalidate(); }}>
+        {(() => {
+          // Blender's Lighting: Studio (lights and the environment), MatCap (a lit sphere by normal), Flat (unlit)
+          const key = `${colour}-${uvReady}-${paint}-${pbr}-${part.textured !== false}-${sc.lighting}-${sc.xray}`;
+          const props = {
+            color: uvReady ? '#ffffff' : '#888d92',
+            map: ts && uvReady ? ts.color : !doc && uvReady && mode === 'checker' && part.textured !== false ? checker : null, vertexColors: !!colorAttr,
+            side: sc.backface ? THREE.FrontSide : THREE.DoubleSide, wireframe, transparent: sc.xray, opacity: sc.xray ? sc.xrayAlpha : 1, depthWrite: !sc.xray,
+            polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+          };
+          // Van Gogh in Studio: the real PBR material, as the game will light it: the set's roughness and metallic (glTF's G
+          // and B) or, without PBR, a plain dielectric; the baked AO as its occlusion map (it darkens the ambient light only)
+          const ao = paintAO && ts?.aoTex ? ts.aoTex : null;
+          if (ts && sc.lighting === 'studio') return pbr
+            ? <meshStandardMaterial key={`${key}-${!!ao}`} {...props} roughnessMap={ts.orm} metalnessMap={ts.orm} roughness={1} metalness={1} aoMap={ao} />
+            : <meshStandardMaterial key={`${key}-${!!ao}`} {...props} roughness={0.3} metalness={0} aoMap={ao} />; // Substance's default
+          if (sc.lighting === 'matcap') return <meshMatcapMaterial key={key} {...props} matcap={matcapTexture(sc.matcap)} />;
+          if (sc.lighting === 'flat') return <meshBasicMaterial key={key} {...props} />;
+          // no plate: Blender's Solid Studio lighting itself (shading.ts), not three's lamps
+          if (!studio) return <meshBasicMaterial key={`${key}-wb`} {...props} toneMapped={false} onBeforeCompile={studioShader} customProgramCacheKey={() => 'wb'} />;
+          return <meshStandardMaterial key={key} {...props} roughness={sc.specular ? (studio && mode === 'checker' ? 0.46 : 0.55) : 1} metalness={sc.specular && studio && mode === 'checker' ? 0.03 : 0} dithering={studio} />;
+        })()}
+        {sc.outline && flat && <Outlines thickness={2.5} color="#050505" screenspace angle={Math.PI} />}
+      </mesh>
+      {flat && editing && showEdges && !smooth && <lineSegments geometry={wire}><lineBasicMaterial color="#000000" transparent opacity={0.35} /></lineSegments>}
+      {poleDots && <points geometry={poleDots} renderOrder={4}><pointsMaterial size={7} sizeAttenuation={false} vertexColors /></points>}
+      {/* Van Gogh in MatCap or Flat: the baked AO multiplied over the model (Studio takes it as the material's AO map) */}
+      {flat && paintAO && ts?.aoTex && sc.lighting !== 'studio' && <mesh geometry={geo} renderOrder={1}><meshBasicMaterial map={ts.aoTex} blending={THREE.MultiplyBlending} premultipliedAlpha transparent toneMapped={false} depthWrite={false} polygonOffset polygonOffsetFactor={-1} side={THREE.DoubleSide} /></mesh>}
+      {/* Van Gogh: what's outside the selection, shaded */}
+      {flat && ts?.sel && <mesh geometry={geo} renderOrder={2}><meshBasicMaterial map={ts.shade} transparent depthWrite={false} polygonOffset polygonOffsetFactor={-1} side={THREE.DoubleSide} /></mesh>}
+      {flat && showSeams && !doc && !paint && <lineSegments geometry={seams}><lineBasicMaterial color={SEAM} /></lineSegments>}
+      {flat && !paint && selFaces && (
+        <mesh geometry={selFaces} renderOrder={2}>
+          <meshBasicMaterial color={SEL} transparent opacity={0.45} depthWrite={false} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} />
+        </mesh>
+      )}
+      {flat && editing && !!selEdges?.length && <Line points={selEdges} segments color={SEL} lineWidth={2.5} renderOrder={3} />}
+      {flat && editing && showVertices && selectMode === 'vert' && <points geometry={allVerts}><pointsMaterial color="#111111" size={4} sizeAttenuation={false} /></points>}
+      {flat && editing && showVertices && selectMode === 'vert' && selVerts && <points geometry={selVerts} renderOrder={4}><pointsMaterial color={SEL} size={6} sizeAttenuation={false} /></points>}
+    </group>
+  );
+}
+
+
+function lineGeo(xyz: Float32Array) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(xyz, 3));
+  return g;
+}
+
+
+/** Where Van Gogh's brush is over the model: the point and the face's normal (set by the parts' hover). */
+const cursor = { on: false, p: new THREE.Vector3(), n: new THREE.Vector3(0, 0, 1) };
+const ring = (() => {
+  const g = new THREE.BufferGeometry(), a: number[] = [];
+  for (let k = 0; k < 64; k++) a.push(Math.cos((k / 64) * 2 * Math.PI), Math.sin((k / 64) * 2 * Math.PI), 0);
+  g.setAttribute('position', new THREE.Float32BufferAttribute(a, 3));
+  return g;
+})();
+/** The brush on the surface, Substance's: a dashed ring where the dab ends, a solid one where it paints at full strength
+ *  (hardness), lying on the face under the mouse. Brush and Eraser only. */
+function BrushCursor() {
+  const tool = useApp((s) => s.paint.tool), hardness = useApp((s) => s.paint.hardness);
+  const g = useRef<THREE.Group>(null), z = new THREE.Vector3(0, 0, 1);
+  useFrame(() => {
+    const o = g.current;
+    if (!o) return;
+    o.visible = cursor.on && (tool === 'brush' || tool === 'erase');
+    o.position.copy(cursor.p).addScaledVector(cursor.n, brushRadius() * 0.02);
+    o.quaternion.setFromUnitVectors(z, cursor.n);
+    o.scale.setScalar(brushRadius() || 1);
+  });
+  return (
+    <group ref={g} renderOrder={10}>
+      <lineLoop geometry={ring} onUpdate={(l) => l.computeLineDistances()} renderOrder={10}>
+        <lineDashedMaterial color="#ffffff" dashSize={0.09} gapSize={0.07} depthTest={false} transparent opacity={0.9} />
+      </lineLoop>
+      <lineLoop geometry={ring} scale={Math.max(0.02, hardness)} renderOrder={10}>
+        <lineBasicMaterial color="#ffffff" depthTest={false} transparent opacity={0.9} />
+      </lineLoop>
+    </group>
+  );
+}

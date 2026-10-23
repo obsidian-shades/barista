@@ -1,0 +1,49 @@
+/*
+ * Photoshop-style shell: menu bar, options bar, tool strip | document tabs + views | panel dock, status bar.
+ * One dark theme after Adobe Spectrum 2 (the Photoshop UI): a few greys stepping up from the canvas to floating surfaces,
+ * one blue accent, Adobe's open-source Source Sans 3 and Source Code Pro, 4 px corners on controls, 8 px on floating
+ * surfaces, flat (no drop shadows). Every bar, panel, menu and floating widget takes its colours, type and borders from these tokens.
+ */
+:root {
+  /* Surfaces, darkest to lightest */
+  --app: #1e1e1e;       /* behind everything */
+  --well: #1a1a1a;      /* fields, lists, wells */
+  --panel: #262626;     /* panel bodies */
+  --chrome: #2e2e2e;    /* bars: menu, options, tool strip, tabs, panel headers */
+  --raise: #323232;     /* floating surfaces: task bars, floor widget, menus, popovers, the 3D window */
+  --line: #141414;      /* borders between areas */
+  --hair: #3c3c3c;      /* inner separators, hover fills */
+  --edge-hi: #474747;   /* the light rim of floating surfaces */
+  /* Text */
+  --fg: #e3e3e3; --muted: #9a9a9a; --faint: #6f6f6f;
+  /* Accent (Spectrum blue) */
+  --accent: #3b8af0; --accent-ink: #fff; --accent-soft: #3b8af033; --row-on: #2d4c72;
+  /* Plan canvas */
+  --canvas: #1d1f22; --grid: #26292d; --grid-major: #383d43; --edge: #0d0d0d;
+  /* Shape */
+  --r-s: 4px; --r-m: 8px;
+  --ctl: 24px;          /* control height: buttons, fields, selects */
+  --ui: "Source Sans 3", "Adobe Clean", system-ui, sans-serif; --num: "Source Code Pro", ui-monospace, Consolas, monospace;
+  --fs: 13px; --fs-s: 12px; --fs-xs: 11px;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--app); color: var(--fg); font: var(--fs) / 1.3 var(--ui); overflow: hidden; user-select: none; -webkit-font-smoothing: antialiased; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button { display: inline-flex; align-items: center; gap: 5px; background: none; border: 1px solid transparent; border-radius: var(--r-s); padding: 2px 8px; min-height: var(--ctl); cursor: pointer; }
+button:hover:not(:disabled) { background: var(--hair); }
+button:disabled { opacity: .4; cursor: default; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+select, input { line-height: normal; height: var(--ctl); background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); padding: 0 6px; }
+select:hover, input:hover:not(:disabled) { border-color: var(--hair); }
+input:focus, select:focus { border-color: var(--accent); outline: none; }
+input[type="number"] { font: var(--fs-s) var(--num); }
+input:disabled, select:disabled { opacity: .5; }
+kbd { font: 10px var(--num); color: var(--muted); margin-left: auto; padding-left: 24px; }
+.hint { color: var(--muted); margin: 0; }
+.num { font-family: var(--num); font-variant-numeric: tabular-nums; }
+/* Section labels: panel groups, menu labels. The rule itself is with the shell. */
+/* Native popovers (scene settings): placed by script, not the browser's centring.
+   No display rule on the popover itself: it would beat the browser's hiding of a closed one. */
+[popover] { inset: auto; margin: 0; padding: 0; border: 0; color: inherit; background: transparent; }

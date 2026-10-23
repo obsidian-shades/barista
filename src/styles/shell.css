@@ -1,0 +1,89 @@
+.caps, .csec, .mlabel, .dock-tabs [role="tab"] { font-size: 10.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.mc { background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-s); }
+
+/* The app frame: menu bar, the views and dock, status bar (layout after espresso-level-designer's shell). */
+.app { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+
+/* Tool tabs under the menu bar: a pill group after Affinity's Vector | Pixel | Layout. */
+.apptabs { display: flex; align-items: center; height: 40px; padding: 0 10px; background: var(--chrome); border-bottom: 1px solid var(--line); }
+.pills { display: flex; gap: 2px; padding: 3px; background: var(--well); border: 1px solid var(--line); border-radius: 10px; }
+.pills button { min-height: 28px; padding: 0 14px; gap: 7px; border-radius: 8px; border: 0; background: none; color: var(--muted); font-weight: 600; }
+.pills button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); }
+.pills button:hover:not([aria-selected="true"]) { color: var(--fg); }
+
+/* Menu bar */
+.menubar { display: flex; align-items: center; height: 30px; background: var(--chrome); border-bottom: 1px solid var(--line); }
+.brand { width: 42px; height: 30px; padding: 5px 11px; object-fit: contain; }
+.mroot { display: flex; }
+.mt { padding: 4px 10px; min-height: 0; border-radius: var(--r-s); }
+.mt[data-state="open"] { background: var(--hair); }
+.mc { min-width: 230px; padding: 4px; font: var(--fs) var(--ui); color: var(--fg); z-index: 60; }
+.mi { position: relative; display: flex; align-items: center; min-height: 26px; padding: 3px 14px 3px 26px; border-radius: 3px; outline: none; cursor: default; }
+.mi[data-highlighted] { background: var(--accent); color: var(--accent-ink); }
+.mi[data-highlighted] kbd { color: inherit; }
+.mi[data-disabled] { opacity: .4; }
+.check { position: absolute; left: 9px; }
+.msep { height: 1px; background: var(--hair); margin: 4px 2px; }
+.subtrigger[data-state="open"] { background: var(--hair); }
+.subarrow { margin-left: auto; padding-left: 16px; font-size: 15px; line-height: 1; color: var(--muted); }
+.mlabel { padding: 6px 14px 2px 26px; }
+
+button.primary { background: var(--accent); color: var(--accent-ink); padding: 2px 12px; font-weight: 600; }
+button.primary:hover:not(:disabled) { background: #4c97f5; }
+button.primary kbd { color: #ffffffb0; padding-left: 12px; }
+
+/* Workspace: 3D | UV | dock */
+.work { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 280px; min-height: 0; border-bottom: 1px solid var(--line); }
+.space { display: grid; grid-template-rows: 36px minmax(0, 1fr); min-height: 0; } /* the same options bar row in both tools */
+
+/* The dividers (espresso's dock resizer): a 6 px strip, the accent on hover */
+.dock-resizer { cursor: col-resize; touch-action: none; background: var(--chrome); border-left: 1px solid var(--line); }
+.dock-resizer:hover, .dock-resizer:focus-visible { background: var(--accent); outline: none; }
+
+/* The tool strips (both workspaces) and Poly Doc's options bar (espresso-level-designer's shell: Photoshop's left strip, options on top) */
+.tools { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; background: var(--chrome); border-right: 1px solid var(--line); overflow-y: auto; }
+.tools .tgroup { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--hair); }
+.tools .tgroup:last-child { border-bottom: 0; }
+.tools button { width: 32px; height: 32px; min-height: 0; padding: 0; justify-content: center; color: #cfcfcf; }
+.tools button[aria-pressed="true"] { background: var(--hair); color: #fff; box-shadow: inset 0 0 0 1px #5a5a5a; }
+.tools button:disabled { opacity: .35; }
+.options { display: flex; flex-wrap: nowrap; align-items: center; gap: 12px; height: 36px; box-sizing: border-box; padding: 4px 10px; background: var(--chrome); border-bottom: 1px solid var(--line); min-width: 0; overflow: hidden; }
+.options .hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.options .note { color: var(--fg); }
+.toolname { display: flex; align-items: center; gap: 6px; font-weight: 600; padding-right: 12px; border-right: 1px solid var(--hair); white-space: nowrap; }
+.options label { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+.options .inc { width: 64px; }
+.options button { min-height: 24px; padding: 0 10px; white-space: nowrap; }
+
+/* Status bar */
+.status { display: flex; flex-wrap: nowrap; align-items: center; gap: 16px; min-height: 24px; padding: 2px 10px; font-size: var(--fs-xs); color: var(--muted); background: var(--chrome); white-space: nowrap; overflow: hidden; }
+.status .num { color: var(--fg); }
+.status .hint { margin-left: auto; color: var(--faint); }
+.status .build { color: var(--faint); }
+.status .busy { color: var(--accent); }
+.status .err { color: #ff8a80; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.dot::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--faint); }
+.dot.up::before { background: #4caf50; }
+.dot.down::before { background: #f44336; }
+
+/* Blender's select mode buttons (in the menu bar), and the menu at the pointer: a list (right click) or a pie (Q). */
+.modes { display: flex; margin: 0 10px 0 auto; border: 1px solid var(--hair); border-radius: 3px; overflow: hidden; }
+.modes button { border-radius: 0; min-height: 22px; padding: 0 10px; font-size: var(--fs-s); }
+.modes button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.popup-scrim { position: fixed; inset: 0; z-index: 50; }
+.popup { position: fixed; min-width: 160px; padding: 4px; background: #2a2d31; border: 1px solid var(--edge-hi); border-radius: 5px; box-shadow: 0 8px 24px #0008; display: grid; transform: translate(-12px, -14px); }
+.popup { max-height: calc(100vh - 16px); overflow-y: auto; max-width: 300px; }
+.popup-head { padding: 6px 8px 2px; color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; }
+.popup-info { display: flex; align-items: baseline; gap: 7px; padding: 3px 8px; font-size: var(--fs-s); color: var(--fg); cursor: default; }
+.popup-info .dot { flex: 0 0 8px; height: 8px; border-radius: 50%; transform: translateY(1px); }
+.popup-title { padding: 3px 8px 5px; color: var(--muted); font-size: var(--fs-xs); border-bottom: 1px solid var(--hair); margin-bottom: 3px; }
+.popup button { display: flex; text-align: left; padding: 4px 8px; background: none; border: 0; }
+.popup button:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--accent); color: #fff; }
+.popup button:hover:not(:disabled):not([aria-disabled="true"]) kbd { color: inherit; }
+.popup button:disabled, .popup button[aria-disabled="true"], .pie button:disabled { opacity: .4; }
+.pie { position: fixed; width: 0; height: 0; }
+.pie-hub { position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--accent); background: #0006; }
+.pie button { position: absolute; transform: translate(-50%, -50%); min-width: 104px; justify-content: center; padding: 5px 12px; background: #2a2d31; border: 1px solid var(--edge-hi); border-radius: 14px; box-shadow: 0 6px 18px #0008; white-space: nowrap; animation: pie-in .12s ease-out both; }
+.pie button:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
+@keyframes pie-in { from { opacity: 0; scale: .85; } }
+.options input[type="range"] { width: 72px; }
