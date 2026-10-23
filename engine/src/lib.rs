@@ -1,4 +1,4 @@
-//! Auto-unwrap: cut meshes into islands that each flatten with no flips, no overlap and little stretch.
+//! Barista's unwrap engine: cut meshes into islands that each flatten with no flips, no overlap and little stretch.
 //!
 //! 1. weld + orient each part (`mesh`)
 //! 2. charts (`region`): smooth simple regions stay whole; boxy and tangled ones go to the side of the shell's box

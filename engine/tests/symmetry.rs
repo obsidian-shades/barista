@@ -1,4 +1,4 @@
-use auto_unwrap::{mesh::Mesh, symmetry, unwrap_soup, Params};
+use barista::{mesh::Mesh, symmetry, unwrap_soup, Params};
 
 /// A house-shaped prism, sheared so its only mirror plane is x = 0: the right half built, the left half its mirror.
 fn house() -> Vec<f32> {

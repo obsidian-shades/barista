@@ -1,6 +1,6 @@
-use auto_unwrap::mesh::Mesh;
-use auto_unwrap::stroke::{knife, snap};
-use auto_unwrap::{shapes, unwrap, Params, PartIn};
+use barista::mesh::Mesh;
+use barista::stroke::{knife, snap};
+use barista::{shapes, unwrap, Params, PartIn};
 
 const CHARTS: Params = Params { sharp: 45., tol: 0.08, seam_weight: 0.1, join: false, one_atlas: false };
 

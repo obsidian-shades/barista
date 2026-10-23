@@ -1,6 +1,6 @@
 # The desktop app: the editor in a webview, the unwrap engine in-process as Tauri commands (src/api.ts calls them).
 [package]
-name = "auto-unwrap-app"
+name = "barista-app"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,9 +8,9 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-auto-unwrap = { path = "../engine" }
+barista = { path = "../engine" }
 tauri = { version = "2", features = [] }
 
 # The solver is all tight float loops: unoptimised it's ~20x slower, even in `tauri dev`.
-[profile.dev.package.auto-unwrap]
+[profile.dev.package.barista]
 opt-level = 3

@@ -1,6 +1,6 @@
 # The unwrap engine (lib) and the HTTP server the editor talks to (bin).
 [package]
-name = "auto-unwrap"
+name = "barista"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,7 @@ edition = "2021"
 path = "src/lib.rs"
 
 [[bin]]
-name = "auto-unwrap-server"
+name = "barista-server"
 path = "src/main.rs"
 
 [dependencies]

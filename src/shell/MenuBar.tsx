@@ -34,7 +34,7 @@ export function MenuBar() {
   const canUndo = useApp((s) => s.past.length > 0 || s.partsPast.length > 0), canRedo = useApp((s) => s.future.length > 0 || s.partsFuture.length > 0);
   return (
     <nav className="menubar">
-      <img className="brand" src={logo} alt="Auto Unwrap" />
+      <img className="brand" src={logo} alt="Barista" />
       <M.Root className="mroot">
         <Menu label="File">
           <Item onSelect={() => void pickFile()} kbd="Ctrl+O">Open model… (FBX, glTF, OBJ, STL)</Item>

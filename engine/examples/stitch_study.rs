@@ -1,8 +1,8 @@
 //! Study: on the gun, stitch each pair of neighbouring islands along their whole shared border, as the editor's
 //! Stitch does, and report what comes back. `NUKE=1`: every seam cleared and each part unwrapped from none instead.
 //! `cargo run --release --example stitch_study [soup]`
-use auto_unwrap::edit::{reseam, ReseamIn};
-use auto_unwrap::{unwrap, Params, PartIn};
+use barista::edit::{reseam, ReseamIn};
+use barista::{unwrap, Params, PartIn};
 use std::collections::{HashMap, HashSet};
 
 fn main() {

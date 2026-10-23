@@ -1,6 +1,6 @@
 //! Benchmark on a real model: `cargo run --release --example gun [soup] [out_dir] [part]`. Prints per-part stats;
 //! with `out_dir`, writes per part a PNG: three checker-textured 3D views (islands tinted) beside its UV layout.
-use auto_unwrap::{unwrap, Params, PartIn, PartOut};
+use barista::{unwrap, Params, PartIn, PartOut};
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -18,8 +18,8 @@ fn main() {
     if std::env::var("CHARTS").is_ok() {
         // the charting alone: each part's charts in flat colours, chart sizes listed
         for q in &parts {
-            let m = auto_unwrap::mesh::Mesh::from_soup(&q.positions).unwrap();
-            let cs = auto_unwrap::region::charts(&m, Params::default().sharp, &Default::default());
+            let m = barista::mesh::Mesh::from_soup(&q.positions).unwrap();
+            let cs = barista::region::charts(&m, Params::default().sharp, &Default::default());
             let mut island = vec![0u32; m.f.len()];
             for (i, c) in cs.iter().enumerate() { for &t in c { island[t as usize] = i as u32; } }
             let mut sizes: Vec<(usize, usize)> = cs.iter().enumerate().map(|(i, c)| (c.len(), i)).collect();
@@ -67,7 +67,7 @@ fn main() {
             if e >= 1.5f32.ln() { hot += ar; }
         }
         println!("{}: {:5} tris  {:3} islands  stretch {:5.2}%  hot {:5.2}%  eff {:4.1}%  max {:5.2}", parts[k].name, p.island.len(), ids.len(), se / sa.max(1e-30) * 100.,
-            hot / sa.max(1e-30) * 100., auto_unwrap::pack::efficiency(&p.uvs) * 100., p.stretch.iter().fold(0f32, |a, &b| a.max(b)));
+            hot / sa.max(1e-30) * 100., barista::pack::efficiency(&p.uvs) * 100., p.stretch.iter().fold(0f32, |a, &b| a.max(b)));
     }
     let s = &out.stats;
     println!("TOTAL {} islands, {} tris, flips {}, stretch {:.2}% (max {:.2}), good {:.1}%, overlap {:.3}%, eff {:.1}%, {:.0} ms",

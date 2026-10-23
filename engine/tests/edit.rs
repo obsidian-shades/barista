@@ -1,6 +1,6 @@
 //! Hand edits: relax undoes a squashed island, stitch glues two cube faces along their shared edge.
-use auto_unwrap::edit::{relax, reseam, stitch, IslandIn, ReseamIn, Reseamed};
-use auto_unwrap::{shapes, unwrap_soup, Params};
+use barista::edit::{relax, reseam, stitch, IslandIn, ReseamIn, Reseamed};
+use barista::{shapes, unwrap_soup, Params};
 
 /// Each island of the result as the editor holds it: xyz and uv per corner.
 fn islands(p: Params) -> Vec<IslandIn> {
@@ -60,7 +60,7 @@ fn stitch_glues_faces() {
 }
 
 /// Edges shared by two triangles (s, t), as their endpoints (6 numbers), where `pick(s, t, same UVs at both ends)`.
-fn edges_where(o: &auto_unwrap::PartOut, pick: impl Fn(usize, usize, bool) -> bool) -> Vec<(usize, usize, Vec<f32>)> {
+fn edges_where(o: &barista::PartOut, pick: impl Fn(usize, usize, bool) -> bool) -> Vec<(usize, usize, Vec<f32>)> {
     let n = o.island.len();
     let mut out = Vec::new();
     for s in 0..n {

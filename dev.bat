@@ -8,10 +8,10 @@ rem After you change Rust, run:  dev.bat rebuild
 echo Stopping anything still bound to 3000 or 5173...
 call :killport 3000
 call :killport 5173
-taskkill /F /IM auto-unwrap-server.exe >nul 2>&1
+taskkill /F /IM barista-server.exe >nul 2>&1
 
 if /I "%~1"=="rebuild" goto build
-if not exist "engine\target\release\auto-unwrap-server.exe" goto build
+if not exist "engine\target\release\barista-server.exe" goto build
 goto launch
 
 :build
@@ -23,26 +23,26 @@ if errorlevel 1 (
 )
 
 :launch
-if not exist "engine\target\release\auto-unwrap-server.exe" (
-  echo Release binary is missing: engine\target\release\auto-unwrap-server.exe
+if not exist "engine\target\release\barista-server.exe" (
+  echo Release binary is missing: engine\target\release\barista-server.exe
   exit /b 1
 )
 
 rem Run a copy outside target\release so the live process does not lock the next cargo build.
 if not exist "engine\target\run" mkdir "engine\target\run"
-copy /Y "engine\target\release\auto-unwrap-server.exe" "engine\target\run\auto-unwrap-server.exe" >nul
+copy /Y "engine\target\release\barista-server.exe" "engine\target\run\barista-server.exe" >nul
 if errorlevel 1 (
   echo Could not copy the server exe. A copy may still be running.
   exit /b 1
 )
 
-start "auto-unwrap engine" /D "%~dp0" cmd /k engine\target\run\auto-unwrap-server.exe
-start "auto-unwrap editor" /D "%~dp0" cmd /k pnpm dev
+start "barista engine" /D "%~dp0" cmd /k engine\target\run\barista-server.exe
+start "barista editor" /D "%~dp0" cmd /k pnpm dev
 
 echo Waiting for the engine on :3000 and the editor on :5173...
 powershell -NoProfile -Command "$ok=$false; for($i=0;$i -lt 40;$i++){ $n = netstat -ano | Select-String 'LISTENING'; if(($n -match ':3000\s') -and ($n -match ':5173\s')){ $ok=$true; break }; Start-Sleep -Milliseconds 250 }; if(-not $ok){ exit 1 }"
 if errorlevel 1 (
-  echo Timed out. Check the "auto-unwrap engine" and "auto-unwrap editor" windows.
+  echo Timed out. Check the "barista engine" and "barista editor" windows.
   exit /b 1
 )
 

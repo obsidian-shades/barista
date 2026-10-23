@@ -157,7 +157,7 @@ export function toObjs(parts: ExportPart[], sharp: number, unit: number): { name
     const w = weld(part.out, part.uv, sharp, part.normals), rows = (tag: string, a: number[], k: number) =>
       Array.from({ length: a.length / k }, (_, i) => `${tag} ${a.slice(i * k, i * k + k).join(' ')}`);
     const corner = (c: number) => `${w.vi[c] + 1}/${w.ti[c] + 1}/${w.ni[c] + 1}`;
-    const lines = [`# Auto Unwrap`, `o ${part.name.replace(/[\r\n]/g, ' ')}`, ...rows('v', w.xyz.map((x) => x * unit / 100), 3), ...rows('vt', w.uvs, 2), ...rows('vn', w.nrm, 3),
+    const lines = [`# Barista`, `o ${part.name.replace(/[\r\n]/g, ' ')}`, ...rows('v', w.xyz.map((x) => x * unit / 100), 3), ...rows('vt', w.uvs, 2), ...rows('vn', w.nrm, 3),
       `usemtl ${part.material.replace(/\s+/g, '_')}`];
     for (const f of faceLoops(w.vi, w.ti, part.faces)) lines.push(`f ${f.map(corner).join(' ')}`);
     return { name: `${name}.obj`, data: enc.encode(lines.join('\n') + '\n') };
@@ -249,10 +249,10 @@ export function toFbx(parts: ExportPart[], sharp: number, unit: number): Uint8Ar
   }
   const axis = (n: string, v: number) => P(n, 'int', 'Integer', '', v);
   return fbxBytes([
-    ['FBXHeaderExtension', [], [['FBXHeaderVersion', [1003]], ['FBXVersion', [7400]], ['EncryptionType', [0]], ['Creator', ['Auto Unwrap']],
+    ['FBXHeaderExtension', [], [['FBXHeaderVersion', [1003]], ['FBXVersion', [7400]], ['EncryptionType', [0]], ['Creator', ['Barista']],
       ['SceneInfo', [name('GlobalInfo', 'SceneInfo'), 'UserData'], [['Type', ['UserData']], ['Version', [100]],
         ['MetaData', [], [['Version', [100]], ...['Title', 'Subject', 'Author', 'Keywords', 'Revision', 'Comment'].map((k): Node => [k, ['']])]]]]]],
-    ['FileId', [new Uint8Array(FILE_ID)]], ['CreationTime', ['1970-01-01 10:00:00:000']], ['Creator', ['Auto Unwrap']],
+    ['FileId', [new Uint8Array(FILE_ID)]], ['CreationTime', ['1970-01-01 10:00:00:000']], ['Creator', ['Barista']],
     // three.js space: Y up, right-handed; in the source file's unit (cm per unit).
     ['GlobalSettings', [], [['Version', [1000]], ['Properties70', [], [axis('UpAxis', 1), axis('UpAxisSign', 1), axis('FrontAxis', 2),
       axis('FrontAxisSign', 1), axis('CoordAxis', 0), axis('CoordAxisSign', 1), P('UnitScaleFactor', 'double', 'Number', '', D(unit))]]]],

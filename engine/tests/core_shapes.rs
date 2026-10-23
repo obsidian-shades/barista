@@ -1,4 +1,4 @@
-use auto_unwrap::{check, repack, shapes, unwrap, unwrap_soup, Params, PartIn};
+use barista::{check, repack, shapes, unwrap, unwrap_soup, Params, PartIn};
 
 // charting tests count islands before they're joined into nets
 const CHARTS: Params = Params { sharp: 45., tol: 0.08, seam_weight: 0.1, join: false, one_atlas: false };
@@ -104,7 +104,7 @@ fn repack_keeps_islands_apart() {
     assert!(out.iter().flatten().all(|&x| (0. ..=1.).contains(&x)));
     // they may nest corner into corner (the packer works on their shapes, not boxes), but never overlap
     let all: Vec<f32> = out.concat();
-    assert_eq!(auto_unwrap::pack::overlap(&all, 512), 0., "islands overlap: {out:?}");
+    assert_eq!(barista::pack::overlap(&all, 512), 0., "islands overlap: {out:?}");
 }
 
 #[test]

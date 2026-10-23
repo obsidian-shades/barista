@@ -1,9 +1,9 @@
 //! HTTP server: the unwrap engine on /api, nothing else. The editor is served by Vite (`pnpm dev`, :5173), which
 //! proxies /api here, so there is only ever one editor to open.
-use auto_unwrap::edit::{relax, reseam, Reseamed};
-use auto_unwrap::req::{EdgeLoopReq, IslandsReq, PackReq, ReseamReq, UnwrapReq};
-use auto_unwrap::topology::edge_loop;
-use auto_unwrap::{repack, shapes, unwrap, Output};
+use barista::edit::{relax, reseam, Reseamed};
+use barista::req::{EdgeLoopReq, IslandsReq, PackReq, ReseamReq, UnwrapReq};
+use barista::topology::edge_loop;
+use barista::{repack, shapes, unwrap, Output};
 use axum::extract::{DefaultBodyLimit, Path};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -64,6 +64,6 @@ async fn main() {
         .fallback(|| async { (StatusCode::NOT_FOUND, "This is the unwrap engine's API (/api/...). The editor runs at http://localhost:5173 (pnpm dev).") });
     let addr = std::env::var("ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| panic!("can't listen on {addr}: {e}"));
-    println!("auto-unwrap engine API on http://{addr}/api (open the editor at http://localhost:5173, pnpm dev)");
+    println!("Barista engine API on http://{addr}/api (open the editor at http://localhost:5173, pnpm dev)");
     axum::serve(listener, app).await.unwrap();
 }
