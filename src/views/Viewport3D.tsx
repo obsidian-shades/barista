@@ -16,10 +16,10 @@ import { health, healthColor } from '../health';
 import { poles } from '../polygeo';
 import { matcapTexture, studioShader, studioUniforms, THEME_BG } from '../shading';
 import { outNormals, ownPolygons, topoOfSoup } from '../polyedit';
-import { brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, texSet, type PaintMods, clearSelection, contextMenu, kindOf, liveSel, pointer, sceneGrade, selectElems, selectLoop, setDocView, setSceneHdri, useApp, view3d, type DocView, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
+import { brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, texSet, type PaintMods, clearSelection, contextMenu, kindOf, liveSel, openRecent, pickFile, pointer, sceneGrade, selectElems, selectLoop, setSceneHdri, useApp, view3d, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
 import { topoOf, polygonsOf, trisOf } from '../topo';
-import { SceneSettings } from './SceneSettings';
 import { polyContextMenu } from '../shell/PolyTools';
+import { Mark } from '../ui/Icon';
 
 const checker = new THREE.CanvasTexture(checkerCanvas(1024));
 checker.colorSpace = THREE.SRGBColorSpace;
@@ -143,23 +143,35 @@ function Remember({ url, hold, children }: { url: string; hold: { current: strin
 }
 
 
-/** Poly Doc's views, in the header and the Z pie. */
-export const DOC_VIEWS: [DocView, string, string][] = [
-  ['wire', 'Wire', 'Each polygon flat, with the wireframe: for working on the topology'],
-  ['smooth', 'Smooth', 'Smooth shaded, no wireframe: how the model will look'],
-  ['health', 'Health', 'Every face green (solid) through yellow to red (fix): an all-green model is ready to bake'],
-];
-
 /** Shift adds (toggles on a click), Ctrl takes away, else replace. */
 const opOf = (e: { shiftKey: boolean; ctrlKey: boolean }, click: boolean): SelOp => (e.shiftKey ? (click ? 'toggle' : 'add') : e.ctrlKey ? 'sub' : 'set');
 
 type Box = { x0: number; y0: number; x1: number; y1: number };
 const track = (e: React.PointerEvent) => { pointer.view = '3d'; pointer.x = e.clientX; pointer.y = e.clientY; };
 
+/** Before a model: one action and the recent files, nothing to read. */
+function EmptyState() {
+  const recent = useApp((s) => s.recent);
+  return (
+    <div className="empty">
+      <span className="mark"><Mark size={34} /></span>
+      <h2>No model open</h2>
+      <div className="actions">
+        <button className="primary" onClick={() => void pickFile()} title="Open a model (Ctrl+O)">Open model…</button>
+      </div>
+      {recent.length > 0 && <div className="recent">
+        {recent.slice(0, 4).map((r) => <button key={r.name} onClick={() => void openRecent(r.name)} title={`Open ${r.name}`}><span>{r.name}</span></button>)}
+      </div>}
+      <span className="formats">FBX · glTF · OBJ · STL</span>
+    </div>
+  );
+}
+
 export function Viewport3D() {
   const result = useApp((s) => s.result), rev = useApp((s) => s.rev), unfold = useApp((s) => s.unfold);
-  const scene = useApp((s) => s.scene), doc = useApp((s) => s.workspace === 'doc'), docView = useApp((s) => s.docView), paintWs = useApp((s) => s.workspace === 'paint');
+  const scene = useApp((s) => s.scene), doc = useApp((s) => s.workspace === 'doc'), paintWs = useApp((s) => s.workspace === 'paint');
   const vis = useApp((s) => s.parts.map((p) => (p.visible ? '1' : '0')).join(''));
+  const empty = useApp((s) => !s.loading && !s.parts.length);
   const layout = useMemo(() => layoutOf(result), [result]);
   const studio = scene.lighting === 'studio' && !!scene.hdriUrl;
   // Van Gogh in Studio lighting with no plate picked: Substance's material view (sunny environment, sun shadow, no lamps)
@@ -173,22 +185,19 @@ export function Viewport3D() {
     <section className="view">
       <header className="vbar">
         <span className="caps">3D</span>
-        <span className="hint">{paintWs ? 'Ctrl+click picks a part · Alt+click picks a colour · middle drag orbits, Shift+middle pans' : 'Click selects · drag boxes · middle drag orbits, Shift+middle pans'}</span>
-        {paintWs ? null : doc ? (
-          <span className="seg" role="group" aria-label="View (hold Z)">
-            {DOC_VIEWS.map(([v, label, title]) => <button key={v} aria-pressed={docView === v} title={`${title} (hold Z)`} onClick={() => setDocView(v)}>{label}</button>)}
-          </span>
-        ) : (
-          <label className="slider">
+        {!doc && !paintWs && (
+          <label className="slider" title="Roll the model out into its UV layout (double-click to put it back)">
             Unfold
-            <input type="range" min={0} max={1} step={0.01} value={unfold} aria-label="Unfold" onChange={(e) => useApp.setState({ unfold: +e.target.value })} />
+            <input type="range" min={0} max={1} step={0.01} value={unfold} aria-label="Unfold" onChange={(e) => useApp.setState({ unfold: +e.target.value })} onDoubleClick={() => useApp.setState({ unfold: 0 })} />
+            <output className="num">{Math.round(unfold * 100)}%</output>
           </label>
         )}
-        <SceneSettings />
       </header>
-      <div className="vbody" onPointerMove={track} onPointerDown={track} onContextMenu={(e) => { e.preventDefault(); if (doc) polyContextMenu(); else contextMenu(); }}>
+      <div className="vbody" onPointerMove={track} onPointerDown={track}
+        onContextMenu={(e) => { e.preventDefault(); if (paintWs) return; if (doc) polyContextMenu(); else contextMenu(); }}>
         {/* drawn only when something changed (orbit, a store update), not 60 times a second: an idle view costs no GPU */}
         <ViewBoundary>
+        <div className="r3f">
         <Canvas shadows frameloop="demand" camera={{ position: [2.2, 1.6, 3], fov: 45 }} dpr={[1, 2]}
           onPointerMissed={(e) => e.button === 0 && !e.shiftKey && !e.ctrlKey && clearSelection()}>
           <Backdrop color={scene.bg === 'custom' ? scene.background : THEME_BG} />
@@ -218,7 +227,9 @@ export function Viewport3D() {
             distance={scene.cavityDistance} span={layout.span} toneMap={paintStudio ? false : !(scene.lighting === 'studio' && !studio)} />
           <Navigation setBox={setBox} setLasso={setLasso} />
         </Canvas>
+        </div>
         </ViewBoundary>
+        {empty && <EmptyState />}
         {lasso && <svg className="lassosel"><polygon points={lasso.map((p) => p.join(',')).join(' ')} /></svg>}
         {box && <div className="boxsel" style={{ left: Math.min(box.x0, box.x1), top: Math.min(box.y0, box.y1), width: Math.abs(box.x1 - box.x0), height: Math.abs(box.y1 - box.y0) }} />}
       </div>

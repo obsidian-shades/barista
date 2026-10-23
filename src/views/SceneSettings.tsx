@@ -1,10 +1,11 @@
-// Viewport Shading, laid out like Blender's popover: Lighting (Studio / MatCap / Flat), Color, Background (Theme / World /
-// Custom), Options (backface culling, outline, specular, X-ray, shadow, cavity), then the overlays. It's a popover, so it sits
-// above the view and closes on Esc or a click outside.
+// Viewport Shading, laid out like Blender's popover: Lighting (Studio / MatCap / Flat), face color (Poly Doc), Background
+// (Theme / World / Custom), Options (backface culling, outline, specular, X-ray, shadow, cavity), then the overlays. The
+// Display modes themselves live in the options bar's ViewControls cluster, next to it, with Z and View › Display.
+// It's a popover, so it sits above the view and closes on Esc or a click outside.
 import { useEnvironment } from '@react-three/drei';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { MATCAPS, matcapCanvas } from '../shading';
-import { HDRI_PRESETS, rememberColor, setDocColor, setDocView, setSceneHdri, setSceneHdriPreset, updateScene, useApp, type Scene } from '../store';
+import { HDRI_PRESETS, rememberColor, setDocColor, setSceneHdri, setSceneHdriPreset, updateScene, useApp, type Scene } from '../store';
 
 /** Viewport backdrops: the app canvas, a few studio sweeps, and black. */
 const BACKDROPS = ['#1d1f22', '#2a2d31', '#3c4654', '#d8d4ce', '#eceae6', '#e6dfd4', '#111111'];
@@ -50,8 +51,8 @@ const flag = (scene: Scene, key: 'wireframe' | 'showEdges' | 'showVertices' | 's
 );
 
 export function SceneSettings() {
-  const scene = useApp((s) => s.scene), recent = useApp((s) => s.recentColors), mode = useApp((s) => s.mode);
-  const doc = useApp((s) => s.workspace === 'doc'), docView = useApp((s) => s.docView), docColor = useApp((s) => s.docColor);
+  const scene = useApp((s) => s.scene), recent = useApp((s) => s.recentColors), menu = useApp((s) => s.menu);
+  const doc = useApp((s) => s.workspace === 'doc'), docColor = useApp((s) => s.docColor);
   const [open, setOpen] = useState(false);
   const pop = useRef<HTMLDivElement>(null), btn = useRef<HTMLButtonElement>(null), file = useRef<HTMLInputElement>(null);
   const titleId = useId();
@@ -73,6 +74,8 @@ export function SceneSettings() {
     addEventListener('keydown', key);
     return () => { removeEventListener('pointerdown', down, true); removeEventListener('keydown', key); };
   }, [open]);
+  // A pie or list at the pointer takes over; don't leave the popover floating above it.
+  useEffect(() => { if (menu) pop.current?.hidePopover(); }, [menu]);
 
   const toggle = () => {
     const el = pop.current;
@@ -83,13 +86,13 @@ export function SceneSettings() {
 
   return (
     <>
-      <button ref={btn} type="button" className="scene-btn" aria-expanded={open} aria-haspopup="dialog" title="Viewport shading: lighting, MatCaps, colour, background, cavity" onClick={toggle}>Shading</button>
+      <button ref={btn} type="button" className="scene-btn" aria-expanded={open} aria-haspopup="dialog" title="Shading and viewport options" onClick={toggle}>Shading</button>
       <div ref={pop} popover="manual" className="scene-pop" role="dialog" aria-labelledby={titleId}
         onToggle={(e) => setOpen(e.newState === 'open')}>
         <div className="scene-body">
           <div className="tsec"><span className="caps" id={titleId}>Lighting</span></div>
           <Seg value={scene.lighting} options={[['studio', 'Studio'], ['matcap', 'MatCap'], ['flat', 'Flat']]} onPick={(lighting) => updateScene({ lighting })}
-            titles={{ studio: 'Lights and an environment map, as the model will be lit', matcap: 'A lit sphere the model takes its shading from by normal: reads shape at a glance', flat: 'Unlit: just the colours' }} />
+            titles={{ studio: 'Lights and an environment map, as the model will be lit', matcap: 'A lit sphere the model takes its shading from by normal: reads shape at a glance', flat: 'Unlit: just the colors' }} />
           {scene.lighting === 'matcap' && (
             <div className="matcaps" role="radiogroup" aria-label="MatCap">
               {Object.entries(MATCAPS).map(([id, m]) => (
@@ -119,25 +122,24 @@ export function SceneSettings() {
             <input ref={file} type="file" accept=".hdr,.exr" hidden onChange={(e) => { const f = e.target.files?.[0]; e.currentTarget.value = ''; if (f) setSceneHdri(f); }} />
           </>}
 
-          <div className="tsec"><span className="caps">Color</span></div>
-          {doc ? (
-            <Seg value={docView === 'health' ? 'health' : docColor} options={[['single', 'Single'], ['random', 'Random'], ['health', 'Health']]}
-              onPick={(c) => (c === 'health' ? setDocView('health') : setDocColor(c))}
-              titles={{ single: 'One grey for every face', random: 'A colour per part', health: 'Every face green (solid) through yellow to red (fix)' }} />
-          ) : (
-            <Seg value={mode} options={[['checker', 'Checker'], ['stretch', 'Stretch'], ['islands', 'Islands']]} onPick={(m) => useApp.setState({ mode: m })}
-              titles={{ checker: 'The checker texture through the UVs', stretch: 'White where the UVs are true, red where they stretch', islands: 'A colour per UV island' }} />
-          )}
+          {/* UV Magician's Checker / Stretch / Islands lives in the UV view's Display menu, where it is used. Poly Doc's
+              own colours stay here with the rest of its viewport shading. */}
+          {doc && <>
+            <div className="tsec"><span className="caps">Face color</span></div>
+            <Seg value={docColor} options={[['single', 'Single'], ['random', 'Random']]}
+              onPick={setDocColor}
+              titles={{ single: 'One gray for every face', random: 'A color per part' }} />
+          </>}
 
           <div className="tsec"><span className="caps">Background</span></div>
           <Seg value={scene.hdriBackground && map ? 'world' : scene.bg} options={[['theme', 'Theme'], ['world', 'World'], ['custom', 'Custom']]}
             disabled={{ world: !map || scene.lighting !== 'studio' }}
             onPick={(b) => updateScene(b === 'world' ? { hdriBackground: true } : { bg: b, hdriBackground: false })}
-            titles={{ theme: 'The app’s own backdrop', world: 'The environment map behind the model (Studio lighting with a map)', custom: 'A colour of your own' }} />
+            titles={{ theme: 'The app’s own backdrop', world: 'The environment map behind the model (Studio lighting with a map)', custom: 'A color of your own' }} />
           {scene.bg === 'custom' && !(scene.hdriBackground && map) && (
             <div className="settings">
-              <label>Colour
-                <input type="color" className="cswatch" list={`${titleId}-bg`} value={scene.background} aria-label="Background colour" title="Background colour"
+              <label>Color
+                <input type="color" className="cswatch" list={`${titleId}-bg`} value={scene.background} aria-label="Background color" title="Background color"
                   onInput={(e) => updateScene({ background: e.currentTarget.value })} onChange={(e) => rememberColor(e.target.value)} />
                 <datalist id={`${titleId}-bg`}>{[...new Set([...BACKDROPS, ...recent])].map((c) => <option key={c} value={c} />)}</datalist>
               </label>

@@ -1,9 +1,28 @@
 /*
- * Photoshop-style shell: menu bar, options bar, tool strip | document tabs + views | panel dock, status bar.
+ * Photoshop-style shell: menu bar, options bar, tool strip | views | panel dock, status bar.
  * One dark theme after Adobe Spectrum 2 (the Photoshop UI): a few greys stepping up from the canvas to floating surfaces,
- * one blue accent, Adobe's open-source Source Sans 3 and Source Code Pro, 4 px corners on controls, 8 px on floating
- * surfaces, flat (no drop shadows). Every bar, panel, menu and floating widget takes its colours, type and borders from these tokens.
+ * one blue accent, Adobe's open-source Source Sans 3 and Source Code Pro.
+ *
+ * Geometry is deliberately small: 4 px on controls, rows and menus; 8 px only on large floating surfaces. Circles are
+ * reserved for things that mean "point" (status dots, the brush cursor). Elevation is one shadow token for floating
+ * surfaces; nothing else in the chrome floats above the work.
  */
+/* The two faces are bundled: the desktop app must not fall back to system-ui when it is offline. Latin subsets, OFL. */
+@font-face {
+  font-family: "Source Sans 3";
+  src: url("/fonts/source-sans-3.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Source Code Pro";
+  src: url("/fonts/source-code-pro.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   /* Surfaces, darkest to lightest */
   --app: #1e1e1e;       /* behind everything */
@@ -12,17 +31,25 @@
   --chrome: #2e2e2e;    /* bars: menu, options, tool strip, tabs, panel headers */
   --raise: #323232;     /* floating surfaces: task bars, floor widget, menus, popovers, the 3D window */
   --line: #141414;      /* borders between areas */
+  --line-2: #222222;    /* borders inside wells and lists */
   --hair: #3c3c3c;      /* inner separators, hover fills */
   --edge-hi: #474747;   /* the light rim of floating surfaces */
+  --hover: #ffffff08;   /* row hover inside a well */
   /* Text */
-  --fg: #e3e3e3; --muted: #9a9a9a; --faint: #6f6f6f;
+  --fg: #e3e3e3; --muted: #9a9a9a; --faint: #6f6f6f; --icon: #cfcfcf; --ink-dark: #111;
   /* Accent (Spectrum blue) */
-  --accent: #3b8af0; --accent-ink: #fff; --accent-soft: #3b8af033; --row-on: #2d4c72;
+  --accent: #3b8af0; --accent-hover: #4c97f5; --accent-ink: #fff; --accent-soft: #3b8af033; --row-on: #2d4c72;
+  --hair-hi: #4a4a4a;   /* the second hover step on dense grids */
+  /* Semantic colour: one role per meaning, in chrome and on the model */
+  --ok: #4cb85a; --warn: #f0c43a; --bad: #e2483a; --bad-ink: #ff8a80;
+  --sel: #ff8f1f; --seam: #e8402a;   /* Blender's selection orange, its seam red */
   /* Plan canvas */
   --canvas: #1d1f22; --grid: #26292d; --grid-major: #383d43; --edge: #0d0d0d;
   /* Shape */
   --r-s: 4px; --r-m: 8px;
-  --ctl: 24px;          /* control height: buttons, fields, selects */
+  --shadow-pop: 0 8px 24px #0008;
+  --ctl-sm: 22px; --ctl: 24px; --ctl-lg: 28px; --ctl-xl: 32px;
+  --bar: 32px; --row: 28px;
   --ui: "Source Sans 3", "Adobe Clean", system-ui, sans-serif; --num: "Source Code Pro", ui-monospace, Consolas, monospace;
   --fs: 13px; --fs-s: 12px; --fs-xs: 11px;
   color-scheme: dark;
@@ -33,12 +60,16 @@ body { background: var(--app); color: var(--fg); font: var(--fs) / 1.3 var(--ui)
 button, select, input, textarea { font: inherit; color: inherit; }
 button { display: inline-flex; align-items: center; gap: 5px; background: none; border: 1px solid transparent; border-radius: var(--r-s); padding: 2px 8px; min-height: var(--ctl); cursor: pointer; }
 button:hover:not(:disabled) { background: var(--hair); }
-button:disabled { opacity: .4; cursor: default; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+button:disabled { opacity: .45; cursor: default; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+[aria-pressed="true"]:focus-visible, [aria-selected="true"]:focus-visible, [aria-checked="true"]:focus-visible { outline-color: var(--fg); }
 select, input { line-height: normal; height: var(--ctl); background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); padding: 0 6px; }
 select:hover, input:hover:not(:disabled) { border-color: var(--hair); }
 input:focus, select:focus { border-color: var(--accent); outline: none; }
 input[type="number"] { font: var(--fs-s) var(--num); }
+input[type="checkbox"], input[type="radio"] { height: auto; accent-color: var(--accent); }
+input[type="range"] { height: auto; padding: 0; border: 0; background: none; accent-color: var(--accent); }
+input[type="color"] { padding: 2px; }
 input:disabled, select:disabled { opacity: .5; }
 kbd { font: 10px var(--num); color: var(--muted); margin-left: auto; padding-left: 24px; }
 .hint { color: var(--muted); margin: 0; }

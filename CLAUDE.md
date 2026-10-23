@@ -72,7 +72,7 @@ plane walk, re-triangulate, new edges as seams; the editor then replaces the par
   (`wholeMesh`), island mode is off, and the UV keys, menus and right-click menu are off; export first unwraps parts Poly Doc changed.
 
 ## Poly Doc (second workspace: `src/panels/PolyDoc.tsx`, `src/shell/PolyTools.tsx`, `src/polygeo.ts`, `src/health.ts`)
-Pill tabs under the menu bar (`src/shell/AppTabs.tsx`, Affinity's Vector | Pixel | Layout): UV Magician | Poly Doc (`workspace` in the store).
+Square workspace tabs under the menu bar (`src/shell/AppTabs.tsx`, Photoshop/Affinity's persona switch): Poly Doc | UV Magician | Van Gogh (`workspace` in the store), with the current file and its edited dot on the right.
 Poly Doc is a manual inspect-and-fix tool, never automatic, and isolated from the unwrap: it reads the mesh alone (no UVs, no stretch)
 and never calls the engine. Opening a model there or any geometry edit shows the bare mesh as the part's output (`meshOnly`, the
 loader's `placeholder`) and marks the part `stale`; switching to UV Magician (`showWorkspace` → `unwrapStale`) unwraps every part if
@@ -88,22 +88,29 @@ polygons (`Part.poly` / `Part.sides`) and never move them, so UVs and stretch st
 connected patch (`dissolveFaces`, whole patch at once), edges selected → the two sides of each edge merge; Tris to Quads: lone selected triangles paired greedily, flattest
 (bend < 40°) and squarest first, convex only. A merge whose outline wouldn't be one simple loop is skipped. A triangles-only file
 starts as one polygon per triangle (`ownPolygons`). Check: `node src/polyedit.check.ts`.
-The 3D view's Shading popover (`views/SceneSettings.tsx`, Blender's Viewport Shading): Lighting Studio (lights + environment map) /
+The options bar ends with the same ViewControls cluster in every workspace (`shell/Chrome.tsx`): selection | Display |
+Shading. Selection is Vertex / Edge / Face / Island (Poly Doc disables Island: it has no UVs); Van Gogh's same slot is
+Face / Island / Part (what Select Faces and Bucket pick). Display is the workspace's view mode (Poly Doc Wire / Smooth /
+Health = `docView`; UV Magician Checker / Stretch / Islands = `mode`; Van Gogh Studio / MatCap / Flat = `scene.lighting`),
+mirrored by the Z pie and View › Display, so Z never cycles or means something else in another workspace.
+The Shading popover (`views/SceneSettings.tsx`, Blender's Viewport Shading): Lighting Studio (lights + environment map) /
 MatCap (`src/shading.ts`: spheres drawn on a canvas, no image files: clay, studio grey, red wax, jade, chrome, toon, normals) / Flat
-(unlit); Color (UV Magician: Checker / Stretch / Islands = `mode`; Poly Doc: Single / Random per part = `docColor`, Health); Background
+(unlit); Poly Doc Face color (Single / Random per part = `docColor`); Background
 Theme / World (the map, `hdriBackground`) / Custom; Options: Backface Culling, Outline (drei `Outlines`), Specular, X-Ray + alpha,
 Shadow + amount, Cavity (world space, `cavityOf`: neighbours' height over each vertex's tangent plane; Ridge / Valley); Overlays.
 `PartMesh` builds one colour attribute (colour mode × cavity) and picks the material by lighting.
-Both workspaces share one frame so switching never moves anything (`.space`: a 36 px options bar row, then strip | views | panel;
-UV Magician's bar is `UVOptionsBar`: last strip tool `uvTool` and its tip, selection, Live Unwrap). File › Open Recent (`src/recent.ts`,
+All three workspaces share one frame so switching never moves anything (`.space`: a 32 px options bar row that wraps instead of clipping,
+then strip | views | panel; UV Magician's bar is `UVOptionsBar`: last strip tool `uvTool`, selection, Unwrap selection,
+Live Unwrap; Van Gogh's is `PaintOptionsBar`: the tool's settings; both end in ViewControls). File › Open Recent (`src/recent.ts`,
 IndexedDB, newest 10 by name): a File System Access handle where the browser has `showOpenFilePicker` (Chromium, WebView2: reread from
 disk, permission asked once), else a copy up to 64 MB; a file that can't be reopened drops off the list.
-Both workspaces: a tool strip on the left (`ToolStrip` in `shell/PolyTools.tsx`; UV Magician's is `shell/UVTools.tsx`: box select,
-loop, linked, Cut, Stitch, Unwrap Selection, Pin, Unpin, Live Unwrap, Relax, Pack) and draggable dividers (`shell/Resizer.tsx`, espresso's
-dock resizer: the panel's width `dockWidth`, and in UV Magician the 3D / UV share `viewSplit`, both kept in localStorage). Poly Doc's
-panel has the Parts list too (`Parts doc`: polygon counts, no checker toggle).
+The workspaces: a tool strip on the left (`ToolStrip` in `shell/PolyTools.tsx`; UV Magician's is `shell/UVTools.tsx`: box select,
+loop, linked, Cut, Stitch, Pin, Unpin; the one-shot island commands are in the contextual `IslandBar` and the dock's collapsed
+sections) and draggable dividers (`shell/Resizer.tsx`, espresso's dock resizer: the panel's width `dockWidth`, and in UV Magician the
+3D / UV share `viewSplit`, both kept in localStorage). Poly Doc's panel has the Parts list too (`Parts workspace="doc"`: polygon counts,
+no checker toggle). Panels collapse from their headers; Van Gogh pins Layers to the bottom.
 Layout (Photoshop / espresso-level-designer): options bar on top (`PolyOptionsBar`: current tool, its settings `docOpts` = slide
-amount, Limited Dissolve angle, Relax rounds, Again, and `fixNote`), tool strip on the left (`PolyToolStrip`, `shell/PolyTools.tsx`:
+amount, Limited Dissolve angle, Relax rounds, `fixNote`, then the shared ViewControls), tool strip on the left (`PolyToolStrip`, `shell/PolyTools.tsx`:
 line glyphs in Spectrum's stroke weight, grouped clean up / shape / edge loops; a click runs the tool and makes it `docTool`; dimmed
 until the selection fits), the panel on the right for looking only. Panel order: Health, Mesh Check (non-manifold / flipped / zero-area / duplicate faces, open edges: `polygeo.meshCheck`, each selectable),
 Polygons (census, poles = inside vertices with 3 or 5+ polygon edges, `polygeo.poles`, dots on the model).
@@ -121,7 +128,7 @@ at centre) / Collapse (each edge group), Rotate Edge, Loop Cut (Ctrl+R through t
 rails), Space / Straighten (snapped to the surface) / Circle, Grid Fill (an even n-gon ≥ 6, or a hole's closed open-edge loop; Coons
 patch). They share `rebuild` (replaced polygons re-triangulated by ear clipping, a neighbour's triangle on a new mid-edge vertex split).
 Selections cross between the output and the soup through `polyedit.link` (nearest corner per source triangle). Limited Dissolve (5°)
-is a regroup. Poly Doc view (`docView`, header switch or hold Z for the pie: let go toward an item, or tap and click): Wire (flat polygons +
+is a regroup. Poly Doc view (`docView`, the Display control, Z pie or View › Display: hold Z and let go toward an item, or tap Z and click): Wire (flat polygons +
 wireframe), Smooth (Auto Smooth within Sharp edges, no wireframe), Health (`src/health.ts`, `healthReport`: named rules
 per polygon, each with its green limit, why and source (`RULES`): broken mesh (non-manifold, flipped, zero-area, duplicate: red);
 Sandia CUBIT / Verdict shape metrics with their acceptable ranges as the green limit: triangle min angle ≥ 30° / max ≤ 120° (CUBIT
@@ -162,19 +169,20 @@ eraser stay inside; document-wide like Photoshop's (`selectDoc`: replacing it em
 (`shade`, an overlay mesh in 3D, drawn over the texture). Tools (Photoshop keys): Marquee M / Lasso L (on the model:
 screen shape, only what's seen, `depthOf`; in the texture view: UV polygon; a click deselects), Select Faces W, Bucket G
 (both take Face = the file's polygon / Island / Part, options bar), Brush B, Eraser E, Eyedropper I (and Alt+click with
-Brush / Bucket). Shift adds, Alt takes away; Ctrl+click picks the part (opens it in the Parts tree). Ctrl+A / Ctrl+D
-deselect, Ctrl+Shift+I invert, Alt+Backspace fill selection (no selection: the layer), Delete clear, Ctrl+J duplicate,
+Brush / Bucket). Shift adds, Alt takes away; Ctrl+click picks the part (opens it in the Parts tree). Ctrl+A select all,
+Ctrl+D deselect, Ctrl+Shift+I invert, Alt+Backspace fill selection (no selection: the layer), Delete clear, Ctrl+J duplicate,
 Ctrl+Shift+N new layer, Ctrl+[ ] move layer, [ ] brush size, Ctrl+Z (20 steps across sets, copy-on-write layers). A dab on
 the model is a world-space sphere (triangles near it rasterised in UV), in the texture view a texel circle (size % of the
 texture); each texel takes a dab once (strongest weight) so triangle edges never show, and paint bleeds 1.5 px only across
 UV borders (`bordersOf`), so a face fill stops exactly at its edges inside an island. Panel: Parts tree (collapsible,
 `paintOpen`; channels under each, click one to see it in the texture view), Layers as Photoshop's (opacity on top, rows
-with eye + thumbnail, drag to reorder, double-click renames; Fill / Duplicate / New / Delete along the bottom), Export
-textures (one PNG per channel). Painted texels don't follow a re-unwrap; One atlas parts each still get their own set.
-Colour panel on top of the dock (`panels/ColorWheel.tsx`, Affinity's): hue ring (clockwise from red at the right) round
+with eye + thumbnail, drag to reorder, double-click renames; Fill / Duplicate / New / Delete along the bottom), pinned
+to the bottom of the dock; File › Export › Textures writes one PNG per channel. Painted texels don't follow a re-unwrap;
+One atlas parts each still get their own set.
+Color panel on top of the dock (`panels/ColorWheel.tsx`, Affinity's): hue ring (clockwise from red at the right) round
 an HSV triangle (tip the hue, white, black), swatch, eyedropper, H S L, hex, Flow; the dock scrolls (`.paintdock`).
 Brush cursor (Substance's): on the model two rings on the face under the mouse (`BrushCursor`: dashed = the dab's
-reach, solid = hardness), in the texture view CSS rings at the mouse. Bake (`src/bake.ts`, Bake panel, every visible part,
+reach, solid = hardness), in the texture view CSS rings at the mouse. Bake (`src/bake.ts`, Mesh Maps panel, every visible part,
 every part occluding the others): AO the GPU way, the model's depth from 96 directions (orthographic, an offscreen
 renderer), per texel the cosine-weighted share of its sky seen (texel point + face normal from `surfaceOf`, lifted 1.5
 depth texels); edge maps = distance to the nearest sharp (> 20°) convex / concave edge over its strength, from edges

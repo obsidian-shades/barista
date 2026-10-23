@@ -3,6 +3,7 @@
 // for hue, the triangle for saturation and brightness. Below: the swatch, the eyedropper, H S L, hex, and Flow.
 import { useEffect, useRef, useState } from 'react';
 import { setPaint, useApp } from '../store';
+import { glyph } from '../ui/Icon';
 
 const SIZE = 160, RING = 14;
 type Hsv = [h: number, s: number, v: number];
@@ -103,16 +104,16 @@ export function ColorWheel() {
   return (
     <div className="colorwheel">
       <div className="cwtop">
-        <span className="cwswatch" style={{ background: color }} title="The paint colour" />
-        <button aria-pressed={tool === 'picker'} title="Eyedropper: click the model or the texture to take its colour (I)" aria-label="Eyedropper" onClick={() => setPaint({ tool: 'picker' })}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true"><path d="M2 14l1-3 6.5-6.5 2 2L5 13zM9.5 4.5l1.5-1.5a1.4 1.4 0 0 1 2 2L11.5 6.5" /></svg>
+        <span className="cwswatch" style={{ background: color }} title="The paint color" />
+        <button aria-pressed={tool === 'picker'} title="Eyedropper: click the model or the texture to take its color (I)" aria-label="Eyedropper" onClick={() => setPaint({ tool: 'picker' })}>
+          {glyph('M2 14l1-3 6.5-6.5 2 2L5 13zM9.5 4.5l1.5-1.5a1.4 1.4 0 0 1 2 2L11.5 6.5')}
         </button>
       </div>
       <canvas ref={cv} style={{ width: SIZE, height: SIZE }} onPointerDown={down} onPointerMove={(e) => drag.current && move(e)} onPointerUp={() => { drag.current = null; }}
-        aria-label="Colour wheel: drag the ring for hue, the triangle for saturation and brightness" />
+        aria-label="Color wheel: drag the ring for hue, the triangle for saturation and brightness" />
       <div className="cwread">
         <span className="num">H: {H}<br />S: {S}<br />L: {L}</span>
-        <label title="Hex colour">#<input value={hex.replace('#', '').toUpperCase()} maxLength={7} spellCheck={false} onChange={(e) => setHex(e.target.value)} onBlur={commitHex} onKeyDown={(e) => e.key === 'Enter' && commitHex()} /></label>
+        <label title="Hex color">#<input value={hex.replace('#', '').toUpperCase()} maxLength={7} spellCheck={false} onChange={(e) => setHex(e.target.value)} onBlur={commitHex} onKeyDown={(e) => e.key === 'Enter' && commitHex()} /></label>
       </div>
       <label className="cwflow" title="How much each dab lays down; strokes build up">Flow
         <input type="range" min={0.05} max={1} step={0.05} value={flow} onChange={(e) => setPaint({ flow: +e.target.value })} />

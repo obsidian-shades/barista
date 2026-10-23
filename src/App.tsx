@@ -11,12 +11,12 @@ import { PolyOptionsBar, PolyToolStrip, runTool } from './shell/PolyTools';
 import { Resizer } from './shell/Resizer';
 import { UVOptionsBar, UVToolStrip } from './shell/UVTools';
 import {
-  armBox, cancelDocMove, cancelXform, confirmDocMove, dissolveSel, docMoveAxis, docViewPie, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, exportFbx, flipSel, invertSelection, pickFile, pinSelected, pointer, redo, repack,
-  pieMenu, scaleSel, cutSelection, stitchSelection, selectAll, selectLinked, selectLinkedUnder, setSelectMode, startXform, undo, unwrap, unwrapSelected, useApp, viewOp, xformKey, xformSnap, type Mode, type SelectMode,
+  armBox, cancelDocMove, cancelXform, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, exportFbx, flipSel, invertSelection, pickFile, pinSelected, pointer, redo, repack,
+  pieMenu, scaleSel, cutSelection, stitchSelection, selectAll, selectAllPaint, selectLinked, selectLinkedUnder, setSelectMode, startXform, undo, unwrap, unwrapSelected, useApp, viewOp, viewPie, xformKey, xformSnap, openFile, type SelectMode,
   type ViewOp, type XformKind, setPaint, undoPaint, deselectPaint, invertPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, fillPaintSelection, type PaintTool,
 } from './store';
+import { Tooltip } from './ui/Tooltip';
 
-const MODES: Mode[] = ['checker', 'stretch', 'islands'];
 const SELECT_MODES: Record<string, SelectMode> = { Digit1: 'vert', Digit2: 'edge', Digit3: 'face', Digit4: 'island' };
 /** Blender's numpad views (Ctrl: the opposite side) and orbit steps. */
 const NUMPAD: Record<string, [ViewOp, ViewOp?]> = {
@@ -34,7 +34,7 @@ let zDown = 0;
 /** Z let go after holding it: pick the pie item in the direction the mouse moved, as Blender's pies do. */
 function releaseZ(e: KeyboardEvent) {
   const menu = useApp.getState().menu;
-  if (e.key.toLowerCase() !== 'z' || !menu?.pie || performance.now() - zDown < 250) return;
+  if (e.key.toLowerCase() !== 'z' || !menu?.pie || menu.title !== 'Display' || performance.now() - zDown < 250) return;
   const dx = mouse.x - menu.x, dy = mouse.y - menu.y;
   if (Math.hypot(dx, dy) < 25) return closeMenu();
   // items sit round the hub at i/n of a turn, clockwise from the top (the pie's ellipse: 120 × 92)
@@ -49,13 +49,26 @@ function onKey(e: KeyboardEvent) {
   if ((e.target as HTMLElement).closest?.('input, select, textarea')) return;
   const k = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
   const run = (f: () => unknown) => { e.preventDefault(); f(); };
+  // Esc closes the menu at the pointer from every workspace (Van Gogh had no path to it before).
+  if (k === 'escape' && useApp.getState().menu) return run(closeMenu);
+  // A menu at the pointer is modal: every other key belongs to the pie/list until it closes.
+  if (useApp.getState().menu) return;
+  // Z: the Display pie, in every workspace: hold and release toward a view, or tap and click one. (Mid G/R/S and mid
+  // Poly Doc move, Z belongs to the transform instead. Ctrl+Z stays undo everywhere.)
+  const now = useApp.getState();
+  if (!ctrl && !e.altKey && !e.shiftKey && k === 'z' && !now.xform && !now.docMove) {
+    e.preventDefault();
+    if (!e.repeat) { zDown = performance.now(); viewPie(); }
+    return;
+  }
   // Van Gogh: Photoshop's keys (tools M L W B E G I; Ctrl+A / Ctrl+D / Ctrl+Shift+I selection; Alt+Backspace fill,
   // Delete clear; Ctrl+J duplicate, Ctrl+Shift+N new layer, Ctrl+[ ] move it; [ ] brush size) and the view keys
   if (useApp.getState().workspace === 'paint') {
     const p = useApp.getState().paint;
     if (ctrl) {
       if (k === 'z') return run(undoPaint);
-      if (k === 'a' || k === 'd') return run(deselectPaint);
+      if (k === 'a') return run(selectAllPaint);
+      if (k === 'd') return run(deselectPaint);
       if (k === 'i') return run(invertPaintSelection);
       if (k === 'j') return run(duplicatePaintLayer);
       if (k === 'n' && e.shiftKey) return run(addPaintLayer);
@@ -66,12 +79,12 @@ function onKey(e: KeyboardEvent) {
       if (k === 'delete') return run(() => fillPaintSelection(true));
       if (k === '[' || k === ']') return run(() => setPaint({ size: Math.min(20, Math.max(0.2, +(p.size * (k === ']' ? 1.2 : 1 / 1.2)).toFixed(1))) }));
     }
-    if (!NUMPAD[e.code] && e.code !== 'NumpadDecimal' && k !== ' ' && k !== 'home' && !(ctrl && k === 'o')) return;
+    if (!NUMPAD[e.code] && e.code !== 'NumpadDecimal' && k !== 'home' && !(ctrl && k === 'o')) return;
   }
-  // Poly Doc keeps the selection, view, file and topology keys; the UV ones (G R S, U, P, C V, Q, F, Z…) do nothing there
+  // Poly Doc keeps the selection, view, file and topology keys; the UV ones (G R S, U, P, C V, Q, F…) do nothing there
   if (useApp.getState().workspace === 'doc' && !NUMPAD[e.code] && e.code !== 'NumpadDecimal' && k !== ' ' && k !== 'home' && !SELECT_MODES[e.code]
     && !useApp.getState().docMove
-    && !(ctrl ? ['o', 'z', 'y', 'i', 'l', 'x', 'r'].includes(k) || (k === 'e' && e.shiftKey) : e.altKey ? ['a', 'j'].includes(k) : ['a', 'l', 'b', 'g', 'j', 'm', 'z', 'escape'].includes(k))) return;
+    && !(ctrl ? ['o', 'z', 'y', 'i', 'l', 'x', 'r'].includes(k) || (k === 'e' && e.shiftKey) : e.altKey ? ['a', 'j'].includes(k) : ['a', 'l', 'b', 'g', 'j', 'm', 'escape'].includes(k))) return;
   // Poly Doc's G: while moving, keys belong to it (X Y Z lock an axis, Enter keeps, Esc cancels)
   if (useApp.getState().docMove) {
     e.preventDefault();
@@ -81,12 +94,6 @@ function onKey(e: KeyboardEvent) {
     return;
   }
   if (useApp.getState().workspace === 'doc' && !ctrl && !e.altKey && k === 'g') return run(() => startDocMove(mouse.x, mouse.y));
-  if (useApp.getState().workspace === 'doc' && !ctrl && !e.altKey && k === 'z') {
-    // hold Z: the view pie; let go over (or toward) a view to pick it, or tap Z and click one
-    e.preventDefault();
-    if (!e.repeat && !useApp.getState().menu) { zDown = performance.now(); docViewPie(); }
-    return;
-  }
   if (useApp.getState().workspace === 'doc' && !e.altKey) {
     // Blender's J (connect vertex path), M (merge at centre), Ctrl+R (loop cut, here through the selected edge)
     if (!ctrl && k === 'j') return run(() => runTool('connect'));
@@ -133,7 +140,6 @@ function onKey(e: KeyboardEvent) {
   else if (k === 'u') run(unwrapSelected);
   else if (k === 'c') run(cutSelection);
   else if (k === 'v') run(stitchSelection);
-  else if (k === 'z') run(() => useApp.setState((s) => ({ mode: MODES[(MODES.indexOf(s.mode) + 1) % MODES.length] })));
   else if (k === 'f') flipSel(!e.shiftKey);
   else if (k === '[') scaleSel(1 / 1.1);
   else if (k === ']') scaleSel(1.1);
@@ -144,7 +150,7 @@ export default function App() {
   useEffect(() => {
     void connect();
     const up = (e: KeyboardEvent) => { if (e.key === 'Control') xformSnap(false); releaseZ(e); };
-    const move = (e: PointerEvent) => { mouse.x = e.clientX; mouse.y = e.clientY; if (useApp.getState().docMove) updateDocMove(e.clientX, e.clientY); };
+    const move = (e: PointerEvent) => { mouse.x = e.clientX; mouse.y = e.clientY; pointer.x = e.clientX; pointer.y = e.clientY; if (useApp.getState().docMove) updateDocMove(e.clientX, e.clientY); };
     // while G moves vertices, a click keeps the move and a right-click cancels it (and neither selects nor orbits)
     const press = (e: PointerEvent) => {
       if (!useApp.getState().docMove) return;
@@ -158,11 +164,13 @@ export default function App() {
     return () => { removeEventListener('keydown', onKey); removeEventListener('keyup', up); removeEventListener('pointermove', move); removeEventListener('pointerdown', press, true); };
   }, []);
   const workspace = useApp((s) => s.workspace), dockW = useApp((s) => s.dockWidth), split = useApp((s) => s.viewSplit), work = useRef<HTMLDivElement>(null);
+  const source = useApp((s) => s.source);
+  useEffect(() => { document.title = source ? `${source} — Barista` : 'Barista'; }, [source]);
   const rect = () => work.current!.getBoundingClientRect();
   // the panel's divider sets its width; the one between the 3D and UV views their shares of what's left (40 px strip, 2 × 6 px dividers)
   const dock = <Resizer label="Resize the panel" onDrag={(x) => setDockWidth(rect().right - x)} onStep={(d) => setDockWidth(dockW - d * 16)} />;
   return (
-    <div className="app">
+    <div className="app" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) void openFile(f); }}>
       <MenuBar />
       <AppTabs />
       {/* one frame for both tools, so switching never moves anything: options bar, then strip | views | panel */}
@@ -188,6 +196,7 @@ export default function App() {
       </div>
       <StatusBar />
       <PopupMenu />
+      <Tooltip />
     </div>
   );
 }

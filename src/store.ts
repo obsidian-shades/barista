@@ -20,8 +20,9 @@ export type SelectMode = 'vert' | 'edge' | 'face' | 'island';
 /** Blender's edit-mode selection on one part: vertex, edge and face (triangle) ids of its output (`topoOf`), kept
  *  consistent with each other. `of`: the output positions it was made on. */
 export interface CompSel { part: number; of: number[]; verts: Set<number>; edges: Set<number>; faces: Set<number> }
-/** A menu row: an action, or (`kind`) a section heading or a line of information (`tone`: 0 green … 1 red; `title`: its tooltip). */
-export interface MenuItem { label: string; run: () => void; kbd?: string; off?: boolean; kind?: 'head' | 'info'; tone?: number; title?: string }
+/** A menu row: an action, or (`kind`) a section heading or a line of information (`tone`: 0 green … 1 red; `title`: its tooltip).
+ *  `on` marks the current choice, in a pie or a list. */
+export interface MenuItem { label: string; run: () => void; kbd?: string; off?: boolean; kind?: 'head' | 'info'; tone?: number; title?: string; on?: boolean }
 export type UvScope = 'part' | 'all';
 
 /** The 3D view's lighting and overlays. An environment map brings its own grade (see HDRI_PRESETS);
@@ -251,7 +252,7 @@ function saved(key: string, fallback: number, min: number, max: number) {
   try { const v = Number(localStorage.getItem(key)); return localStorage.getItem(key) !== null && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback; } catch { return fallback; }
 }
 const keep = (key: string, v: number) => { try { localStorage.setItem(key, String(v)); } catch { /* private mode */ } };
-export const setDockWidth = (w: number) => { const dockWidth = Math.round(Math.min(520, Math.max(220, w))); set({ dockWidth }); keep('dockWidth', dockWidth); };
+export const setDockWidth = (w: number) => { const dockWidth = Math.round(Math.min(420, Math.max(260, w))); set({ dockWidth }); keep('dockWidth', dockWidth); };
 export const setViewSplit = (f: number) => { const viewSplit = Math.min(0.8, Math.max(0.2, f)); set({ viewSplit }); keep('viewSplit', viewSplit); };
 const savedWorkspace = (): Workspace => { try { return (['doc', 'paint'] as const).find((w) => w === localStorage.getItem('workspace')) ?? 'uv'; } catch { return 'uv'; } };
 
@@ -260,7 +261,7 @@ export const useApp = create<State>(() => ({
   rev: 0, past: [], future: [], partsPast: [], partsFuture: [], selected: [], selectMode: 'face', csel: null, viewReq: { view: '3d', op: 'all', n: 0 }, menu: null, boxArmed: false, xform: null, liveUnwrap: true, afterAlign: saved('afterAlign', 1, 0, 1) === 1, afterPack: saved('afterPack', 1, 0, 1) === 1, pins: {}, shapeClipboard: null, mode: 'checker', textureResolution: 1024, recentColors: [],
   scene: { background: '#111111', ...WORK_LIGHT, hdriUrl: null, hdriId: '', hdriName: '', hdriBackground: false, hdriStrength: 1, hdriRotation: 0, hdriBlur: 0, wireframe: false, showEdges: true, showVertices: true, showSeams: true, showGrid: false, showAxes: false,
     lighting: 'studio', matcap: 'clay', bg: 'theme', backface: false, outline: false, specular: true, xray: false, xrayAlpha: 0.5, shadow: false, shadowAmount: 0.4, cavity: false, cavityType: 'both', cavityDistance: 0.2, ridge: 1, valley: 1 }, unfold: 0,
-  busy: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 290, 220, 520), viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, moveOnSurface: true,
+  busy: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 300, 260, 420), viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, moveOnSurface: true,
   paint: { tool: 'brush', color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: true, metal: true }, size: 3, flow: 0.6, hardness: 0.5, by: 'island' }, paintChannel: 'material', paintRev: 0, paintOpen: [0], paintAO: true,
 }));
 const set = useApp.setState, get = useApp.getState;
@@ -489,9 +490,7 @@ function land(partIndex: number, raw: PartOut, partUvs: Float32Array, seams: num
 // ---- loading, unwrapping, exporting ----
 export const connect = () => task('Connecting to engine…', async () => {
   void recentFiles().then((r) => set({ recent: r.map(({ name, time }) => ({ name, time })) }));
-  const before = latest;
   set({ shapes: await api.shapes() });
-  if (latest === before && !get().parts.length) await loadShape(get().shapes[0]); // nothing opened meanwhile
 });
 export const unwrap = () => task('Unwrapping…', async () => {
   if (get().loading) return;
@@ -740,6 +739,31 @@ export function liveSel(s: State = get()): CompSel | null {
 type Kind = 'verts' | 'edges' | 'faces';
 /** What a mode picks: vertices, edges or faces (island mode: faces, whole islands at a time). */
 export const kindOf = (m: SelectMode): Kind => (m === 'vert' ? 'verts' : m === 'edge' ? 'edges' : 'faces');
+/** The selection counted the way the status and options bars say it, in every workspace: a face is its whole polygon
+ *  (not its triangles), an edge you can pick (not a polygon's hidden diagonal), an island the islands it touches. */
+export function selectionCount(s: State = get()): { n: number; label: string } | null {
+  const c = liveSel(s);
+  if (!c) return null;
+  const m = s.selectMode;
+  if (m === 'island') {
+    const n = s.selected.length;
+    return { n, label: n === 1 ? 'island' : 'islands' };
+  }
+  if (m === 'face') {
+    const out = s.result?.parts[c.part], pid = out ? polygonsOf(out.source, s.parts[c.part]?.poly) : null;
+    const n = pid ? new Set([...c.faces].map((f) => (pid[f] < 0 ? -1 - f : pid[f]))).size : c.faces.size;
+    return { n, label: n === 1 ? 'face' : 'faces' };
+  }
+  if (m === 'edge') {
+    const out = s.result?.parts[c.part];
+    if (!out) return { n: c.edges.size, label: c.edges.size === 1 ? 'edge' : 'edges' };
+    const pid = polygonsOf(out.source, s.parts[c.part]?.poly), t = topoOf(c.of);
+    const n = [...c.edges].filter((e) => { const [a, b] = t.edgeTris[e]; return b === undefined || pid[a] < 0 || pid[a] !== pid[b]; }).length;
+    return { n, label: n === 1 ? 'edge' : 'edges' };
+  }
+  const n = c.verts.size;
+  return { n, label: n === 1 ? 'vertex' : 'vertices' };
+}
 
 /** A selection of one kind with the other two flushed from it, as Blender does: in vertex mode an edge is selected
  *  when both its ends are and a face when its three corners are; in edge mode a face when its three edges are;
@@ -823,8 +847,8 @@ function selectFaces(part: number, faces: number[], op: SelOp, polygons = true) 
   selectElems(part, kind === 'faces' ? faces : flushed(part, out.positions, 'faces', faces)[kind], op, polygons);
 }
 export function showWorkspace(workspace: Workspace) {
-  // Poly Doc has no islands (it doesn't unwrap): island select mode becomes face mode there
-  if (workspace === 'doc' && get().selectMode === 'island') setSelectMode('face');
+  // Poly Doc has no islands (it doesn't unwrap) and no UV view: island select mode becomes face, framing keys target 3D
+  if (workspace === 'doc') { if (get().selectMode === 'island') setSelectMode('face'); pointer.view = '3d'; }
   set(workspace === 'uv' ? { workspace } : { workspace, unfold: 0 });
   try { localStorage.setItem('workspace', workspace); } catch { /* private mode */ }
   if (workspace !== 'doc') void unwrapStale(); // Van Gogh paints through the UVs
@@ -862,7 +886,7 @@ function regroup(what: string, edit: (soup: Float32Array, cur: Polys, c: CompSel
     return set({ fixNote: `${what}: nothing changed. ${why([k[0] && `${k[0]} triangles`, k[1] && `${k[1]} quads`, k[2] && `${k[2]} n-gons`].filter(Boolean).join(', ') || 'no faces')}` });
   }
   keepParts();
-  set({ parts: s.parts.map((p, i) => (i === c.part ? { ...p, poly: next.poly, sides: next.sides } : p)), fixNote: `${what}: ${polys(count(cur))} → ${count(next)}. Ctrl+Z undoes it.` });
+  set({ parts: s.parts.map((p, i) => (i === c.part ? { ...p, poly: next.poly, sides: next.sides } : p)), fixNote: `${what}: ${polys(count(cur))} → ${count(next)}.` });
 }
 /** X › Dissolve: faces selected → the polygons merge into one per connected patch (Dissolve Faces); edges selected → the
  *  polygons on either side of each edge merge (Dissolve Edges). */
@@ -930,7 +954,7 @@ const reshape = (what: string, need: string, done: string, why: string, edit: (g
     if (edges.has(a < b ? `${a}|${b}` : `${b}|${a}`)) marked.push(...part.marked.slice(o, o + 6));
   }
   keepParts();
-  set({ parts: get().parts.map((p, i) => (i === at.part ? { ...p, soup: r.geo.soup, poly: r.geo.poly, sides: r.geo.sides, normals: undefined, marked, seams: marked, solved: [] } : p)), csel: null, fixNote: `${what}: ${done} Ctrl+Z undoes it.` });
+  set({ parts: get().parts.map((p, i) => (i === at.part ? { ...p, soup: r.geo.soup, poly: r.geo.poly, sides: r.geo.sides, normals: undefined, marked, seams: marked, solved: [] } : p)), csel: null, fixNote: `${what}: ${done}` });
   meshOnly(at.part);
   // what it made, found again in the new soup by position
   const t = topoOfSoup(r.geo.soup), vid = (p: number[]) => t.at.get(xyzKey(p[0], p[1], p[2])) ?? -1;
@@ -1016,7 +1040,7 @@ export function confirmDocMove() {
   const m = get().docMove;
   if (!m) return;
   cancelAnimationFrame(moveFrame); moveFrame = 0;
-  set({ docMove: null, fixNote: m.moved ? `Move: ${m.verts.length} vertices moved. Ctrl+Z undoes it.` : null });
+  set({ docMove: null, fixNote: m.moved ? `Move: ${m.verts.length} vertices moved.` : null });
   if (!m.moved) { set((s) => ({ partsPast: s.partsPast.slice(0, -1) })); return; }
   selectSoup(m.part, m.reselect);
 }
@@ -1042,9 +1066,43 @@ export const setDocOpt = (key: keyof State['docOpts'], value: number) => set((s)
 /** Smooth is how the model will look: it turns Cavity on (World + Screen), which can still be switched off there. */
 export const setDocView = (docView: DocView) => set((s) => ({ docView, ...(docView === 'smooth' && { scene: { ...s.scene, cavity: true, cavityType: 'both' as const } }) }));
 export const setDocColor = (docColor: 'single' | 'random') => set((s) => ({ docColor, docView: s.docView === 'health' ? 'wire' : s.docView }));
-/** Z in Poly Doc: the view pie (Blender's shading pie). */
-export const docViewPie = () => openMenu('View', ([['wire', 'Wire'], ['smooth', 'Smooth'], ['health', 'Health']] as const)
-  .map(([v, label]) => ({ label, run: () => setDocView(v) })), true);
+
+/** The one Display model: the options bar, the View menu and Z all offer the same choices in every workspace.
+ *  Poly Doc shows how solid the mesh is, UV Magician how the UVs are laid out, Van Gogh how the material is lit. */
+export interface DisplayChoice { id: string; label: string; title: string }
+export const DISPLAY: Record<Workspace, DisplayChoice[]> = {
+  doc: [
+    { id: 'wire', label: 'Wire', title: 'Each polygon flat, with the wireframe: for working on the topology' },
+    { id: 'smooth', label: 'Smooth', title: 'Smooth shaded, no wireframe: how the model will look' },
+    { id: 'health', label: 'Health', title: 'Every face green (solid) through yellow to red (fix)' },
+  ],
+  uv: [
+    { id: 'checker', label: 'Checker', title: 'The checker texture: texel density and distortion' },
+    { id: 'stretch', label: 'Stretch', title: 'Stretch colored per face' },
+    { id: 'islands', label: 'Islands', title: 'A color per UV island' },
+  ],
+  paint: [
+    { id: 'studio', label: 'Studio', title: 'The lit PBR material' },
+    { id: 'matcap', label: 'MatCap', title: 'A lit sphere the model takes its shading from by normal' },
+    { id: 'flat', label: 'Flat', title: 'Unlit colors' },
+  ],
+};
+export interface DisplayOption extends DisplayChoice { on: boolean; run: () => void }
+/** The workspace's Display choices with their current state and what picking them does. */
+export function displayChoices(s: State = get()): DisplayOption[] {
+  const workspace = s.workspace;
+  return DISPLAY[workspace].map((c) => ({
+    ...c,
+    on: workspace === 'doc' ? s.docView === c.id : workspace === 'paint' ? s.scene.lighting === c.id : s.mode === c.id,
+    run: () => {
+      if (workspace === 'doc') setDocView(c.id as DocView);
+      else if (workspace === 'paint') updateScene({ lighting: c.id as Scene['lighting'] });
+      else set({ mode: c.id as Mode });
+    },
+  }));
+}
+/** Pick a Display choice by id (the View menu's radio group). */
+export const setDisplay = (id: string) => displayChoices().find((c) => c.id === id)?.run();
 /** Alt+J: the selected lone triangles paired into quads. */
 /** The fixes the right-click menu suggests for a rule (Health's): each the usual cure for what that rule flags. */
 export const triangulateSel = () => regroup('Triangulate', (_soup, cur, c, _t, src) => triangulate(cur, [...c.faces].map((f) => src[f])),
@@ -1105,10 +1163,11 @@ export function select(ids: number[], add = false) {
   selectFaces(part, faces, add ? 'toggle' : 'set', false); // whole islands, exactly
 }
 
-/** 1 2 3 4: vertex, edge, face or island mode. The selection carries over, as Blender converts it. */
+/** 1 2 3 4: vertex, edge, face or island mode. The selection carries over, as Blender converts it. Poly Doc has no
+ *  islands, so 4 does nothing there (the control is disabled, not hidden, so the row never moves). */
 export function setSelectMode(m: SelectMode) {
   const s = get(), cur = liveSel(s);
-  if (m === 'island' && s.workspace === 'doc') m = 'face'; // Poly Doc has no islands
+  if (m === 'island' && s.workspace === 'doc') return;
   if (!cur || m === s.selectMode) return set({ selectMode: m });
   const out = s.result!.parts[cur.part];
   let own: Iterable<number> = cur[kindOf(m)];
@@ -1183,8 +1242,13 @@ async function loopEdges(soup: Float32Array, of: number[], seeds: number[]) {
 /** Ask a view to frame everything or the selection (Home, numpad .), or (3D) look along an axis or orbit a step. */
 export type ViewOp = 'all' | 'selected' | 'front' | 'back' | 'right' | 'left' | 'top' | 'bottom' | 'orbit-left' | 'orbit-right' | 'orbit-up' | 'orbit-down';
 export const viewOp = (view: '3d' | 'uv', op: ViewOp) => set((s) => ({ viewReq: { view, op, n: s.viewReq.n + 1 } }));
-/** A small menu at the pointer (Ctrl+E). */
-export const openMenu = (title: string, items: MenuItem[], pie = false) => set({ menu: { x: pointer.x, y: pointer.y, title, items, pie } });
+/** A small menu at the pointer (Ctrl+E). A pie keeps its whole ring inside the window, so pressing Z at an edge still
+ *  shows every item; `releaseZ` measures from the stored (clamped) centre. */
+export const openMenu = (title: string, items: MenuItem[], pie = false) => {
+  const x = pie ? Math.max(176, Math.min(innerWidth - 176, pointer.x)) : pointer.x;
+  const y = pie ? Math.max(120, Math.min(innerHeight - 120, pointer.y)) : pointer.y;
+  set({ menu: { x, y, title, items, pie } });
+};
 export const closeMenu = () => set({ menu: null });
 export const armBox = () => set({ boxArmed: true });
 /** What the menus offer, for the selection there is. */
@@ -1205,6 +1269,8 @@ function sewItems(): MenuItem[] {
 export const contextMenu = () => openMenu('Selection', sewItems());
 /** Q: the same as a pie round the pointer. */
 export const pieMenu = () => openMenu('Selection', sewItems(), true);
+/** Z, in every workspace: the same Display choices the options bar and View menu offer, as a pie at the pointer. */
+export const viewPie = () => openMenu('Display', displayChoices().map((c) => ({ label: c.label, run: c.run, title: c.title, on: c.on })), true);
 /** Ctrl+E: the edge menu. */
 export const edgeMenu = () => openMenu('Edge', sewItems().slice(0, 2).concat(sewItems()[6]));
 
@@ -1495,7 +1561,7 @@ export const alignSel = (edge: Edge) => editIslands((sel) => {
     const left = edge === 'left' || edge.endsWith('left'), right = edge === 'right' || edge.endsWith('right');
     const top = edge === 'top' || edge.startsWith('top-'), bottom = edge === 'bottom' || edge.startsWith('bottom-');
     const du = left ? all.u0 - b.u0 : right ? all.u1 - b.u1 : edge === 'center' ? (all.u0 + all.u1 - b.u0 - b.u1) / 2 : 0;
-    const dv = bottom ? all.v0 - b.v0 : top ? all.v1 - b.v1 : edge === 'middle' ? (all.v0 + all.v1 - b.v0 - b.v1) / 2 : 0;
+    const dv = bottom ? all.v0 - b.v0 : top ? all.v1 - b.v1 : edge === 'middle' || edge === 'center' ? (all.v0 + all.v1 - b.v0 - b.v1) / 2 : 0;
     moveBy(s.a, s.corners, du, dv);
   });
 });
@@ -2084,7 +2150,17 @@ function selectDoc(masks: Map<number, Uint8Array>, op: MaskOp) {
   ids.forEach((i, k) => selectMask(ts[k], masks.get(i) ?? new Uint8Array(ts[k].size * ts[k].size), op));
   repaint();
 }
-/** Ctrl+D (and Ctrl+A: everything selected is the same as no selection, for painting). */
+/** Ctrl+A: the whole visible texture selected, as Photoshop's Select All. Painting is unrestricted without a
+ *  selection either, so this mostly makes the state honest (and gives Invert something to work from). */
+export function selectAllPaint() {
+  const masks = new Map<number, Uint8Array>();
+  for (const i of visibleParts()) {
+    const n = texSet(i).size;
+    masks.set(i, new Uint8Array(n * n).fill(255));
+  }
+  if (masks.size) selectDoc(masks, 'set');
+}
+/** Ctrl+D: no selection. */
 export function deselectPaint() {
   const ts = visibleParts().map(texSet).filter((t) => t.sel);
   if (!ts.length) return;

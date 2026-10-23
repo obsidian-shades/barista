@@ -31,12 +31,12 @@ function Health() {
   const pct = (x: number) => `${Math.round(x * 100)}%`;
   return (
     <>
-      <div className="tsec"><span className="caps">Health</span><span className="hint">{sum.fix < 0.005 && sum.look < 0.05 ? 'solid, ready to bake' : `${pct(sum.solid)} solid`}</span></div>
+      <div className="tsec"><span className="caps">Health</span><span className="hint">{sum.fix < 0.005 && sum.look < 0.05 ? 'all solid' : `${pct(sum.solid)} solid`}</span></div>
       <div className="healthbar" title={`Solid ${pct(sum.solid)} · worth a look ${pct(sum.look)} · fix ${pct(sum.fix)} of the surface`}>
-        <span style={{ flexGrow: sum.solid, background: '#4cb85a' }} /><span style={{ flexGrow: sum.look, background: '#f0c43a' }} /><span style={{ flexGrow: sum.fix, background: '#e2483a' }} />
+        <span style={{ flexGrow: sum.solid, background: 'var(--ok)' }} /><span style={{ flexGrow: sum.look, background: 'var(--warn)' }} /><span style={{ flexGrow: sum.fix, background: 'var(--bad)' }} />
       </div>
       <div className="tgrid two">
-        <button aria-pressed={view === 'health'} title="Colour every face green (solid) through yellow to red (fix); hold Z for the views" onClick={() => setDocView(view === 'health' ? 'wire' : 'health')}>{view === 'health' ? 'Hide Health' : 'Show Health'}</button>
+        <button aria-pressed={view === 'health'} title="Color every face green (solid) through yellow to red (fix)" onClick={() => setDocView(view === 'health' ? 'wire' : 'health')}>{view === 'health' ? 'Hide Health' : 'Show Health'}</button>
         <button disabled={sum.fix === 0} title="Select the red faces to see what's wrong there" onClick={selectRed}>Select red</button>
       </div>
       {rules.length > 0 && (
@@ -86,7 +86,7 @@ function Census() {
     return c;
   }, [part]);
   const p = useMemo(() => g && poles(g), [g]);
-  if (!part || !g) return <p className="hint">Open a model (File › Open) to see what it's made of.</p>;
+  if (!part || !g) return <p className="hint">No model open.</p>;
   return (
     <>
       {counts ? (
@@ -95,7 +95,7 @@ function Census() {
           <Count label="Triangles" n={counts.tris} warn title="Select every triangle" run={() => selectPolygons(3, 3)} />
           <Count label="N-gons" n={counts.ngons} warn title="Select every polygon with more than 4 sides" run={() => selectPolygons(5, Infinity)} />
         </div>
-      ) : <p className="hint">{part.name}: triangles only in this file (Poly Doc reads quads and n-gons from binary FBX). Tris to Quads rebuilds them.</p>}
+      ) : <p className="hint">Triangles only (binary FBX keeps its polygons).</p>}
       <div className="censusgrid">
         <Count label="Poles, 3 edges" n={p!.three.length} warn title="Inside vertices where 3 edges meet: fine on flat areas, they pinch on curves. Select them" run={() => selectFound('three')} />
         <Count label="Poles, 5+ edges" n={p!.many.length} warn title="Inside vertices where 5 or more edges meet: fine on flat areas, they pinch on curves. Select them" run={() => selectFound('many')} />
@@ -109,13 +109,13 @@ export function PolyDoc() {
   const name = useApp((s) => s.parts[s.activePart]?.name);
   return (
     <aside className="dock">
-      <Panel title="Poly Doc" grow>
+      <Panel title="Mesh" grow>
         <Health />
         <MeshCheck />
         <div className="tsec"><span className="caps">Polygons</span><span className="hint">{name ?? ''}</span></div>
         <Census />
       </Panel>
-      <Panel title="Parts"><Parts doc /></Panel>
+      <Panel title="Parts"><Parts workspace="doc" /></Panel>
     </aside>
   );
 }

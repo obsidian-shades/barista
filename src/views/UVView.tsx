@@ -8,12 +8,13 @@ import { useEffect, useRef } from 'react';
 import { checkerCanvas, islandColor, stretchColor } from '../colors';
 import { pickTri } from '../islands';
 import {
-  texSet, paintPress, paintDrag, paintEnd, selectPaintInUV, deselectPaint, type PaintMods, beginEdit, cancelXform, clearSelection, confirmXform, kindOf, liveSel, nudge, pinsOf, pointer, xformMouse, repack, selectElems, selectLoop, setUvScope, setTextureResolution, TEXTURE_RESOLUTIONS, TILE, useApp, uvTiles, contextMenu,
-  type SelOp,
+  texSet, paintPress, paintDrag, paintEnd, selectPaintInUV, deselectPaint, type PaintMods, beginEdit, cancelXform, clearSelection, confirmXform, kindOf, liveSel, nudge, pinsOf, pointer, xformMouse, repack, selectElems, selectLoop, setUvScope, setTextureResolution, TEXTURE_RESOLUTIONS, TILE, useApp, uvTiles, contextMenu, openMenu, closeMenu,
+  type SelOp, type MenuItem,
 } from '../store';
 import { topoOf } from '../topo';
 import { canvasOf } from '../paint';
 import { materialCanvas } from '../matview';
+import { IslandBar } from '../shell/IslandBar';
 import { SEL } from './Viewport3D';
 
 type Drag =
@@ -117,7 +118,7 @@ export function UVView() {
           }
           const pinned = pinsOf(useApp.getState(), pi);
           if (pinned) {
-            x.fillStyle = '#ff3030';
+            x.fillStyle = '#e2483a';
             for (const c1 of pinned) x.fillRect(U(a[c1 * 2]) - 3, V(a[c1 * 2 + 1]) - 3, 6, 6);
           }
           if (!sel && selectMode !== 'vert') return;
@@ -357,6 +358,20 @@ export function UVView() {
     redraw.current();
   };
   const frame = () => { view.current.fitted = false; redraw.current(); };
+  // The UV view's own menu: checker resolution, packing and framing. The color mode is the Display control in the
+  // options bar (also Z and View › Display), so it is not repeated here.
+  const display = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    pointer.x = r.right; pointer.y = r.bottom + 2;
+    const item = (label: string, run: () => void): MenuItem => ({ label, run: () => { closeMenu(); run(); } });
+    const res = TEXTURE_RESOLUTIONS.map((n) => item(`${textureResolution === n ? '✓ ' : ''}${n}×${n}`, () => setTextureResolution(n)));
+    openMenu('UV options', [
+      { kind: 'head', label: 'Checker texture', run: () => {} }, ...res,
+      { kind: 'head', label: 'Islands', run: () => {} },
+      item('Pack islands', () => void repack()),
+      item('Frame all', frame),
+    ]);
+  };
 
   return (
     <section className="view">
@@ -368,12 +383,7 @@ export function UVView() {
             <button aria-pressed={uvScope === 'all'} title={oneAtlas ? 'Every part, in the shared atlas' : 'Every part, each square side by side'} onClick={() => setUvScope('all')}>All</button>
           </span>
           <span className="sep" />
-          {!paint && <><label className="hint" title="Resolution of the checker test texture">Texture
-            <select aria-label="Checker texture resolution" value={textureResolution} onChange={(e) => setTextureResolution(Number(e.target.value))}>
-              {TEXTURE_RESOLUTIONS.map((n) => <option key={n} value={n}>{n}×{n}</option>)}
-            </select>
-          </label>
-          <button disabled={!result || !!loading} title="Pack the islands back into their square (each part's own, or the shared atlas), keeping your sizes (Ctrl+P)" onClick={() => repack()}>Repack</button></>}
+          {!paint && <button className="scene-btn" aria-haspopup="menu" title="Checker resolution, packing, framing" onClick={(e) => display(e.currentTarget)}>UV options</button>}
           <button title="Frame all (Home)" onClick={frame}>Fit</button>
         </span>
       </header>
@@ -381,6 +391,7 @@ export function UVView() {
         {paint && <div className="brushring" ref={rings} style={{ display: 'none' }}><div /></div>}
         <canvas ref={cv} className={paint ? 'painting' : undefined} onPointerDown={down} onPointerMove={move} onPointerUp={up} onWheel={wheel} onPointerLeave={() => { if (rings.current) rings.current.style.display = 'none'; }}
           onContextMenu={(e) => { e.preventDefault(); if (noMenu.current) noMenu.current = false; else if (!paint) contextMenu(); }} />
+        {!paint && !xform && <IslandBar />}
         {xform && <div className="xform-info">{xform.info}<span>X / Y axis · type a value · Ctrl snaps · click or Enter keeps · Esc or right click cancels</span></div>}
         {loading && (loading.phase === 'error'
           ? <div className="uv-spin" role="alert"><span className="err">{loading.error ?? 'Loading failed'}</span></div>
