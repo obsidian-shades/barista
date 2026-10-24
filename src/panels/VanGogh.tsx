@@ -13,7 +13,7 @@ import { ToolStrip, type ToolDef } from '../shell/PolyTools';
 import { ViewControls } from '../shell/Chrome';
 import { glyph, Icon } from '../ui/Icon';
 import {
-  addGenerator, addMetalLayer, addPaintLayer, assignMaterial, bakeAllPaint, bakePaint, beginPaintEdit, clearFillMask, deletePaintLayer, duplicatePaintLayer, editGen, editPaintLayer, exportPaint, fillPaintSelection, importDecal, importMaterialFiles,
+  addGenerator, addMetalLayer, addPaintLayer, assignMaterial, bakeAllPaint, bakePaint, beginPaintEdit, clearFillMask, deletePaintLayer, duplicatePaintLayer, editGen, editPaintLayer, exportTextures, fillPaintSelection, setExportSize, importDecal, importMaterialFiles,
   invertFillMask, loadDecals, loadMaterials, modelDiagonal, movePaintLayerTo, pickDecal, pickPaintLayer, pickPaintPart, setDecalSize, setDecalRotation, setFillBlend, setFillMask, setLayerBlend, setPaint, setPaintAO, setPaintTab, setPbr, setTexturePreset, texSet, undoPaint, updateDecal, updateFill, useApp, type PaintTool,
 } from '../store';
 
@@ -451,10 +451,10 @@ function Bake() {
 
 /** Export settings for the Maps tab: one click writes the selected engine's set. */
 function TextureExport() {
-  const preset = useApp((s) => s.texturePreset), has = useApp((s) => !!s.result);
+  const preset = useApp((s) => s.texturePreset), size = useApp((s) => s.exportSize), has = useApp((s) => !!s.result);
   return (
     <>
-      <div className="tsec"><span className="caps">Texture export</span><span className="hint">the active part</span></div>
+      <div className="tsec"><span className="caps">Texture export</span><span className="hint">every visible part</span></div>
       <label className="exportpreset">Preset
         <select value={preset} onChange={(e) => setTexturePreset(e.target.value as TexturePreset)}>
           <option value="generic">Generic PNG + ORM</option>
@@ -463,8 +463,14 @@ function TextureExport() {
           <option value="unity-urp">Unity URP (Metallic/Smoothness)</option>
         </select>
       </label>
-      <button className="primary wide" disabled={!has} title="Write this part's textures to Downloads" onClick={() => void exportPaint(preset)}>Export textures</button>
-      <div className="hint">The same presets are under File › Export. Includes a material.json.</div>
+      <label className="exportpreset">Size
+        <select value={size} onChange={(e) => setExportSize(+e.target.value)}>
+          {[1024, 2048, 4096, 8192, 16384].map((n) => <option key={n} value={n}>{n / 1024}K ({n}×{n})</option>)}
+        </select>
+      </label>
+      <button className="primary wide" disabled={!has} title="The engine renders each painted part at this size and writes the maps into a folder you pick" onClick={() => void exportTextures()}>Export textures…</button>
+      <button className="wide" disabled={!has} title="The textures plus an FBX whose materials link them: Blender's own FBX import comes in textured" onClick={() => void exportTextures(true)}>Blender ready (FBX + textures)…</button>
+      <div className="hint">Rendered by the engine at full size: fills, decals and generators are drawn fresh; hand paint is scaled up from the working resolution.</div>
     </>
   );
 }

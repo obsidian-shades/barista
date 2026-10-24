@@ -33,17 +33,42 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
       throw new Error(String(e));
     }
   }
+  return (await post(path, body === undefined ? undefined : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json();
+}
+
+async function post(path: string, init?: RequestInit): Promise<Response> {
   let r: Response;
   try {
-    r = await fetch(`/api/${path}`, body === undefined ? undefined : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    r = await fetch(`/api/${path}`, init);
   } catch {
     throw new ServerDown('Engine not reachable: run `pnpm server`');
   }
   // the Vite proxy answers 5xx with an empty body when the engine isn't running
   if (r.status >= 502 && r.status <= 504) throw new ServerDown('Engine not reachable: run `pnpm server`');
   if (!r.ok) throw new Error((await r.text()) || `${r.status} ${r.statusText}`);
-  return r.json();
+  return r;
 }
+
+/** `.barista` projects (engine/src/project.rs): the engine shows the Open / Save dialogs and reads / writes the file. */
+const tauriCall = async <T>(cmd: string, args: Record<string, unknown> | Uint8Array): Promise<T> => {
+  try { return await invoke<T>(cmd, args); } catch (e) { throw new Error(String(e)); }
+};
+export interface OpenProject { path?: string; recover?: boolean }
+/** Full-resolution texture export (engine/src/texture): a Pack in; the folder and files out, null when cancelled. */
+export const textureApi = {
+  export: (pack: Uint8Array<ArrayBuffer>): Promise<{ dir: string; files: string[] } | null> => isTauri() ? tauriCall('texture_export', pack)
+    : post('texture-export', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Blob([pack]) }).then((r) => r.json()),
+  /** What the running export is on ('' when idle). */
+  status: (): Promise<string> => isTauri() ? tauriCall('texture_status', {}) : post('texture-status').then((r) => r.text()),
+};
+export const projectApi = {
+  /** Writes a Pack (project.ts); the path written, or null when the dialog was cancelled. */
+  save: (pack: Uint8Array<ArrayBuffer>): Promise<string | null> => isTauri() ? tauriCall('project_save', pack)
+    : post('project-save', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Blob([pack]) }).then((r) => r.json()),
+  /** The project as a Pack whose JSON is { path, doc } (or { cancelled }). */
+  open: async (req: OpenProject): Promise<Uint8Array> => new Uint8Array(isTauri() ? await tauriCall<ArrayBuffer>('project_open', { body: req })
+    : await (await post('project-open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req) })).arrayBuffer()),
+};
 
 export const api = {
   shapes: () => call<string[]>('shapes'),

@@ -11,7 +11,7 @@ import { PolyOptionsBar, PolyToolStrip, runTool } from './shell/PolyTools';
 import { Resizer } from './shell/Resizer';
 import { UVOptionsBar, UVToolStrip } from './shell/UVTools';
 import {
-  armBox, cancelDocMove, cancelXform, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, exportFbx, flipSel, invertSelection, pickFile, pinSelected, pointer, redo, repack,
+  armBox, cancelDocMove, cancelXform, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, exportFbx, flipSel, invertSelection, pickFile, saveProject, pinSelected, pointer, redo, repack,
   pieMenu, scaleSel, cutSelection, stitchSelection, selectAll, selectAllPaint, selectLinked, selectLinkedUnder, setSelectMode, startXform, undo, unwrap, unwrapSelected, useApp, viewOp, viewPie, xformKey, xformSnap, openFile, type SelectMode,
   type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, fillPaintSelection, type PaintTool,
 } from './store';
@@ -53,6 +53,8 @@ function onKey(e: KeyboardEvent) {
   if (k === 'escape' && useApp.getState().menu) return run(closeMenu);
   // A menu at the pointer is modal: every other key belongs to the pie/list until it closes.
   if (useApp.getState().menu) return;
+  // Ctrl+S / Ctrl+Shift+S: the project, from every workspace
+  if (ctrl && k === 's' && !e.altKey) return run(() => saveProject(e.shiftKey));
   // Z: the Display pie, in every workspace: hold and release toward a view, or tap and click one. (Mid G/R/S and mid
   // Poly Doc move, Z belongs to the transform instead. Ctrl+Z stays undo everywhere.)
   const now = useApp.getState();

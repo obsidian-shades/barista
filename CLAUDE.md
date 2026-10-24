@@ -48,6 +48,39 @@ no room or past 60 ms → the full engine pack, which Ctrl+P always is; check `n
 `stroke` the Cut tool: `snap` (stroke → nearest edge path, mesh unchanged) and `knife` (cut faces along the stroke-from-eye
 plane walk, re-triangulate, new edges as seams; the editor then replaces the part's triangles).
 
+## Projects (`.barista`: `engine/src/project.rs`, `src/project.ts`)
+One SQLite file (rusqlite `bundled`): `meta` (format, app version, the document JSON) and `blob` (name → lz4 bytes). A save
+replaces the contents in one transaction (no WAL, so no side files). The editor and engine swap a project as a Pack
+(u32 JSON length, JSON, then u32 name length, name, u32 data length, data); routes `project-save` (Pack in, path out)
+and `project-open` (`{path?, recover?}` in, Pack `{path, doc}` out), Tauri commands of the same names (raw body /
+`ipc::Response`). The engine shows the Open / Save dialogs itself (`rfd`), so the browser editor and the app match.
+`docOf` / `docFrom` (project.ts) are the store's document: source, unit, params, parts (soup / poly / sides / normals /
+uv as blobs, seams and flags in JSON), the engine result (`out/<i>/…`), pins, scene (a `blob:` HDRI is dropped), paint
+settings, and per part its texture set's stack (`SavedSet`, paint.ts `saveSet` / `restoreSet`) with each layer buffer
+as 256 px tiles `set/<part>/<layer id>/<channel|mask|clip>/<tx>_<ty>`, empty tiles left out. Bakes are not saved yet (bake
+again to edit a generator). Store: `project` (path) and `saved`; any change to parts, uvs, result, uvRev, paintRev,
+params or resolution clears `saved` (the title's dot, AppTabs). File › Open project… / Save (Ctrl+S) / Save as
+(Ctrl+Shift+S) / Recover autosave…; Open Recent keeps projects by path. Autosave every 2 min when unsaved: into the
+project's file, or `%APPDATA%\Barista\autosave\<name>.barista` before the first save. Check: `node src/project.check.ts`,
+`cargo test project`.
+
+## Texture export (`engine/src/texture/`: `mod.rs`, `layers.rs`, `bake.rs`)
+The editor paints at a working resolution (the set's size); File › Export (textures per preset, or Blender ready = the
+generic set plus the FBX with each part's material linked to its PNGs: `ExportPart.maps` → FBX Texture + Video on
+DiffuseColor / ReflectionFactor / ShininessExponent / NormalMap, which Blender's importer wires itself) and the Maps tab
+call `exportTextures`: it saves the project (its file, or the autosave folder before the first save), then sends
+`texture-export` a Pack: `ExportReq` (project path, `exportSize` up to 16K, preset, prefix, visible parts, each fill's map
+URLs and each decal's URL) plus the FBX. The engine reads the `.barista`, and per part at the export size: `Mesh::owners`
+(each texel's triangle, paint.ts `raster` with `bordersOf` tolerances, first triangle wins, bands in parallel), then per
+texel (rows in parallel) every visible layer: fills (`fill_at`, tri-planar / UV, the material files decoded with
+`image`), decals (`DecalFrame::at`), generators (`gen_at` on AO from `Occlusion`: 96 CPU depth maps of the visible parts,
+and `Edges` distances) are rendered fresh; hand paint, layer masks and generator clips are the working-res tiles
+upsampled (`Up::sample`: bilinear over neighbours on the surface only); a fill / decal whose asset has no file (`blob:`
+imports) falls back to its pixels. Composite as paint.ts (blends, whiteout normals, additive height), `pad` = paint.ts
+`bleed` (max(4, n/64) texels, only off the surface), PNGs (`png`, rows flipped) per preset into a folder the engine asks
+for (`rfd`); `texture-status` is the busy line. URLs `/…` resolve under `$BARISTA_PUBLIC` or `public/`. Undo, the live
+view and the editor's bake stay at the working resolution; gun5 at 8K: ~90 s, the tab under 1 GB. Test: `cargo test texture`.
+
 ## Rules
 - `engine/tests/core_shapes.rs` + `ideal.rs` are the spec: cube → Latin cross, cylinder → tin can, cone → sector + disc on its arc
   (all 1 piece, 0% stretch), torus → one seamless rectangle, knot → one strip. The unwrapper must reach these on its own:
@@ -191,7 +224,7 @@ to the bottom of the dock; the Blend row edits the blend of the channel being vi
 stack does: each channel keeps its own mode (`PaintLayer.blend` per channel; `DEFAULT_BLEND` normal for colour / rough /
 metal, height **adds** around mid grey, normals always the whiteout combine, so its select is disabled). The brush starts
 on Base Color alone (`paint.on`), so a colour stroke leaves the material's roughness and metallic under it; tick Rough /
-Metal in the options bar to paint those too. File › Export › Textures writes one PNG per channel. Painted texels don't follow a re-unwrap;
+Metal in the options bar to paint those too. Export is the engine's (see `## Texture export`), never the browser's. Painted texels don't follow a re-unwrap;
 One atlas parts each still get their own set.
 Color panel on top of the dock (`panels/ColorWheel.tsx`, Affinity's): hue ring (clockwise from red at the right) round
 an HSV triangle (tip the hue, white, black), swatch, eyedropper, H S L, hex, Flow; the dock scrolls (`.paintdock`).

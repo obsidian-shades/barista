@@ -103,6 +103,63 @@ export function setOf(soup: Float32Array, size: number): TexSet {
   return s;
 }
 
+/** The part's set if it has one yet (saving a project must not make empty ones). */
+export const setIfAny = (soup: Float32Array) => sets.get(soup) ?? null;
+/** A layer's stack entry as a project file keeps it (project.ts): everything but the pixels, which go as tiles. */
+export type SavedLayer = Omit<PaintLayer, 'px' | 'mask' | 'gen'> & { gen?: Omit<Gen, 'clip'> & { clip: boolean }; mask: boolean; px: Channel[] };
+export interface SavedSet { size: number; channels: Channel[]; active: number; layers: SavedLayer[] }
+export const PAINT_TILE = 256;
+/** `px` (n × n texels of `stride` bytes) as tiles of PAINT_TILE² texels, row by row; tiles whose last byte per texel (the
+ *  coverage, or the whole value for a 1-byte mask) is 0 everywhere are left out. */
+export function tilesOf(px: ArrayLike<number> & { subarray(a: number, b: number): Uint8Array | Uint8ClampedArray }, n: number, stride: number): { tx: number; ty: number; data: Uint8Array }[] {
+  const t = Math.min(PAINT_TILE, n), out: { tx: number; ty: number; data: Uint8Array }[] = [];
+  for (let ty = 0; ty < n / t; ty++) for (let tx = 0; tx < n / t; tx++) {
+    const data = new Uint8Array(t * t * stride);
+    let any = false;
+    for (let y = 0; y < t; y++) {
+      const o = ((ty * t + y) * n + tx * t) * stride, row = px.subarray(o, o + t * stride);
+      data.set(row, y * t * stride);
+      if (!any) for (let i = stride - 1; i < row.length; i += stride) if (row[i]) { any = true; break; }
+    }
+    if (any) out.push({ tx, ty, data });
+  }
+  return out;
+}
+/** The other way: tiles back into one n × n buffer (missing tiles stay 0). */
+export function fromTiles<T extends Uint8Array | Uint8ClampedArray>(into: T, n: number, stride: number, tiles: { tx: number; ty: number; data: Uint8Array }[]): T {
+  const t = Math.min(PAINT_TILE, n);
+  for (const { tx, ty, data } of tiles) for (let y = 0; y < t; y++) into.set(data.subarray(y * t * stride, (y + 1) * t * stride), ((ty * t + y) * n + tx * t) * stride);
+  return into;
+}
+/** A part's set as a saved project had it: its stack, with `pixels(layer id, channel | 'mask' | 'clip', stride)` giving
+ *  each buffer back. Layer ids carry on past the highest one loaded. */
+export function restoreSet(soup: Float32Array, saved: SavedSet, pixels: (id: number, what: Channel | 'mask' | 'clip', stride: number) => Uint8Array) {
+  const s = setOf(soup, saved.size);
+  s.channels = saved.channels;
+  s.layers = saved.layers.map(({ px, mask, gen, ...l }) => ({
+    ...l,
+    px: Object.fromEntries(px.map((ch) => [ch, new Uint8ClampedArray(pixels(l.id, ch, CHANNELS[ch].k + 1).buffer)])),
+    ...(mask ? { mask: pixels(l.id, 'mask', 1) } : {}),
+    ...(gen ? { gen: { ...gen, clip: gen.clip ? pixels(l.id, 'clip', 1) : null } } : {}),
+  }));
+  s.active = Math.min(saved.active, s.layers.length - 1);
+  s.sel = null; s.past = []; s.future = []; s.bake = undefined; s.aoTex = undefined;
+  ids = Math.max(ids, ...s.layers.map((l) => l.id));
+  composite(s);
+  return s;
+}
+/** The set as a project saves it: the stack, and every pixel buffer to tile. */
+export function saveSet(s: TexSet): { saved: SavedSet; buffers: { id: number; what: Channel | 'mask' | 'clip'; px: Uint8Array | Uint8ClampedArray; stride: number }[] } {
+  const buffers: { id: number; what: Channel | 'mask' | 'clip'; px: Uint8Array | Uint8ClampedArray; stride: number }[] = [];
+  const layers = s.layers.map(({ px, mask, gen, ...l }): SavedLayer => {
+    for (const ch of Object.keys(px) as Channel[]) buffers.push({ id: l.id, what: ch, px: px[ch]!, stride: CHANNELS[ch].k + 1 });
+    if (mask) buffers.push({ id: l.id, what: 'mask', px: mask, stride: 1 });
+    if (gen?.clip) buffers.push({ id: l.id, what: 'clip', px: gen.clip, stride: 1 });
+    return { ...l, px: Object.keys(px) as Channel[], mask: !!mask, ...(gen ? { gen: { ...gen, clip: !!gen.clip } } : {}) };
+  });
+  return { saved: { size: s.size, channels: [...s.channels], active: s.active, layers }, buffers };
+}
+
 /** Move a set to another resolution: every layer, the selection and the composite are resampled nearest (a hard
  *  edge stays hard — a bilinear pass would blur it by the ratio), and the bake is dropped because it is built per
  *  texel at the old size. Painting done before the move is as sharp as it was; nothing can add detail that was
@@ -1166,51 +1223,7 @@ export function canvasOf(s: TexSet, ch: Exclude<Shown, 'material'> | 'shade', si
   shots.set(s, all);
   return cv;
 }
-export const pngShown = (s: TexSet, ch: Exclude<Shown, 'material'>) => new Promise<Blob>((ok, no) => canvasOf(s, ch).toBlob((b) => (b ? ok(b) : no(new Error('Could not write the PNG'))), 'image/png'));
-export const pngOf = (s: TexSet, ch: Channel) => pngShown(s, ch);
-
-/** The packed ORM for engines: R ambient occlusion, G roughness, B metallic. */
-export const pngORM = (s: TexSet) => new Promise<Blob>((ok, no) => {
-  const n = s.size, cv = document.createElement('canvas'), img = new ImageData(n, n), orm = s.orm.image.data as Uint8ClampedArray, ao = s.bake?.ao;
-  cv.width = cv.height = n;
-  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
-    const j = (n - 1 - y) * n + x, i = j * 4, o = (y * n + x) * 4;
-    img.data[o] = ao ? ao[j] * 255 : 255;
-    img.data[o + 1] = orm[i + 1]; img.data[o + 2] = orm[i + 2]; img.data[o + 3] = 255;
-  }
-  cv.getContext('2d')!.putImageData(img, 0, 0);
-  cv.toBlob((b) => (b ? ok(b) : no(new Error('Could not write the ORM'))), 'image/png');
-});
-
-/** A packed engine map: the callback writes the output texel `o` from source texel `i`. */
-function pngPacked(s: TexSet, write: (d: Uint8ClampedArray, o: number, i: number) => void, what: string) {
-  return new Promise<Blob>((ok, no) => {
-    const n = s.size, cv = document.createElement('canvas'), img = new ImageData(n, n);
-    cv.width = cv.height = n;
-    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) write(img.data, (y * n + x) * 4, ((n - 1 - y) * n + x) * 4);
-    cv.getContext('2d')!.putImageData(img, 0, 0);
-    cv.toBlob((b) => (b ? ok(b) : no(new Error(`Could not write the ${what}`))), 'image/png');
-  });
-}
-
-/** DirectX normal for Unreal and other green-down consumers. */
-export const pngNormalDX = (s: TexSet) => pngPacked(s, (d, o, i) => {
-  const nrm = s.normal.image.data as Uint8ClampedArray;
-  d[o] = nrm[i]; d[o + 1] = 255 - nrm[i + 1]; d[o + 2] = nrm[i + 2]; d[o + 3] = 255;
-}, 'DirectX normal');
 export type TexturePreset = 'generic' | 'unreal' | 'unity-hdrp' | 'unity-urp';
-
-/** Unity HDRP mask map: R metallic, G AO, B detail, A smoothness. */
-export const pngUnityHDRP = (s: TexSet) => pngPacked(s, (d, o, i) => {
-  const orm = s.orm.image.data as Uint8ClampedArray, ao = s.bake?.ao;
-  d[o] = orm[i + 2]; d[o + 1] = ao ? ao[i / 4] * 255 : 255; d[o + 2] = 0; d[o + 3] = 255 - orm[i + 1];
-}, 'Unity HDRP mask map');
-
-/** Unity URP metallic/smoothness: R metallic, A smoothness. */
-export const pngUnityURP = (s: TexSet) => pngPacked(s, (d, o, i) => {
-  const orm = s.orm.image.data as Uint8ClampedArray;
-  d[o] = orm[i + 2]; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 255 - orm[i + 1];
-}, 'Unity URP metallic/smoothness');
 
 /** A layer's thumbnail (its Base Color, or its first painted channel, over a checkerboard where it's empty), as a data URL. */
 export function thumbOf(s: TexSet, l: PaintLayer, size = 32) {

@@ -1,8 +1,8 @@
 import * as M from '@radix-ui/react-menubar';
 import type { ReactNode } from 'react';
 import {
-  clearRecent, clearSeams, clearSelection, cutSelection, deselectPaint, displayChoices, exportFbx, exportObjParts, exportPaint, fillPaintSelection, flipSel, invertPaintSelection, invertSelection,
-  loadShape, openRecent, selectAllPaint, setDisplay, setTriangulate, pinSelected, unwrapSelected, pickFile, redo, repack, rotateSel, selectAll, selectEdgeLoop, selectLinked,
+  clearRecent, clearSeams, clearSelection, cutSelection, deselectPaint, displayChoices, exportFbx, exportObjParts, exportTextures, fillPaintSelection, setTexturePreset, flipSel, invertPaintSelection, invertSelection,
+  loadShape, openProject, openRecent, saveProject, selectAllPaint, setDisplay, setTriangulate, pinSelected, unwrapSelected, pickFile, redo, repack, rotateSel, selectAll, selectEdgeLoop, selectLinked,
   stitchSelection, undo, undoPaint, redoPaint, unwrap, useApp, viewOp, pointer,
 } from '../store';
 import { Icon, Mark } from '../ui/Icon';
@@ -28,6 +28,7 @@ function ago(t: number) {
 }
 export function MenuBar() {
   const has = useApp((s) => !!s.result), none = useApp((s) => !s.selected.length);
+  const size = useApp((s) => (s.exportSize >= 1024 ? `${s.exportSize / 1024}K` : `${s.exportSize}`));
   const tri = useApp((s) => s.triangulate), workspace = useApp((s) => s.workspace), recent = useApp((s) => s.recent), shapes = useApp((s) => s.shapes);
   // subscribe to the one value the Display radio group shows, then read the same choices the Z pie and options bar use
   const display = useApp((s) => (s.workspace === 'doc' ? s.docView : s.workspace === 'paint' ? s.scene.lighting : s.mode));
@@ -40,6 +41,7 @@ export function MenuBar() {
       <span className="brandname">Barista</span>
       <M.Root className="mroot">
         <Menu label="File">
+          <Item onSelect={() => void openProject()}>Open project…</Item>
           <Item onSelect={() => void pickFile()} kbd="Ctrl+O">Open model…</Item>
           <M.Sub>
             <M.SubTrigger className="mi subtrigger">Open Recent<span className="subarrow" aria-hidden="true"><Icon name="chevron" size={12} /></span></M.SubTrigger>
@@ -52,6 +54,11 @@ export function MenuBar() {
               </M.SubContent>
             </M.Portal>
           </M.Sub>
+          <Item onSelect={() => void openProject(undefined, true)}>Recover autosave…</Item>
+          <Sep />
+          <Item onSelect={() => void saveProject()} disabled={!has} kbd="Ctrl+S">Save project</Item>
+          <Item onSelect={() => void saveProject(true)} disabled={!has} kbd="Ctrl+Shift+S">Save project as…</Item>
+          <Sep />
           <M.Sub>
             <M.SubTrigger className="mi subtrigger">New from Shape<span className="subarrow" aria-hidden="true"><Icon name="chevron" size={12} /></span></M.SubTrigger>
             <M.Portal>
@@ -67,13 +74,11 @@ export function MenuBar() {
               <M.SubContent className="mc" sideOffset={4} alignOffset={-4}>
                 <Item onSelect={exportFbx} disabled={!has} kbd="Ctrl+Shift+E">FBX (Blender, Substance Painter)</Item>
                 <Item onSelect={exportObjParts} disabled={!has}>OBJ per part (ZIP)</Item>
-                {paint && <>
-                  <Sep />
-                  <Item onSelect={() => void exportPaint('generic')} disabled={!has}>Textures (PNG + ORM)</Item>
-                  <Item onSelect={() => void exportPaint('unreal')} disabled={!has}>Textures for Unreal (DX normal, ORM)</Item>
-                  <Item onSelect={() => void exportPaint('unity-hdrp')} disabled={!has}>Textures for Unity HDRP (MaskMap)</Item>
-                  <Item onSelect={() => void exportPaint('unity-urp')} disabled={!has}>Textures for Unity URP (Metallic/Smoothness)</Item>
-                </>}
+                <Sep />
+                <Item onSelect={() => void exportTextures(true)} disabled={!has} meta={size}>Blender ready (FBX + textures)…</Item>
+                {([['generic', 'Textures (PNG + ORM)…'], ['unreal', 'Textures for Unreal (DX normal, ORM)…'], ['unity-hdrp', 'Textures for Unity HDRP (MaskMap)…'],
+                  ['unity-urp', 'Textures for Unity URP (Metallic/Smoothness)…']] as const).map(([preset, label]) =>
+                  <Item key={preset} onSelect={() => { setTexturePreset(preset); void exportTextures(); }} disabled={!has} meta={size}>{label}</Item>)}
               </M.SubContent>
             </M.Portal>
           </M.Sub>

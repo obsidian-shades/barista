@@ -3,7 +3,8 @@
 // again from disk, asking once for permission), else a copy of the file (up to COPY_LIMIT). The newest 10, by name.
 const DB = 'auto-unwrap', STORE = 'recent', MAX = 10, COPY_LIMIT = 64 * 1024 * 1024;
 
-export interface RecentFile { name: string; time: number; size: number; handle?: FileSystemFileHandle; blob?: Blob }
+/** `path`: a `.barista` project, which the engine reopens from disk itself. */
+export interface RecentFile { name: string; time: number; size: number; handle?: FileSystemFileHandle; blob?: Blob; path?: string }
 type Picker = (o: { types: { description: string; accept: Record<string, string[]> }[] }) => Promise<FileSystemFileHandle[]>;
 type Permission = { queryPermission?: (o: { mode: 'read' }) => Promise<PermissionState>; requestPermission?: (o: { mode: 'read' }) => Promise<PermissionState> };
 
@@ -35,6 +36,14 @@ export async function remember(file: File, handle?: FileSystemFileHandle) {
     const entry: RecentFile = { name: file.name, time: Date.now(), size: file.size, ...(handle ? { handle } : file.size <= COPY_LIMIT ? { blob: file } : {}) };
     if (!entry.handle && !entry.blob) return; // too big to keep a copy of, and no handle to reopen it by
     await tx('readwrite', (s) => s.put(entry));
+    for (const old of (await recentFiles()).slice(MAX)) await tx('readwrite', (s) => s.delete(old.name));
+  } catch { /* private mode: no list */ }
+}
+
+/** Put a project (by its path on disk) at the top of the list. */
+export async function rememberProject(path: string) {
+  try {
+    await tx('readwrite', (s) => s.put({ name: path.split(/[\\/]/).pop()!, time: Date.now(), size: 0, path } satisfies RecentFile));
     for (const old of (await recentFiles()).slice(MAX)) await tx('readwrite', (s) => s.delete(old.name));
   } catch { /* private mode: no list */ }
 }

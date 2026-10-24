@@ -1,19 +1,20 @@
 // App state (zustand) and every user action. UI reads with useApp, acts through the functions below.
 import { create } from 'zustand';
-import { api, type IslandIn, type Output, type Params, type PartOut, type Stats, ServerDown } from './api';
+import { api, projectApi, textureApi, type IslandIn, type Output, type Params, type PartOut, type Stats, ServerDown } from './api';
+import { decodePack, docFrom, docOf, encodePack } from './project';
 import type { UVMap } from './colors';
-import { download, readParts, toFbx, toObjs, zipFiles, type ExportPart } from './files';
+import { download, readParts, toFbx, toObjs, zipFiles, type ExportPart, type FbxSlot } from './files';
 import { islandsOf, pickTri, seamSegments } from './islands';
 import { placeChanged } from './fitpack';
 import { edgeBetween, polygonsOf, sidesOf, topoOf, trisOf, vertexAt, xyzKey, type Topo } from './topo';
 import { health, healthReport, ruleCounts, RULES, setModelSize, type RuleId } from './health';
-import { clearRecentFiles, forgetRecent, pickWithHandle, recentFiles, remember, reopen } from './recent';
+import { clearRecentFiles, forgetRecent, pickWithHandle, recentFiles, remember, rememberProject, reopen } from './recent';
 import { carryNormals, dissolve, dissolveFaces, limitedDissolve, link, outNormals, ownPolygons, topoOfSoup, triangulate, trisToQuads, type Polys } from './polyedit';
 import { bake } from './bake';
-import { CHANNELS, composite, dab, dabUV, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, keep as keepPaint, maskPolygon, maskTris, newLayer, pngOf, requestComposite, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, pngNormalDX, pngORM, pngShown, pngUnityHDRP, pngUnityURP, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
+import { CHANNELS, composite, dab, dabUV, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, keep as keepPaint, maskPolygon, maskTris, newLayer, requestComposite, restoreSet, setIfAny, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
 import { gpuBegin, gpuDab, gpuFinish, gpuTake } from './gpupaint';
-import { FILL_CHANNELS, loadMaterialLibrary, materialFromFiles, materialPixels, pickMaterialFolder, type MaterialAsset, type MaterialPixels } from './materials';
-import { decalFromFile, decalPixels, loadDecalLibrary, type DecalAsset } from './decals';
+import { FILL_CHANNELS, loadMaterialLibrary, mapUrl, materialFromFiles, materialPixels, pickMaterialFolder, type MaterialAsset, type MaterialPixels } from './materials';
+import { decalFromFile, decalPixels, decalUrl, loadDecalLibrary, type DecalAsset } from './decals';
 import { SMART_MATERIALS } from './smartmaterials';
 import { addLoops, connect as connectPolys, gridFill, loopCut, loopOf, members, merge as mergeVerts, meshCheck, moveOnSurface, poles, relax, rotateEdge, shapeLoop, slide, subdivide, surfaceOf, type Done, type Geo, type Sel as SoupSel } from './polygeo';
 
@@ -144,7 +145,7 @@ export interface Part {
 interface Snap { uvs: Float32Array[]; result: Output | null }
 interface PartSnap { parts: Part[]; uvs: Float32Array[]; result: Output | null; csel: CompSel | null; activePart: number; uvScope: UvScope; past: Snap[]; future: Snap[] }
 
-interface State {
+export interface State {
   source: string | null;
   /** The source file's unit in cm (FBX UnitScaleFactor; 100 = metres), written back on export. */
   unit: number;
@@ -220,6 +221,9 @@ interface State {
   viewSplit: number;
   /** Poly Doc's current tool (the options bar shows it) and the tools' settings. */
   docTool: DocTool | null;
+  /** The open `.barista` project's path (null: never saved), and whether everything in it is saved. */
+  project: string | null;
+  saved: boolean;
   /** File › Open Recent: the newest files first (their contents or handles live in IndexedDB, `recent.ts`). */
   recent: { name: string; time: number }[];
   /** UV Magician's last strip tool (its options bar shows it). */
@@ -264,6 +268,10 @@ interface State {
   paintTab: 'layers' | 'materials' | 'tiles' | 'decals' | 'maps';
   /** The engine preset the Maps tab's export button uses. */
   texturePreset: TexturePreset;
+  /** The size the engine renders exported textures at (to 16K; the editor paints at `textureResolution`). */
+  exportSize: number;
+  /** A one-line result for the status bar (an export's folder); cleared when the next task starts. */
+  notice: string | null;
 }
 export type Workspace = 'uv' | 'doc' | 'paint';
 export type PaintTool = 'marquee' | 'lasso' | 'wand' | 'decal' | 'brush' | 'erase' | 'bucket' | 'picker';
@@ -287,9 +295,9 @@ export const useApp = create<State>(() => ({
   rev: 0, past: [], future: [], partsPast: [], partsFuture: [], selected: [], selectMode: 'face', csel: null, viewReq: { view: '3d', op: 'all', n: 0 }, menu: null, boxArmed: false, xform: null, liveUnwrap: true, afterAlign: saved('afterAlign', 1, 0, 1) === 1, afterPack: saved('afterPack', 1, 0, 1) === 1, pins: {}, shapeClipboard: null, mode: 'checker', textureResolution: 1024, uvMap: 'checker', recentColors: [],
   scene: { background: '#111111', ...WORK_LIGHT, hdriUrl: null, hdriId: '', hdriName: '', hdriBackground: false, hdriStrength: 1, hdriRotation: 0, hdriBlur: 0, wireframe: false, showEdges: true, showVertices: true, showSeams: true, showGrid: false, showAxes: false,
     lighting: 'studio', matcap: 'clay', bg: 'theme', backface: false, outline: false, specular: true, xray: false, xrayAlpha: 0.5, shadow: false, shadowAmount: 0.4, cavity: false, cavityType: 'both', cavityDistance: 0.2, ridge: 1, valley: 1 }, unfold: 0,
-  busy: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 300, 260, 420), viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, moveOnSurface: true,
+  busy: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 300, 260, 420), viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, project: null, saved: true, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, moveOnSurface: true,
   paint: { tool: 'brush', color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: false, metal: false, normal: false, height: false }, size: 3, flow: 0.6, hardness: 0.5, tip: 'round' as BrushTip, by: 'island', decalAsset: 'garuda-mark', decalTint: '#ffffff', decalSize: 14, decalRotation: 0, fillBlend: 'normal' as BlendMode }, paintChannel: 'material', paintRev: 0, paintPanel: 0, paintLive: 0, paintOpen: [0], paintAO: true,
-  materials: [], materialsLoading: false, materialsError: null, decals: [], decalsLoading: false, decalsError: null, paintTab: 'layers', texturePreset: 'generic',
+  materials: [], materialsLoading: false, materialsError: null, decals: [], decalsLoading: false, decalsError: null, paintTab: 'layers', texturePreset: 'generic', exportSize: saved('exportSize', 4096, 256, 16384), notice: null,
 }));
 const set = useApp.setState, get = useApp.getState;
 export const updateScene = (scene: Partial<Scene>) => set((s) => ({ scene: { ...s.scene, ...scene } }));
@@ -330,7 +338,7 @@ export const setSceneHdri = (file: File | null) => {
 
 // One job at a time; the status bar shows what's running and why the last one failed.
 async function task(label: string, job: () => Promise<void>) {
-  set({ busy: label, error: null });
+  set({ busy: label, error: null, notice: null });
   try {
     await job();
     set({ server: 'up' });
@@ -516,6 +524,7 @@ function land(partIndex: number, raw: PartOut, partUvs: Float32Array, seams: num
 
 // ---- loading, unwrapping, exporting ----
 export const connect = () => task('Connecting to engine…', async () => {
+  startAutosave();
   void recentFiles().then((r) => set({ recent: r.map(({ name, time }) => ({ name, time })) }));
   set({ shapes: await api.shapes() });
 });
@@ -532,7 +541,7 @@ export const loadShape = (name: string) => task(`Unwrapping ${name}…`, async (
   const parts = [{ name, soup, seams: [], marked: [], solved: [], visible: true, textured: true }];
   setModelSize([soup]);
   resetPaintHistory();
-  set({ source: name, unit: 100, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: [0], layerAnchor: 0, uvScope: 'part', csel: null, fixNote: null });
+  set({ project: null, source: name, unit: 100, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: [0], layerAnchor: 0, uvScope: 'part', csel: null, fixNote: null });
   if (get().workspace === 'doc') meshOnly(); else await solve();
 });
 export const openFile = (file: File) => task(`Unwrapping ${file.name}…`, async () => {
@@ -543,7 +552,7 @@ export const openFile = (file: File) => task(`Unwrapping ${file.name}…`, async
   const parts = imported.map((p) => ({ ...p, seams: [], marked: [], solved: [], visible: true, textured: true }));
   setModelSize(parts.map((p) => p.soup));
   resetPaintHistory();
-  set({ source: file.name, unit, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: parts.length ? [0] : [], layerAnchor: 0, uvScope: 'part', csel: null, fixNote: null });
+  set({ project: null, source: file.name, unit, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: parts.length ? [0] : [], layerAnchor: 0, uvScope: 'part', csel: null, fixNote: null });
   if (get().workspace === 'doc') meshOnly(); else await solve();
 });
 export const setParams = (p: Partial<Params>) => {
@@ -578,6 +587,7 @@ async function openRemembered(file: File, handle?: FileSystemFileHandle) {
 export const openRecent = (name: string) => task(`Opening ${name}…`, async () => {
   const r = (await recentFiles()).find((x) => x.name === name);
   if (!r) return;
+  if (r.path) return openProject(r.path);
   let file: File;
   try { file = await reopen(r); } catch (e) {
     await forgetRecent(name);
@@ -587,6 +597,62 @@ export const openRecent = (name: string) => task(`Opening ${name}…`, async () 
   await openRemembered(file, r.handle);
 });
 export const clearRecent = async () => { await clearRecentFiles(); set({ recent: [] }); };
+
+// ---- .barista projects (project.ts, engine/src/project.rs) ----
+const listRecent = async () => set({ recent: (await recentFiles()).map(({ name, time }) => ({ name, time })) });
+/** File › Save (Ctrl+S) / Save As (Ctrl+Shift+S): the engine asks where the first time, then writes there. */
+export const saveProject = (as = false) => task('Saving…', async () => { await writeProject(as ? 'as' : 'save'); });
+/** Autosave: into the project's own file once it has one, else into the engine's autosave folder (File › Recover). */
+async function writeProject(how: 'save' | 'as' | 'auto'): Promise<string | null> {
+  const s = get();
+  if (!s.parts.length) return null;
+  const { doc, blobs } = docOf(s, (i) => setIfAny(s.parts[i].soup));
+  const name = (s.project?.split(/[\\/]/).pop() ?? baseName()).replace(/\.barista$/i, '');
+  const head = { path: s.project, save_as: how === 'as', autosave: how === 'auto' && !s.project, name, doc };
+  const path = await projectApi.save(encodePack(JSON.stringify(head), blobs));
+  if (!path || head.autosave) return path;
+  // edits made while the file was being written stay unsaved
+  set((now) => ({ project: path, saved: now.parts === s.parts && now.uvs === s.uvs && now.result === s.result && now.paintRev === s.paintRev }));
+  await rememberProject(path);
+  await listRecent();
+  return path;
+}
+let restoring = false;
+/** File › Open Project…: a `.barista` back as it was saved (`recover`: the dialog opens in the autosave folder). */
+export const openProject = (path?: string, recover = false) => task('Opening project…', async () => {
+  const { json, blobs } = decodePack(await projectApi.open({ path, recover }));
+  const head = JSON.parse(json) as { cancelled?: boolean; path: string; doc: unknown };
+  if (head.cancelled) return;
+  const { state, sets, pixels } = docFrom(head.doc, blobs);
+  ++latest; // whatever was loading is stale now
+  restoring = true;
+  try {
+    setModelSize(state.parts.map((p) => p.soup));
+    resetPaintHistory();
+    set((s) => ({ ...state, project: recover ? null : head.path, saved: !recover, rev: s.rev + 1, uvRev: s.uvRev + 1, edited: false, loading: null,
+      past: [], future: [], partsPast: [], partsFuture: [], csel: null, selected: [], layerSel: state.parts.length ? [state.activePart] : [], layerAnchor: state.activePart,
+      uvScope: 'part', fixNote: null, paintOpen: [state.activePart] }));
+    sets.forEach((saved, i) => { if (saved && state.parts[i]) restoreSet(state.parts[i].soup, saved, pixels(i, saved.size)); });
+    repaint();
+  } finally { restoring = false; }
+  if (!recover) { await rememberProject(head.path); await listRecent(); }
+  if (!state.result && state.parts.length) { if (get().workspace === 'doc') meshOnly(); else await solve(); }
+});
+// Anything that changes the document marks it unsaved (the title's dot).
+useApp.subscribe((s, p) => {
+  if (!restoring && s.saved && (s.parts !== p.parts || s.uvs !== p.uvs || s.result !== p.result || s.uvRev !== p.uvRev || s.paintRev !== p.paintRev || s.params !== p.params || s.textureResolution !== p.textureResolution)) set({ saved: false });
+});
+const AUTOSAVE_MS = 2 * 60 * 1000;
+let autosaving = false;
+/** Every two minutes, unsaved work is written (started once the app connects, so check scripts don't keep running). */
+function startAutosave() {
+  if (autosaving || typeof window === 'undefined') return;
+  autosaving = true;
+  window.setInterval(() => {
+    const s = get();
+    if (!s.saved && s.parts.length && !s.busy && !s.loading && !painting()) void task('Autosaving…', async () => { await writeProject('auto'); });
+  }, AUTOSAVE_MS);
+}
 
 const baseName = () => (get().source ?? 'mesh').replace(/\.[^.]+$/, '');
 // Every part with its current UVs; with one atlas they share a material, so Painter gives them one texture set.
@@ -609,6 +675,49 @@ export const exportObjParts = () => task('Exporting OBJ parts…', async () => {
   await unwrapChanged();
   const ps = exportParts();
   if (ps) download(zipFiles(toObjs(ps, get().params.sharp, get().unit)).buffer as ArrayBuffer, `${baseName()}-unwrapped-obj.zip`);
+});
+export const setExportSize = (exportSize: number) => { set({ exportSize }); keep('exportSize', exportSize); };
+/** File › Export: the engine renders every painted part at `exportSize` (texture/mod.rs) from the project as saved,
+ *  and writes the PNGs into a folder it asks for; `blender`: the generic set plus the FBX with each part's material
+ *  linked to its maps, so Blender's own FBX import comes in textured. The project is saved first (into its file, or
+ *  the autosave folder before the first save), because that is what the engine reads. */
+export const exportTextures = (blender = false) => task('Exporting textures…', async () => {
+  await unwrapChanged();
+  const project = (get().saved && get().project) || await writeProject(get().project ? 'save' : 'auto');
+  if (!project) return;
+  const s = get(), base = baseName(), preset = blender ? 'generic' : s.texturePreset;
+  // where each fill's maps and each decal's image are on disk (blob: imports fall back to their painted pixels)
+  const [library, decalShelf] = await Promise.all([loadMaterialLibrary().catch(() => []), loadDecalLibrary().catch(() => [])]);
+  const materials: Record<string, Record<string, string>> = {}, decals: Record<string, string> = {};
+  for (const p of s.parts) {
+    for (const l of setIfAny(p.soup)?.layers ?? []) {
+      const m = l.fill && (s.materials.find((x) => x.id === l.fill!.asset) ?? library.find((x) => x.id === l.fill!.asset));
+      if (m) materials[m.id] = Object.fromEntries((['basecolor', 'normal', 'roughness', 'metallic', 'height'] as const).flatMap((k) => { const u = mapUrl(m, k); return u ? [[k, u]] : []; }));
+      const d = l.decal && (s.decals.find((x) => x.id === l.decal!.asset) ?? decalShelf.find((x) => x.id === l.decal!.asset));
+      if (d) decals[d.id] = decalUrl(d);
+    }
+  }
+  const blobs: [string, Uint8Array][] = [];
+  let fbx: string | undefined;
+  if (blender) {
+    const ps = exportParts();
+    if (!ps) return;
+    const slots: [Channel, FbxSlot][] = [['color', 'DiffuseColor'], ['metal', 'ReflectionFactor'], ['rough', 'ShininessExponent'], ['normal', 'NormalMap']];
+    ps.forEach((p, i) => {
+      const ts = setIfAny(s.parts[i].soup);
+      p.material = p.name; // one texture set per part, even with one atlas
+      if (ts && s.parts[i].visible) p.maps = Object.fromEntries(slots.filter(([ch]) => ch === 'color' || ts.channels.includes(ch)).map(([ch, slot]) => [slot, `${base}-${p.name}-${CHANNELS[ch].file}.png`]));
+    });
+    fbx = `${base}.fbx`;
+    blobs.push(['fbx', toFbx(ps, s.params.sharp, s.unit)]);
+  }
+  const req = { project, size: s.exportSize, preset, base, parts: s.parts.flatMap((p, i) => (p.visible ? [i] : [])), materials, decals, fbx };
+  // the engine reports what it is on: show it while the render runs
+  const poll = window.setInterval(() => { void textureApi.status().then((t) => { if (t && get().busy) set({ busy: t }); }).catch(() => undefined); }, 700);
+  try {
+    const done = await textureApi.export(encodePack(JSON.stringify(req), blobs));
+    if (done) set({ notice: `Exported ${done.files.length} files at ${s.exportSize}px to ${done.dir}` });
+  } finally { window.clearInterval(poll); }
 });
 
 // ---- parts and seams ----
@@ -2804,38 +2913,6 @@ export const clearFillMask = () => layers((s) => { const l = s.layers[s.active];
 
 /** Every channel of the active part, one PNG each (Base Color sRGB, Roughness and Metallic greyscale),
  *  the packed ORM (R AO, G roughness, B metallic) and a small JSON that names the colour spaces. */
-export const exportPaint = (preset: TexturePreset = 'generic') => task('Writing the textures…', async () => {
-  const { parts, activePart } = get();
-  if (!parts[activePart]) return;
-  const s = texSet(activePart), prefix = `${baseName()}-${parts[activePart].name}`;
-  const save = async (blob: Blob, name: string) => download(blob, `${prefix}-${name}.png`);
-  if (preset === 'unreal') {
-    await save(await pngOf(s, 'color'), 'BaseColor');
-    await save(await pngNormalDX(s), 'Normal');
-    await save(await pngORM(s), 'ORM');
-    if (s.channels.includes('height')) await save(await pngOf(s, 'height'), 'Height');
-  } else if (preset === 'unity-hdrp') {
-    await save(await pngOf(s, 'color'), 'BaseColor');
-    await save(await pngOf(s, 'normal'), 'Normal');
-    await save(await pngUnityHDRP(s), 'MaskMap');
-    if (s.channels.includes('height')) await save(await pngOf(s, 'height'), 'Height');
-  } else if (preset === 'unity-urp') {
-    await save(await pngOf(s, 'color'), 'BaseColor');
-    await save(await pngOf(s, 'normal'), 'Normal');
-    await save(await pngUnityURP(s), 'MetallicSmoothness');
-    if (s.channels.includes('height')) await save(await pngOf(s, 'height'), 'Height');
-  } else {
-    for (const ch of s.channels) await save(await pngOf(s, ch), CHANNELS[ch].file);
-    if (s.bake) await save(await pngShown(s, 'ao'), 'AmbientOcclusion');
-    await save(await pngORM(s), 'ORM');
-  }
-  const meta = {
-    part: parts[activePart].name, preset, channels: s.channels,
-    normalConvention: preset === 'unreal' ? 'dx' : 'gl',
-    colorSpace: { BaseColor: 'srgb', Normal: 'linear', Roughness: 'linear', Metallic: 'linear', AmbientOcclusion: 'linear', Height: 'linear', ORM: 'linear', MaskMap: 'linear', MetallicSmoothness: 'linear' },
-  };
-  download(new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' }), `${prefix}-material.json`);
-});
 
 // ---- baking and generators (Substance's Bake Mesh Maps and smart masks) ----
 /** Bake AO and edge maps for every visible part, every part casting occlusion on the others. */

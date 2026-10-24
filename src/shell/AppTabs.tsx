@@ -10,8 +10,9 @@ const TABS: [Workspace, string, string][] = [
 /** The workspace switcher: square tabs in a bar, with the current file on the right. A switch never moves anything. */
 export function AppTabs() {
   const tab = useApp((s) => s.workspace);
-  const source = useApp((s) => s.source);
-  const edited = useApp((s) => s.edited || s.parts.some((p) => p.stale));
+  const source = useApp((s) => s.source), project = useApp((s) => s.project);
+  const unsaved = useApp((s) => !s.saved);
+  const label = project ? project.split(/[\\/]/).pop() : source;
   return (
     <header className="apptabs">
       <div className="personas" role="tablist" aria-label="Workspace">
@@ -21,9 +22,9 @@ export function AppTabs() {
           </button>
         ))}
       </div>
-      <div className="docid" title={edited ? 'Edited since the last unwrap; Auto Unwrap starts over' : undefined}>
-        <span className="file">{source ?? 'No file open'}</span>
-        {source && <span className={`dirty${edited ? ' on' : ''}`} aria-label={edited ? 'Edited' : 'Unedited'} />}
+      <div className="docid" title={project ?? (source ? 'Not saved as a project yet (Ctrl+S)' : undefined)}>
+        <span className="file">{label ?? 'No file open'}</span>
+        {label && <span className={`dirty${unsaved ? ' on' : ''}`} aria-label={unsaved ? 'Unsaved changes' : 'Saved'} />}
       </div>
     </header>
   );

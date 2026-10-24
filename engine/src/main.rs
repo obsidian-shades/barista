@@ -1,10 +1,14 @@
 //! HTTP server: the unwrap engine on /api, nothing else. The editor is served by Vite (`pnpm dev`, :5173), which
 //! proxies /api here, so there is only ever one editor to open.
 use barista::edit::{relax, reseam, Reseamed};
+use barista::project::{open_pack, save_pack, OpenReq};
+use barista::texture::{export as texture_export, status as texture_status, ExportDone};
 use barista::req::{EdgeLoopReq, IslandsReq, PackReq, ReseamReq, UnwrapReq};
 use barista::topology::edge_loop;
 use barista::{repack, shapes, unwrap, Output};
+use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path};
+use axum::http::header;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -41,6 +45,26 @@ async fn relax_h(Json(r): Json<IslandsReq>) -> Result<Json<Vec<Vec<f32>>>, Fail>
     blocking(move || r.islands.iter().map(relax).collect()).await
 }
 
+/// `.barista` save: a Pack (project.rs) in, the path written out (null: the dialog was cancelled).
+async fn project_save_h(body: Bytes) -> Result<Json<Option<String>>, Fail> {
+    blocking(move || save_pack(&body)).await
+}
+
+/// `.barista` open: the project back as a Pack (binary).
+async fn project_open_h(Json(r): Json<OpenReq>) -> Result<([(header::HeaderName, &'static str); 1], Vec<u8>), Fail> {
+    let Json(bytes) = blocking(move || open_pack(&r)).await?;
+    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes))
+}
+
+/// Full-resolution textures: a Pack (ExportReq + optional FBX) in, the folder and files written out.
+async fn texture_export_h(body: Bytes) -> Result<Json<Option<ExportDone>>, Fail> {
+    blocking(move || texture_export(&body)).await
+}
+
+async fn texture_status_h() -> String {
+    texture_status()
+}
+
 async fn shapes_h() -> Json<&'static [&'static str]> {
     Json(&shapes::NAMES[..])
 }
@@ -57,6 +81,10 @@ async fn main() {
         .route("/api/pack", post(pack_h))
         .route("/api/edge-loop", post(edge_loop_h))
         .route("/api/relax", post(relax_h))
+        .route("/api/project-save", post(project_save_h))
+        .route("/api/project-open", post(project_open_h))
+        .route("/api/texture-export", post(texture_export_h))
+        .route("/api/texture-status", get(texture_status_h))
         .route("/api/shapes", get(shapes_h))
         .route("/api/shape/{name}", get(shape_h))
         .layer(DefaultBodyLimit::max(512 << 20)) // meshes come as JSON floats: big files are big requests

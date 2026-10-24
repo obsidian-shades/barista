@@ -74,7 +74,10 @@ function bakeNormals(m: THREE.Mesh): Float32Array | undefined {
 /** One part to write: its unwrap, its current UVs, the material (= Painter texture set) it goes in, and `faces`: per
  *  output triangle, the polygon it belongs to (−1 or absent: written as triangles, e.g. Triangulate for baking). `normals`: the file's own
  *  normals per output corner (NaN where it had none), written as they are, as Blender's exporter writes its own. */
-export interface ExportPart { name: string; material: string; out: PartOut; uv: Float32Array; faces?: Int32Array; normals?: Float32Array }
+/** FBX material slots an image can feed, as Blender's importer reads them (and its exporter writes them). */
+export type FbxSlot = 'DiffuseColor' | 'ReflectionFactor' | 'ShininessExponent' | 'NormalMap';
+/** `maps`: image file names (beside the FBX) linked into the part's material, so an importer wires the textures itself. */
+export interface ExportPart { name: string; material: string; out: PartOut; uv: Float32Array; faces?: Int32Array; normals?: Float32Array; maps?: Partial<Record<FbxSlot, string>> }
 
 /** A part as an indexed mesh: positions welded (it imports as one connected mesh), UVs and normals indexed per corner.
  *  Normals are the file's own (`fileN`) where it had them, else smooth across edges flatter than `sharp` degrees and hard
@@ -232,6 +235,14 @@ export function toFbx(parts: ExportPart[], sharp: number, unit: number): Uint8Ar
       mats.set(part.material, mat = next++);
       objects.push(['Material', [mat, name(part.material, 'Material'), ''], [['Version', [102]], ['ShadingModel', ['phong']], ['MultiLayer', [0]],
         ['Properties70', [], [P('DiffuseColor', 'Color', '', 'A', D(0.8), D(0.8), D(0.8))]]]]);
+      for (const [slot, file] of Object.entries(part.maps ?? {})) {
+        const tex = next++, vid = next++, label = `${part.material}_${slot}`;
+        objects.push(['Video', [vid, name(label, 'Video'), 'Clip'], [['Type', ['Clip']], ['Properties70', [], [P('Path', 'KString', 'XRefUrl', '', file)]],
+          ['UseMipMap', [0]], ['Filename', [file]], ['RelativeFilename', [file]]]]);
+        objects.push(['Texture', [tex, name(label, 'Texture'), ''], [['Type', ['TextureVideoClip']], ['Version', [202]], ['TextureName', [name(label, 'Texture')]],
+          ['Properties70', [], [P('UseMaterial', 'bool', '', '', 1)]], ['Media', [name(label, 'Video')]], ['FileName', [file]], ['RelativeFilename', [file]]]]);
+        links.push(['C', ['OO', vid, tex]], ['C', ['OP', tex, mat, slot]]);
+      }
     }
     objects.push(['Geometry', [geo, name(part.name, 'Geometry'), 'Mesh'], [
       ['Vertices', [new Float64Array(w.xyz)]],
@@ -259,7 +270,7 @@ export function toFbx(parts: ExportPart[], sharp: number, unit: number): Uint8Ar
     ['Documents', [], [['Count', [1]], ['Document', [1n, 'Scene', 'Scene'], [['RootNode', [0n]]]]]],
     ['References', []],
     ['Definitions', [], [['Version', [100]], ['Count', [objects.length]],
-      ...(['Model', 'Geometry', 'Material'] as const).map((t): Node => ['ObjectType', [t], [['Count', [objects.filter((o) => o[0] === t).length]]]])]],
+      ...(['Model', 'Geometry', 'Material', 'Texture', 'Video'] as const).map((t): Node => ['ObjectType', [t], [['Count', [objects.filter((o) => o[0] === t).length]]]])]],
     ['Objects', [], objects],
     ['Connections', [], links],
   ]);

@@ -14,3 +14,8 @@ tauri = { version = "2", features = [] }
 # The solver is all tight float loops: unoptimised it's ~20x slower, even in `tauri dev`.
 [profile.dev.package.barista]
 opt-level = 3
+
+# SQLite's C source (.barista projects) built without debug info: cl's /Z7 can fail on it ("failed to get command
+# line into debug records") and nobody steps through sqlite3.c.
+[profile.dev.package.libsqlite3-sys]
+debug = false

@@ -97,7 +97,7 @@ export function PopupMenu() {
 const pct = (x: number) => `${(x * 100).toFixed(2)}%`;
 
 export function StatusBar() {
-  const server = useApp((s) => s.server), busy = useApp((s) => s.busy), error = useApp((s) => s.error), edited = useApp((s) => s.edited);
+  const server = useApp((s) => s.server), busy = useApp((s) => s.busy), error = useApp((s) => s.error), notice = useApp((s) => s.notice), edited = useApp((s) => s.edited);
   const stats = useApp((s) => s.result?.stats);
   const workspace = useApp((s) => s.workspace), doc = workspace === 'doc', paint = workspace === 'paint', uv = workspace === 'uv';
   // Poly Doc reads the mesh only: polygons and triangles of every part, nothing from the unwrap
@@ -125,6 +125,7 @@ export function StatusBar() {
       </>}
       {edited && uv && <span title="UVs moved by hand since the last unwrap; Auto Unwrap starts over">edited by hand</span>}
       {busy && <span className="busy">{busy}</span>}
+      {notice && !busy && <span title={notice}>{notice}</span>}
       {error && server !== 'down' && <span className="err" title={error}>{error}</span>}
       <span className="build">v{__VERSION__}</span>
     </div>
