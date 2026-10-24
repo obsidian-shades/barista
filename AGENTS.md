@@ -38,3 +38,9 @@ plane walk, re-triangulate, new edges as seams; the editor then replaces the par
 - Running server locks `engine/target/release`: test with `CARGO_TARGET_DIR=target/check cargo test --release`.
 - `src/api.ts` mirrors `engine/src/lib.rs` (Params, Stats, Output): change both together.
 - Every user action lives in `src/store.ts`; components only read state and call those.
+- Van Gogh's shelf is the purchased 4,981-material pack in git-ignored `public/materials-pack`, loaded by
+  `src/materials.ts`; the 50-set `public/materials` core is a fallback only. Install with
+  `tools/extract-pack.ps1` + `tools/build-pack.py`; `tools/pack-thumbs.py` makes the lit PBR sphere previews.
+  Categories are nine visible Material chips, no core/pack, role or smart-finish rows. Decals are
+  `src/decals.ts` + `public/decals/` (20 original CC0 marks) baked as `PaintLayer.decal` by `bakeDecal` in
+  `src/paint.ts`. Verify with `node src/paint.check.ts` and the browser at :5173.

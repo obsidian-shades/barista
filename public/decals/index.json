@@ -1,0 +1,386 @@
+{
+  "version": 1,
+  "source": "Barista original decals",
+  "license": "CC0-1.0",
+  "decals": [
+    {
+      "id": "garuda-mark",
+      "name": "Garuda Mark",
+      "category": "Insignia",
+      "tags": [
+        "garuda",
+        "logo",
+        "wing",
+        "badge",
+        "weapon"
+      ],
+      "notes": "Angular wing-and-star unit mark with a fine technical ring.",
+      "file": "garuda-mark.png",
+      "width": 1024,
+      "height": 1024,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "wing-insignia",
+      "name": "Wing Insignia",
+      "category": "Insignia",
+      "tags": [
+        "wing",
+        "airborne",
+        "badge",
+        "stencil"
+      ],
+      "notes": "Wide wing crest and AIRBORNE stencil for stocks and cases.",
+      "file": "wing-insignia.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "proto-comp",
+      "name": "PROTO_COMP Plate",
+      "category": "Data",
+      "tags": [
+        "technical",
+        "prototype",
+        "label",
+        "gun",
+        "sci-fi"
+      ],
+      "notes": "The R&D plate from the reference pistol: prototype ID, revision and a data code.",
+      "file": "proto-comp.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "arts-rnd",
+      "name": "ARTS / R&D",
+      "category": "Data",
+      "tags": [
+        "arts",
+        "rnd",
+        "label",
+        "receiver",
+        "sci-fi"
+      ],
+      "notes": "Receiver plate with ROOM RT / RE\u00d8ZE markings and a tally strip.",
+      "file": "arts-rnd.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "vx-09",
+      "name": "VX-09 Serial",
+      "category": "Data",
+      "tags": [
+        "serial",
+        "unit",
+        "number",
+        "barcode",
+        "weapon"
+      ],
+      "notes": "Large VX-09 stencil with serial, batch and a barcode.",
+      "file": "vx-09.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "serial-plate",
+      "name": "Unit Data Plate",
+      "category": "Data",
+      "tags": [
+        "serial",
+        "data plate",
+        "barcode",
+        "qr",
+        "industrial"
+      ],
+      "notes": "Full unit data plate: serial, barcode, QR and manufacturing line.",
+      "file": "serial-plate.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "micro-data",
+      "name": "Micro Data Strip",
+      "category": "Data",
+      "tags": [
+        "data",
+        "strip",
+        "barcode",
+        "detail",
+        "sci-fi"
+      ],
+      "notes": "A thin strip of machine data for receiver flats and magazines.",
+      "file": "micro-data.png",
+      "width": 1024,
+      "height": 128,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "warning-triangle",
+      "name": "High Voltage",
+      "category": "Warning",
+      "tags": [
+        "hazard",
+        "voltage",
+        "triangle",
+        "japanese",
+        "warning"
+      ],
+      "notes": "High-voltage triangle with \u9ad8\u96fb\u5727 and a do-not-open line.",
+      "file": "warning-triangle.png",
+      "width": 1024,
+      "height": 1024,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "caution-jp",
+      "name": "\u53d6\u6271\u6ce8\u610f",
+      "category": "Warning",
+      "tags": [
+        "japanese",
+        "caution",
+        "handle",
+        "warning",
+        "stencil"
+      ],
+      "notes": "Handle-with-care plate, Japanese-first with an English stencil.",
+      "file": "caution-jp.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "prototype-jp",
+      "name": "\u8a66\u4f5c\u6a5f",
+      "category": "Warning",
+      "tags": [
+        "japanese",
+        "prototype",
+        "warning",
+        "sci-fi",
+        "gun"
+      ],
+      "notes": "Prototype-unit warning with NOT FOR SALE and tally marks.",
+      "file": "prototype-jp.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "plasma-jp",
+      "name": "\u30d7\u30e9\u30ba\u30de",
+      "category": "Warning",
+      "tags": [
+        "japanese",
+        "plasma",
+        "energy",
+        "warning",
+        "sci-fi"
+      ],
+      "notes": "Pressurised plasma-cell label with an energy bolt.",
+      "file": "plasma-jp.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "no-step",
+      "name": "NO STEP",
+      "category": "Marking",
+      "tags": [
+        "no step",
+        "stencil",
+        "warning",
+        "panel",
+        "military"
+      ],
+      "notes": "NO STEP stencil with structural-panel note and boot arrows.",
+      "file": "no-step.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "lift-here",
+      "name": "LIFT HERE",
+      "category": "Marking",
+      "tags": [
+        "lift",
+        "arrow",
+        "stencil",
+        "crate",
+        "military"
+      ],
+      "notes": "Vertical lift-point stencil with a heavy up arrow.",
+      "file": "lift-here.png",
+      "width": 512,
+      "height": 1024,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "hazard-stripes",
+      "name": "Hazard Stripe",
+      "category": "Warning",
+      "tags": [
+        "hazard",
+        "stripes",
+        "caution",
+        "yellow",
+        "industrial"
+      ],
+      "notes": "Yellow and black diagonal hazard band with a moving-parts label.",
+      "file": "hazard-stripes.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "danger-enter",
+      "name": "DANGER \u2014 Do Not Enter",
+      "category": "Warning",
+      "tags": [
+        "danger",
+        "sign",
+        "red",
+        "japanese",
+        "warning"
+      ],
+      "notes": "Red DANGER plate with DO NOT ENTER and \u7acb\u5165\u7981\u6b62.",
+      "file": "danger-enter.png",
+      "width": 1024,
+      "height": 1024,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "biohazard",
+      "name": "Biohazard",
+      "category": "Warning",
+      "tags": [
+        "biohazard",
+        "symbol",
+        "danger",
+        "sci-fi",
+        "warning"
+      ],
+      "notes": "Biohazard trefoil with \u5371\u967a\u7269 for labs and containment doors.",
+      "file": "biohazard.png",
+      "width": 1024,
+      "height": 1024,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "reticle",
+      "name": "Target Reticle",
+      "category": "Marking",
+      "tags": [
+        "reticle",
+        "target",
+        "optic",
+        "crosshair",
+        "sci-fi"
+      ],
+      "notes": "Precision reticle with range ticks and an optic calibration line.",
+      "file": "reticle.png",
+      "width": 1024,
+      "height": 1024,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "chevrons",
+      "name": "Forward Chevrons",
+      "category": "Marking",
+      "tags": [
+        "chevron",
+        "forward",
+        "arrow",
+        "01",
+        "sci-fi"
+      ],
+      "notes": "Three forward chevrons with a unit index; reads well on long slides.",
+      "file": "chevrons.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#ffffff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "neon-vx",
+      "name": "Neon VX",
+      "category": "Neon",
+      "tags": [
+        "neon",
+        "purple",
+        "glow",
+        "vx",
+        "cyberpunk"
+      ],
+      "notes": "Glowing violet VX mark for the reference gun's custom build.",
+      "file": "neon-vx.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#b388ff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    },
+    {
+      "id": "violet-chevron",
+      "name": "Violet Chevrons",
+      "category": "Neon",
+      "tags": [
+        "neon",
+        "purple",
+        "chevron",
+        "cyberpunk",
+        "trim"
+      ],
+      "notes": "Two violet chevrons for accent panels and magazines.",
+      "file": "violet-chevron.png",
+      "width": 1024,
+      "height": 512,
+      "tint": "#b388ff",
+      "license": "CC0-1.0",
+      "source": "Barista original"
+    }
+  ]
+}

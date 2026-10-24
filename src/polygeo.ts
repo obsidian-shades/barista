@@ -527,31 +527,38 @@ export function gridFill(g: Geo, s: Sel): Done | null {
 
 // ---- looking ----
 
-/** Mesh check on the soup: edges with more than two faces, open edges, faces whose winding disagrees with their
- *  neighbours (the smaller side of each connected piece), faces with no area, and faces lying twice on the same corners. */
+/** Mesh check on the soup: edges with more than two faces, vertices where two fans meet at a point, open edges,
+ *  faces whose winding disagrees with their neighbours (the smaller side of each connected piece), whole closed
+ *  shells wound inside-out (signed volume), faces with no area, and faces lying twice on the same corners.
+ *  The zero-area test is relative to the part's own radius (as the engine's weld/drop is), so a model far from the
+ *  origin or small in its units isn't judged at the world's scale. */
 export function meshCheck(g: Geo) {
   const t = topoOfSoup(g.soup), nf = g.poly.length, nonManifold: [number, number][] = [], open: [number, number][] = [];
   for (let e = 0; e < t.ends.length / 2; e++) {
     const n = t.edgeTris[e].length, pair: [number, number] = [t.ends[e * 2], t.ends[e * 2 + 1]];
     if (n > 2) nonManifold.push(pair); else if (n === 1) open.push(pair);
   }
+  // the part's radius (half its bounding-box diagonal), so "no area" means the same at any model scale
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let v = 0; v < t.nv; v++) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], t.pos[v * 3 + k]); hi[k] = Math.max(hi[k], t.pos[v * 3 + k]); }
+  const R = 0.5 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 0;
   const zero: number[] = [], seen = new Map<string, number>(), duplicate: number[] = [];
-  let r = 0;
-  for (let i = 0; i < t.pos.length; i++) r = Math.max(r, Math.abs(t.pos[i]));
   for (let f = 0; f < nf; f++) {
     const P = [0, 1, 2].map((k) => { const v = t.vid[f * 3 + k]; return [t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]] as V3; });
-    if (len(cross(sub(P[1], P[0]), sub(P[2], P[0]))) <= 1e-10 * r * r) zero.push(f);
+    if (len(cross(sub(P[1], P[0]), sub(P[2], P[0]))) <= 2e-12 * R * R) zero.push(f);
     const key = [0, 1, 2].map((k) => t.vid[f * 3 + k]).sort((a, b) => a - b).join();
     if (seen.has(key)) duplicate.push(f); else seen.set(key, f);
   }
   const isZero = new Set(zero);
   // winding: flood each piece, flipping across an edge both faces run the same way (a face with no area has no
-  // facing, so it sits the flood out: it's counted as zero-area instead)
-  const flip = new Int8Array(nf).fill(-1), flipped: number[] = [];
+  // facing, so it sits the flood out: it's counted as zero-area instead). A closed piece is then checked by its
+  // signed volume: a fully inward closed shell has no minority to flip, and bakes inverted.
+  const flip = new Int8Array(nf).fill(-1), flipped: number[] = [], insideOut: number[][] = [];
   const dir = (f: number, a: number, b: number) => [0, 1, 2].some((k) => t.vid[f * 3 + k] === a && t.vid[f * 3 + (k + 1) % 3] === b);
+  const closedShells: { piece: number[]; volume: number; lo: V3; hi: V3 }[] = [];
   for (let f0 = 0; f0 < nf; f0++) {
     if (flip[f0] >= 0 || isZero.has(f0)) continue;
-    const piece = [f0];
+    const piece = [f0], inPiece = new Set([f0]);
     flip[f0] = 0;
     for (let i = 0; i < piece.length; i++) for (let k = 0; k < 3; k++) {
       const f = piece[i], e = t.edge[f * 3 + k];
@@ -560,20 +567,68 @@ export function meshCheck(g: Geo) {
       if (h === undefined || flip[h] >= 0 || isZero.has(h)) continue;
       const a = t.vid[f * 3 + k], b = t.vid[f * 3 + (k + 1) % 3];
       flip[h] = dir(h, a, b) ? 1 - flip[f] : flip[f]; // the same direction on both sides: one of them is turned over
-      piece.push(h);
+      piece.push(h); inPiece.add(h);
+    }
+    // closed only if every edge round the piece has exactly its two faces in this piece
+    let closed = true;
+    for (const f of piece) for (let k = 0; k < 3; k++) {
+      const es = t.edgeTris[t.edge[f * 3 + k]];
+      if (es.length !== 2 || !inPiece.has(es[0]) || !inPiece.has(es[1])) { closed = false; break; }
+    }
+    let volume = 0;
+    if (closed) for (const f of piece) {
+      const [a, b, c] = [0, 1, 2].map((k) => { const v = t.vid[f * 3 + k]; return [t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]] as V3; });
+      volume += dot(a, cross(flip[f] ? c : b, flip[f] ? b : c)) / 6;
+    }
+    if (closed && Math.abs(volume) > 1e-10 * R * R * R) {
+      const lo: V3 = [Infinity, Infinity, Infinity], hi: V3 = [-Infinity, -Infinity, -Infinity];
+      for (const f of piece) for (let k = 0; k < 3; k++) { const v = t.vid[f * 3 + k]; for (let j = 0; j < 3; j++) { lo[j] = Math.min(lo[j], t.pos[v * 3 + j]); hi[j] = Math.max(hi[j], t.pos[v * 3 + j]); } }
+      closedShells.push({ piece, volume, lo, hi });
+      continue;
     }
     const ones = piece.filter((f) => flip[f]);
     flipped.push(...(ones.length * 2 > piece.length ? piece.filter((f) => !flip[f]) : ones));
   }
-  return { nonManifold, open, flipped, zero, duplicate };
+  // A negative volume is an inside-out shell — unless it sits inside another closed shell, which is the inner wall of a
+  // cavity (a cup, a hollow casting): its normals face into the hole on purpose. Bounding-box containment is enough to
+  // tell the two apart without a point-in-mesh cast.
+  const inside = (a: typeof closedShells[number], b: typeof closedShells[number]) =>
+    [0, 1, 2].every((k) => a.lo[k] >= b.lo[k] - 1e-9 * R && a.hi[k] <= b.hi[k] + 1e-9 * R) && [0, 1, 2].some((k) => a.lo[k] > b.lo[k] + 1e-9 * R || a.hi[k] < b.hi[k] - 1e-9 * R);
+  for (const sh of closedShells) {
+    if (sh.volume < 0 && !closedShells.some((o) => o !== sh && inside(sh, o))) { insideOut.push(sh.piece); continue; }
+    const ones = sh.piece.filter((f) => flip[f]);
+    flipped.push(...(ones.length * 2 > sh.piece.length ? sh.piece.filter((f) => !flip[f]) : ones));
+  }
+  // non-manifold vertices: more than one fan of faces meets at the point (a bow-tie), so the link is not one circle.
+  // The edge check above catches edges with 3+ faces; this catches two surfaces touching at a single vertex. A vertex
+  // on a non-manifold edge is already reported by that edge (and its fans are split by it), so it isn't repeated here.
+  const nonManifoldVert: number[] = [], onNmEdge = new Uint8Array(t.nv);
+  for (const [a, b] of nonManifold) onNmEdge[a] = onNmEdge[b] = 1;
+  for (let v = 0; v < t.nv; v++) {
+    const fs = trisOf(t, v);
+    if (fs.length < 2 || onNmEdge[v]) continue;
+    const seenV = new Set([fs[0]]), stack = [fs[0]];
+    while (stack.length) {
+      const f = stack.pop()!;
+      for (let k = 0; k < 3; k++) {
+        const e = t.edge[f * 3 + k], es = t.edgeTris[e];
+        if (es.length !== 2) continue;
+        if (t.ends[e * 2] !== v && t.ends[e * 2 + 1] !== v) continue;
+        for (const h of es) if (!seenV.has(h)) { seenV.add(h); stack.push(h); }
+      }
+    }
+    if (seenV.size < fs.length) nonManifoldVert.push(v);
+  }
+  return { nonManifold, nonManifoldVert, open, flipped, insideOut, zero, duplicate };
 }
 
-/** The smooth edges between polygons (meeting at 1°–45°, where the export shades across) and their chord error: how
- *  far the flat polygons there cut the corner of the curve they stand for, about the narrower one's width across the
- *  edge × the bend / 8 (the width capped at the polygon's own size, so a thin bevel strip counts as thin); `wp`, `wq`: each
- *  side's width; `even`: within 3× of each other, segments of one curve (a wide face beside a narrow one is a chamfer
- *  or a bevel, drawn that way on purpose). */
-export function curveEdges(g: Geo): { a: number; b: number; p: number; q: number; bend: number; err: number; wp: number; wq: number; even: boolean }[] {
+/** The smooth edges between polygons (meeting at 0.02°–45°, where the export shades across) and how coarsely the curve
+ *  they stand for is sampled. `bend`: the turn from one face to the next; `radius`: the circle that turn implies
+ *  (edge length / 2 sin(bend / 2)); `err`: the chord sagitta of that circle (how far the flat faces cut inside it) —
+ *  a scale-free measure of faceting, unlike a share of the model's bounding box. `wp`, `wq`: each side's width across
+ *  the edge; `even`: within 3× of each other, segments of one curve (a wide face beside a narrow one is a chamfer or a
+ *  bevel, drawn that way on purpose). A turn past 45° is a crease or a corner, not a sampled smooth curve. */
+export function curveEdges(g: Geo): { a: number; b: number; p: number; q: number; bend: number; radius: number; err: number; wp: number; wq: number; even: boolean }[] {
   const M = new Mesh(g), t = M.t, info = new Map<number, { n: V3; area: number; size: number }>();
   const of = (p: number) => {
     let i = info.get(p);
@@ -588,28 +643,129 @@ export function curveEdges(g: Geo): { a: number; b: number; p: number; q: number
     }
     return i;
   };
-  const out: { a: number; b: number; p: number; q: number; bend: number; err: number; wp: number; wq: number; even: boolean }[] = [];
+  const out: { a: number; b: number; p: number; q: number; bend: number; radius: number; err: number; wp: number; wq: number; even: boolean }[] = [];
   for (let e = 0; e < t.ends.length / 2; e++) {
     const fs = t.edgeTris[e];
     if (fs.length !== 2 || g.poly[fs[0]] === g.poly[fs[1]]) continue;
     const [p, q] = [g.poly[fs[0]], g.poly[fs[1]]], a = t.ends[e * 2], b = t.ends[e * 2 + 1], P = of(p), Q = of(q);
     const bend = Math.acos(Math.max(-1, Math.min(1, dot(P.n, Q.n)))), el = len(sub(M.pos(a), M.pos(b))) || 1;
-    if (bend < Math.PI / 180 || bend >= Math.PI / 4) continue;
+    if (bend < 0.02 * Math.PI / 180 || bend >= Math.PI / 4) continue;
     const w = (X: typeof P) => Math.min(X.area / el, X.size);
-    out.push({ a, b, p, q, bend, err: (Math.min(w(P), w(Q)) * bend) / 8, wp: w(P), wq: w(Q), even: Math.max(w(P), w(Q)) <= 3 * Math.min(w(P), w(Q)) });
+    const radius = el / (2 * Math.sin(bend / 2)), err = radius * (1 - Math.cos(bend / 2));
+    out.push({ a, b, p, q, bend, radius, err, wp: w(P), wq: w(Q), even: Math.max(w(P), w(Q)) <= 3 * Math.min(w(P), w(Q)) });
   }
   return out;
 }
 
-/** Poles: inside vertices (not on an open edge) where other than 4 polygon edges meet: 3 (`three`) or 5 and more (`many`). */
+/** The dominant polygon kind of a part (the mode of its `sides`), the count of polygons with it, and the regular
+ *  valence that kind implies: 4 for quads, 6 for triangles, 2s/(s−2) in general. */
+function dominantSides(g: Geo): { sides: number; regular: number } {
+  const n = new Map<number, number>();
+  for (const s of g.sides) n.set(s, (n.get(s) ?? 0) + 1);
+  let sides = 4, best = -1;
+  for (const [s, c] of n) if (c > best || (c === best && s > sides)) { best = c; sides = s; }
+  return { sides, regular: Math.max(2, Math.round((2 * sides) / (sides - 2))) };
+}
+
+/** Poles: inside vertices (not on an open edge) whose valence differs from the regular one for this kind of mesh:
+ *  fewer (`low`) or more (`high`), and by 2 or more (`big`). For quads regular is 4, so the classic 3- and 5-poles are
+ *  low/high; for triangles regular is 6, so a 5- or 7-valence vertex is mild, not the "5+ pole" a quad mesh means.
+ *  Poles are structural (Poincaré–Hopf: their indices have to sum to the Euler characteristic), so Health does not
+ *  colour them; the census reports them. */
 export function poles(g: Geo) {
-  const t = topoOfSoup(g.soup), deg = new Int32Array(t.nv), edge = new Uint8Array(t.nv), three: number[] = [], many: number[] = [];
+  const t = topoOfSoup(g.soup), deg = new Int32Array(t.nv), edge = new Uint8Array(t.nv), { regular } = dominantSides(g);
+  const low: number[] = [], high: number[] = [], big: number[] = [];
   for (let e = 0; e < t.ends.length / 2; e++) {
     const [a, b] = t.edgeTris[e];
     if (b !== undefined && g.poly[a] === g.poly[b] && t.edgeTris[e].length === 2) continue;
     deg[t.ends[e * 2]]++; deg[t.ends[e * 2 + 1]]++;
     if (t.edgeTris[e].length !== 2) edge[t.ends[e * 2]] = edge[t.ends[e * 2 + 1]] = 1;
   }
-  for (let v = 0; v < t.nv; v++) if (!edge[v]) { if (deg[v] === 3) three.push(v); else if (deg[v] >= 5) many.push(v); }
-  return { three, many };
+  for (let v = 0; v < t.nv; v++) if (!edge[v]) {
+    if (deg[v] < regular) low.push(v); else if (deg[v] > regular) high.push(v);
+    if (Math.abs(deg[v] - regular) >= 2) big.push(v);
+  }
+  return { regular, low, high, big };
+}
+
+export interface MeshTopology {
+  /** Connected pieces of surface. */
+  shells: number;
+  /** How many of them are closed (no boundary at all). */
+  closed: number;
+  /** Sum of the pieces' genera; only meaningful when `clean` (a non-manifold piece is skipped). */
+  genus: number;
+  /** Sum of V − E + F over the pieces. */
+  chi: number;
+  /** Boundary loops over all pieces. */
+  boundaries: number;
+  /** Regular valence for the part's dominant polygon kind (4 quads, 6 triangles). */
+  regular: number;
+  /** False when the pieces don't resolve to a whole genus (non-manifold or non-orientable). */
+  clean: boolean;
+}
+
+const topologyCache = new WeakMap<Float32Array, { sides: Int32Array; info: MeshTopology }>();
+/** The part's surface topology, counted on the welded mesh: shells, closed vs open, boundary loops, Euler
+ *  characteristic and genus. Genus is the number of handles: 0 for a sphere or a disc, 1 for a torus, 2 for a
+ *  two-handle shape. (Per piece, genus = (2 − χ − boundaries) / 2, which is only a whole number for an orientable
+ *  manifold; `clean` says whether it was.) */
+export function meshTopology(g: Geo): MeshTopology {
+  const hit = topologyCache.get(g.soup);
+  if (hit && hit.sides === g.sides) return hit.info;
+  const t = topoOfSoup(g.soup), nf = g.poly.length, comp = new Int32Array(nf).fill(-1);
+  let shells = 0;
+  for (let f0 = 0; f0 < nf; f0++) {
+    if (comp[f0] >= 0) continue;
+    const id = shells++, queue = [f0];
+    comp[f0] = id;
+    for (let i = 0; i < queue.length; i++) for (let k = 0; k < 3; k++) {
+      const es = t.edgeTris[t.edge[queue[i] * 3 + k]];
+      if (es.length !== 2) continue;
+      const h = es[0] === queue[i] ? es[1] : es[0];
+      if (comp[h] < 0) { comp[h] = id; queue.push(h); }
+    }
+  }
+  const chi: number[] = [], bows: number[] = [];
+  let clean = true;
+  for (let id = 0; id < shells; id++) {
+    const faces: number[] = [];
+    for (let f = 0; f < nf; f++) if (comp[f] === id) faces.push(f);
+    const verts = new Set<number>(), edges = new Set<number>(), boundary = new Set<number>();
+    for (const f of faces) {
+      for (let k = 0; k < 3; k++) {
+        verts.add(t.vid[f * 3 + k]);
+        const e = t.edge[f * 3 + k];
+        edges.add(e);
+        if (t.edgeTris[e].length === 1) boundary.add(e);
+        if (t.edgeTris[e].length > 2) clean = false;
+      }
+    }
+    chi.push(verts.size - edges.size + faces.length);
+    // boundary loops: connected components of the boundary-edge graph (degree 2 is one clean loop)
+    if (!boundary.size) { bows.push(0); continue; }
+    const adj = new Map<number, number[]>();
+    for (const e of boundary) for (const [a, b] of [[t.ends[e * 2], t.ends[e * 2 + 1]], [t.ends[e * 2 + 1], t.ends[e * 2]]]) (adj.get(a) ?? adj.set(a, []).get(a)!).push(b);
+    for (const ns of adj.values()) if (ns.length !== 2) clean = false;
+    const seen = new Set<number>();
+    let loops = 0;
+    for (const v of adj.keys()) {
+      if (seen.has(v)) continue;
+      loops++;
+      const stack = [v];
+      seen.add(v);
+      while (stack.length) for (const w of adj.get(stack.pop()!) ?? []) if (!seen.has(w)) { seen.add(w); stack.push(w); }
+    }
+    bows.push(loops);
+  }
+  const totals = chi.reduce((s, c, i) => ({ chi: s.chi + c, boundaries: s.boundaries + bows[i] }), { chi: 0, boundaries: 0 });
+  let genus = 0;
+  for (let id = 0; id < shells; id++) {
+    const g2 = (2 - chi[id] - bows[id]) / 2, gi = Math.round(g2);
+    if (Math.abs(g2 - gi) > 1e-6 || gi < 0) { clean = false; continue; }
+    genus += gi;
+  }
+  const info: MeshTopology = { shells, closed: bows.filter((b) => b === 0).length, genus, chi: totals.chi, boundaries: totals.boundaries, regular: dominantSides(g).regular, clean };
+  topologyCache.set(g.soup, { sides: g.sides, info });
+  return info;
 }

@@ -36,9 +36,6 @@ const CURES: Partial<Record<RuleId, [string, () => unknown][]>> = {
   quadSkew: [['Relax Around', relaxAroundSel], ['Triangulate', triangulateSel]],
   quadTaper: [['Relax Around', relaxAroundSel], ['Triangulate', triangulateSel]],
   quadJacobian: [['Triangulate', triangulateSel], ['Relax Around', relaxAroundSel]],
-  quadAspect: [['Relax Around', relaxAroundSel]],
-  poleCurve: [['Relax Around', relaxAroundSel]],
-  poleBig: [['Relax Around', relaxAroundSel]],
   faceted: [['Add Loops on Curve', addLoopsSel], ['Relax Around', relaxAroundSel]],
   outline: [['Triangulate', triangulateSel]],
 };
@@ -59,7 +56,7 @@ export function polyContextMenu() {
   const g = { soup: part.soup, ...(part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9)) };
   const tri = hovering && pointer.part === partIx ? pointer.tri : c && c.faces.size ? [...c.faces][0] : -1;
   const p = tri >= 0 ? g.poly[out.source[tri]] : -1, sides = p >= 0 ? g.sides[p] : 0;
-  const issues = p >= 0 ? [...(healthReport(g).issues.get(p) ?? [])].sort((a, b) => b.score - a.score) : [];
+  const issues = p >= 0 ? [...(healthReport(g).issues.get(p) ?? [])].sort((a, b) => b.score - a.score).filter((i, k, all) => all.findIndex((j) => j.rule === i.rule) === k) : [];
   const kc = counts(countKey(s)), items: MenuItem[] = [];
   const head = (label: string) => items.push({ label, run: () => {}, kind: 'head' });
   if (p >= 0) {

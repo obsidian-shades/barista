@@ -4,16 +4,17 @@
 // pans, Ctrl+middle drag zooms; Home frames all, numpad . the selection. G R S move, rotate, scale the selection
 // with the mouse (click keeps it, right click puts it back); pinned UVs show red. Shows the picked part's UVs alone,
 // or the whole model: each part's square as a tile.
-import { useEffect, useRef } from 'react';
-import { checkerCanvas, islandColor, stretchColor } from '../colors';
+import { useEffect, useMemo, useRef } from 'react';
+import { islandColor, stretchColor, uvMapCanvas, type UVMap } from '../colors';
 import { pickTri } from '../islands';
 import {
-  texSet, paintPress, paintDrag, paintEnd, selectPaintInUV, deselectPaint, type PaintMods, beginEdit, cancelXform, clearSelection, confirmXform, kindOf, liveSel, nudge, pinsOf, pointer, xformMouse, repack, selectElems, selectLoop, setUvScope, setTextureResolution, TEXTURE_RESOLUTIONS, TILE, useApp, uvTiles, contextMenu, openMenu, closeMenu,
+  texSet, paintPress, paintDrag, paintEnd, painting, selectPaintInUV, deselectPaint, type PaintMods, beginEdit, cancelXform, clearSelection, confirmXform, kindOf, liveSel, nudge, pinsOf, pointer, xformMouse, repack, selectElems, selectLoop, setUvScope, setTextureResolution, setUvMap, TEXTURE_RESOLUTIONS, TILE, useApp, uvTiles, contextMenu, openMenu, closeMenu,
   type SelOp, type MenuItem,
 } from '../store';
 import { topoOf } from '../topo';
 import { canvasOf } from '../paint';
 import { materialCanvas } from '../matview';
+import { gpuPreviewCanvas } from '../gpupaint';
 import { IslandBar } from '../shell/IslandBar';
 import { SEL } from './Viewport3D';
 
@@ -25,13 +26,15 @@ type Drag =
 const opOf = (e: { shiftKey: boolean; ctrlKey: boolean }, click: boolean): SelOp => (e.shiftKey ? (click ? 'toggle' : 'add') : e.ctrlKey ? 'sub' : 'set');
 
 export function UVView() {
-  const result = useApp((s) => s.result), mode = useApp((s) => s.mode), uvRev = useApp((s) => s.uvRev), loading = useApp((s) => s.loading), textureResolution = useApp((s) => s.textureResolution);
+  const result = useApp((s) => s.result), mode = useApp((s) => s.mode), uvRev = useApp((s) => s.uvRev), loading = useApp((s) => s.loading), textureResolution = useApp((s) => s.textureResolution), uvMap = useApp((s) => s.uvMap);
   const xform = useApp((s) => s.xform), pins = useApp((s) => s.pins);
   const csel = useApp((s) => liveSel(s)), selectMode = useApp((s) => s.selectMode), viewReq = useApp((s) => s.viewReq);
   // Van Gogh: the picked channel's texture under the UVs, and no UV editing (it would move the paint)
-  const paint = useApp((s) => s.workspace === 'paint'), channel = useApp((s) => s.paintChannel), paintRev = useApp((s) => s.paintRev);
+  const paint = useApp((s) => s.workspace === 'paint'), channel = useApp((s) => s.paintChannel), paintRev = useApp((s) => s.paintRev), paintLive = useApp((s) => s.paintLive);
   const parts = useApp((s) => s.parts), activePart = useApp((s) => s.activePart), oneAtlas = useApp((s) => s.params.one_atlas), uvScope = useApp((s) => s.uvScope);
   const box = useRef<HTMLDivElement>(null), cv = useRef<HTMLCanvasElement>(null);
+  // The checker is a canvas generated at the paint resolution: do not rebuild it on every live stroke tick.
+  const checker = useMemo(() => uvMapCanvas(uvMap, textureResolution), [uvMap, textureResolution]);
   // view: UV (0,0) sits at screen (ox, oy + H·size), one UV unit is `size` px; the tiles span W × H units
   const view = useRef({ size: 0, ox: 0, oy: 0, H: 1, fitted: false, layout: '' });
   const drag = useRef<Drag>(null);
@@ -55,7 +58,6 @@ export function UVView() {
   useEffect(() => { view.current.fitted = false; }, [result]);
 
   useEffect(() => {
-    const checker = checkerCanvas(textureResolution);
     const draw = () => {
       const el = box.current!, c = cv.current!, dpr = devicePixelRatio, w = el.clientWidth, h = el.clientHeight, v = view.current;
       const tiles = uvTiles(), W = tiles.cols * TILE - (TILE - 1), H = tiles.rows * TILE - (TILE - 1), layout = `${tiles.cols}x${tiles.rows}`;
@@ -70,6 +72,9 @@ export function UVView() {
       x.setTransform(dpr, 0, 0, dpr, 0, 0);
       x.clearRect(0, 0, w, h);
       const S = v.size, X = (u: number) => v.ox + u * S, Y = (t: number) => v.oy + (v.H - t) * S;
+      // A live stroke only needs the texture; walking every UV triangle in a dense model was the
+      // texture view's biggest cost. The wire returns when the stroke ends.
+      const liveView = paint && painting() && paintLive > 0;
       // one square per tile (just one unless the whole model is shown part by part), named when there are several
       const squares: [[number, number], number][] = tiles.at.flatMap((o, pi) => (o ? [[o, pi] as [[number, number], number]] : []));
       for (const [[u0, v0], pi] of squares.length ? squares : [[[0, 0], -1] as [[number, number], number]]) {
@@ -77,11 +82,15 @@ export function UVView() {
         x.fillRect(X(u0), Y(v0 + 1), S, S);
         if (paint && parts[pi]) {
           const ts = texSet(pi);
-          // the material view (until its light has loaded, the colour), a channel the set has, or a baked map once baked
-          const mat = channel === 'material' && result?.parts[pi] && useApp.getState().uvs[pi] ? materialCanvas(ts, result.parts[pi].positions, useApp.getState().uvs[pi], useApp.getState().paintAO) : null;
+          // While a stroke is live, show the painted channel straight from its DataTexture; the lit material
+          // view is a full offscreen render and waits for the stroke to end.
+          const live = liveView;
+          const mat = !live && channel === 'material' && result?.parts[pi] && useApp.getState().uvs[pi] ? materialCanvas(ts, result.parts[pi].positions, useApp.getState().uvs[pi], useApp.getState().paintAO) : null;
           const shown = channel === 'material' ? 'color' : (channel === 'ao' || channel === 'curv' ? !!ts.bake : ts.channels.includes(channel)) ? channel : 'color';
-          x.drawImage(mat ?? canvasOf(ts, shown), X(u0), Y(v0 + 1), S, S);
-          if (ts.sel) x.drawImage(canvasOf(ts, 'shade'), X(u0), Y(v0 + 1), S, S);
+          const preview = Math.min(ts.size, live ? 512 : 1024);
+          const gpu = live || ts.preview ? gpuPreviewCanvas(pi) : null;
+          x.drawImage(gpu ?? mat ?? canvasOf(ts, shown, preview), X(u0), Y(v0 + 1), S, S);
+          if (ts.sel) x.drawImage(canvasOf(ts, 'shade', preview), X(u0), Y(v0 + 1), S, S);
         }
         else if (mode === 'checker' && parts[pi]?.textured !== false) { x.globalAlpha = 0.75; x.drawImage(checker, X(u0), Y(v0 + 1), S, S); x.globalAlpha = 1; }
         x.strokeStyle = '#383d43';
@@ -93,7 +102,7 @@ export function UVView() {
         }
       }
       const { uvs } = useApp.getState();
-      if (result) {
+      if (result && !liveView) {
         x.lineWidth = 0.5;
         result.parts.forEach((p, pi) => {
           const at = tiles.at[pi];
@@ -163,7 +172,7 @@ export function UVView() {
     const ro = new ResizeObserver(draw);
     ro.observe(box.current!);
     return () => ro.disconnect();
-  }, [result, mode, uvRev, csel, selectMode, parts, activePart, oneAtlas, uvScope, loading, pins, textureResolution, paint, channel, paintRev]);
+  }, [result, mode, uvRev, csel, selectMode, parts, activePart, oneAtlas, uvScope, loading, pins, textureResolution, uvMap, paint, channel, paintRev, paintLive]);
 
   // a transform in progress follows the mouse anywhere; left click keeps it, right click puts it back
   const transforming = !!xform;
@@ -279,7 +288,7 @@ export function UVView() {
   };
   // Van Gogh: every tool works here as on the model; Marquee and Lasso draw in UV space, a click deselects
   const paintDown = (e: React.PointerEvent, p: { u: number; v: number }) => {
-    const s = useApp.getState(), sq = squareAt(p.u, p.v), mods = { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey }, tool = s.paint.tool;
+    const s = useApp.getState(), sq = squareAt(p.u, p.v), mods = { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey, pressure: e.pressure, pen: e.pointerType === 'pen' }, tool = s.paint.tool;
     if (e.button !== 0 || !result || s.loading) return;
     if ((tool === 'marquee' || tool === 'lasso') && !mods.ctrl) { stroke.current = { part: sq?.part ?? s.activePart, mods, shape: [sq?.uv ?? [p.u, p.v]] }; return; }
     if (!sq) return;
@@ -297,7 +306,7 @@ export function UVView() {
       if (!o) return;
       const uv: [number, number] = [p.u - o[0], p.v - o[1]];
       if (st.shape) st.shape = useApp.getState().paint.tool === 'marquee' ? [st.shape[0], [uv[0], st.shape[0][1]], uv, [st.shape[0][0], uv[1]]] : [...st.shape, uv];
-      else { paintDrag(st.part, null, uv); useApp.setState({}); } // the 3D view redraws on any store update
+      else { paintDrag(st.part, null, uv, e.pointerType === 'pen' ? e.pressure : 1); useApp.setState({}); } // the 3D view redraws on any store update
       redraw.current();
       return;
     }
@@ -365,8 +374,11 @@ export function UVView() {
     pointer.x = r.right; pointer.y = r.bottom + 2;
     const item = (label: string, run: () => void): MenuItem => ({ label, run: () => { closeMenu(); run(); } });
     const res = TEXTURE_RESOLUTIONS.map((n) => item(`${textureResolution === n ? '✓ ' : ''}${n}×${n}`, () => setTextureResolution(n)));
+    const maps: [UVMap, string, string][] = [['checker', 'Checker', 'density, shear, stretch'], ['grid', 'UV grid', 'labelled cells: name where a seam lands'], ['uv', 'UV ramp', 'u red, v green: turn and seam jumps'], ['arrows', 'Arrows', 'direction only']];
+    const kind = maps.map(([k, label, why]) => item(`${uvMap === k ? '✓ ' : ''}${label} — ${why}`, () => setUvMap(k)));
     openMenu('UV options', [
-      { kind: 'head', label: 'Checker texture', run: () => {} }, ...res,
+      { kind: 'head', label: 'Reference map', run: () => {} }, ...kind,
+      { kind: 'head', label: 'Resolution', run: () => {} }, ...res,
       { kind: 'head', label: 'Islands', run: () => {} },
       item('Pack islands', () => void repack()),
       item('Frame all', frame),

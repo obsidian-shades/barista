@@ -8,7 +8,7 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { useCallback, Component, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as THREE from 'three';
 import type { Output } from '../api';
-import { checkerCanvas, islandColor, stretchColor } from '../colors';
+import { islandColor, stretchColor, uvMapCanvas } from '../colors';
 import { Morph } from '../morph';
 import { inside } from '../paint';
 import { env as paintEnv, look as paintLook, PAINT_HDRI, setEnv } from '../matview';
@@ -17,13 +17,15 @@ import { poles } from '../polygeo';
 import { matcapTexture, studioShader, studioUniforms, THEME_BG } from '../shading';
 import { outNormals, ownPolygons, topoOfSoup } from '../polyedit';
 import { brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, texSet, type PaintMods, clearSelection, contextMenu, kindOf, liveSel, openRecent, pickFile, pointer, sceneGrade, selectElems, selectLoop, setSceneHdri, useApp, view3d, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
+import { setPaintRenderer } from '../gpupaint';
 import { topoOf, polygonsOf, trisOf } from '../topo';
 import { polyContextMenu } from '../shell/PolyTools';
 import { Mark } from '../ui/Icon';
 
-const checker = new THREE.CanvasTexture(checkerCanvas(1024));
+const checker = new THREE.CanvasTexture(uvMapCanvas('checker', 1024));
 checker.colorSpace = THREE.SRGBColorSpace;
 checker.anisotropy = 8;
+const NORMAL_SCALE = new THREE.Vector2(1, 1);
 
 /** Blender's selection orange, and its seam red. */
 export const SEL = '#ff8f1f', SEAM = '#e8402a';
@@ -167,6 +169,13 @@ function EmptyState() {
   );
 }
 
+/** Gives the GPU brush the same WebGL renderer the viewport uses, so its render target can be sampled directly. */
+function PaintGL() {
+  const gl = useThree((s) => s.gl);
+  useEffect(() => setPaintRenderer(gl), [gl]);
+  return null;
+}
+
 export function Viewport3D() {
   const result = useApp((s) => s.result), rev = useApp((s) => s.rev), unfold = useApp((s) => s.unfold);
   const scene = useApp((s) => s.scene), doc = useApp((s) => s.workspace === 'doc'), paintWs = useApp((s) => s.workspace === 'paint');
@@ -199,7 +208,9 @@ export function Viewport3D() {
         <ViewBoundary>
         <div className="r3f">
         <Canvas shadows frameloop="demand" camera={{ position: [2.2, 1.6, 3], fov: 45 }} dpr={[1, 2]}
+          onCreated={({ gl }) => setPaintRenderer(gl)}
           onPointerMissed={(e) => e.button === 0 && !e.shiftKey && !e.ctrlKey && clearSelection()}>
+          <PaintGL />
           <Backdrop color={scene.bg === 'custom' ? scene.background : THEME_BG} />
           {/* Workspace lights stay as they were. A plate takes over: a warm or cool fill at the slider's
               level, plus one front-left lamp, and the map does the rest of the room. */}
@@ -619,8 +630,8 @@ function boxSelect(camera: THREE.Camera, w: number, h: number, b: Box, op: SelOp
 }
 
 function Model({ result, unfold, studio, wireframe, showEdges, showVertices, showSeams }: { result: Output; unfold: number; studio: boolean; wireframe: boolean; showEdges: boolean; showVertices: boolean; showSeams: boolean }) {
-  const parts = useApp((s) => s.parts), mode = useApp((s) => s.mode), textureResolution = useApp((s) => s.textureResolution);
-  useEffect(() => { checker.image = checkerCanvas(textureResolution); checker.needsUpdate = true; }, [textureResolution]);
+  const parts = useApp((s) => s.parts), mode = useApp((s) => s.mode), textureResolution = useApp((s) => s.textureResolution), uvMap = useApp((s) => s.uvMap);
+  useEffect(() => { checker.image = uvMapCanvas(uvMap, textureResolution); checker.needsUpdate = true; }, [uvMap, textureResolution]);
   // one shared frame for the flat layout: the UV square, sized to the whole model
   const frame = useMemo(() => {
     const box = new THREE.Box3();
@@ -637,12 +648,13 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   // Poly Doc: plain grey and the wire always on, as Blender's edit mode shows a mesh
   const doc = useApp((s) => s.workspace === 'doc'), paint = useApp((s) => s.workspace === 'paint');
   useApp((s) => (paint ? s.paintRev : 0)); // a layer or channel change redraws
+  useApp((s) => (paint ? s.paintLive : 0)); // a live stroke redraws without rebuilding the panel
   const paintAO = useApp((s) => s.paintAO);
-  const ts = paint ? texSet(index) : null, pbr = !!ts?.channels.includes('rough');
+  const ts = paint ? texSet(index) : null, pbr = !!ts?.channels.includes('rough'), normal = !!ts?.channels.includes('normal');
   const docView = useApp((s) => (s.workspace === 'doc' ? s.docView : null)), smooth = docView === 'smooth' || paint, // Van Gogh shades smooth, as the game (and Substance) will
     sharp = useApp((s) => s.params.sharp);
   const uvReady = !loading || !!loading.done[index];
-  const invalidate = useThree((s) => s.invalidate);
+  const invalidate = useThree((s) => s.invalidate), camera = useThree((s) => s.camera);
 
   const { geo, p3, stretch, islands } = useMemo(() => {
     const p3 = new Float32Array(out.positions), geo = new THREE.BufferGeometry();
@@ -760,13 +772,13 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
     geo.setAttribute('normal', new THREE.BufferAttribute(n, 3));
   }, [geo, p3, pid, unfold, uvs, uvRev, smooth, sharp, topo, out.source, part.normals, part.soup]);
   const flatNow = unfold === 0;
-  // Poly Doc's poles as dots: blue where 3 polygon edges meet, red where 5 or more do
+  // Poly Doc's poles as dots: blue below the regular valence, red above it (4 for quads, 6 for triangles)
   const showPoles = useApp((s) => s.showPoles && s.workspace === 'doc');
   const poleDots = useMemo(() => {
     if (!showPoles || !flatNow) return null;
     const g = { soup: part.soup, ...(part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9)) };
     const p = poles(g), t = topoOfSoup(part.soup), xyz: number[] = [], rgb: number[] = [];
-    for (const [vs, c] of [[p.three, [0.25, 0.6, 1]], [p.many, [1, 0.3, 0.25]]] as const) for (const v of vs) { xyz.push(t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]); rgb.push(...c); }
+    for (const [vs, c] of [[p.low, [0.25, 0.6, 1]], [p.high, [1, 0.3, 0.25]]] as const) for (const v of vs) { xyz.push(t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]); rgb.push(...c); }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(xyz, 3));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(rgb, 3));
@@ -797,8 +809,8 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
     e.stopPropagation();
     // a drag that began off the model starts painting where it comes onto it, as Photoshop paints from anywhere
     const tool = useApp.getState().paint.tool;
-    if (painting()) paintDrag(index, e.point.toArray(), [e.uv.x, e.uv.y]);
-    else if ((tool === 'brush' || tool === 'erase') && !e.ctrlKey && !e.altKey && paintPress(index, e.faceIndex, e.point.toArray(), [e.uv.x, e.uv.y], { shift: false, alt: false, ctrl: false })) addEventListener('pointerup', paintEnd, { once: true });
+    if (painting()) paintDrag(index, e.point.toArray(), [e.uv.x, e.uv.y], e.pointerType === 'pen' ? e.pressure : 1);
+    else if ((tool === 'brush' || tool === 'erase') && !e.ctrlKey && !e.altKey && paintPress(index, e.faceIndex, e.point.toArray(), [e.uv.x, e.uv.y], { shift: false, alt: false, ctrl: false, pressure: e.pressure, pen: e.pointerType === 'pen' })) addEventListener('pointerup', paintEnd, { once: true });
     invalidate();
   };
   // Van Gogh: the nearest hit takes the stroke; it ends wherever the button comes up
@@ -806,8 +818,11 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
     if (!paint || e.button !== 0 || e.faceIndex == null || !e.uv || !uvReady || unfold !== 0) return;
     const tool = useApp.getState().paint.tool;
     if ((tool === 'marquee' || tool === 'lasso') && !e.ctrlKey) return; // the view draws the shape (Navigation)
+    // A decal lands on the panel the artist sees. The material is double-sided, so a ray can otherwise hit the
+    // inside of a slide through an opening and place a mark on a face that is never visible from here.
+    if (tool === 'decal' && e.face && e.face.normal.dot(camera.position.clone().sub(e.point)) <= 0) return;
     e.stopPropagation();
-    if (paintPress(index, e.faceIndex, e.point.toArray(), [e.uv.x, e.uv.y], { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey })) addEventListener('pointerup', paintEnd, { once: true });
+    if (paintPress(index, e.faceIndex, e.point.toArray(), [e.uv.x, e.uv.y], { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey, pressure: e.pressure, pen: e.pointerType === 'pen' })) addEventListener('pointerup', paintEnd, { once: true });
     invalidate();
   };
 
@@ -841,10 +856,10 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
       <mesh geometry={geo} castShadow={paint} receiveShadow={paint} onUpdate={(m) => m.layers.enable(SOLID)} onClick={click} onPointerDown={press} onPointerMove={hover} onPointerOut={() => { if (pointer.part === index) pointer.part = -1; cursor.on = false; invalidate(); }}>
         {(() => {
           // Blender's Lighting: Studio (lights and the environment), MatCap (a lit sphere by normal), Flat (unlit)
-          const key = `${colour}-${uvReady}-${paint}-${pbr}-${part.textured !== false}-${sc.lighting}-${sc.xray}`;
+          const key = `${colour}-${uvReady}-${paint}-${pbr}-${normal}-${part.textured !== false}-${sc.lighting}-${sc.xray}`;
           const props = {
             color: uvReady ? '#ffffff' : '#888d92',
-            map: ts && uvReady ? ts.color : !doc && uvReady && mode === 'checker' && part.textured !== false ? checker : null, vertexColors: !!colorAttr,
+            map: ts && uvReady ? ts.preview ?? ts.color : !doc && uvReady && mode === 'checker' && part.textured !== false ? checker : null, vertexColors: !!colorAttr,
             side: sc.backface ? THREE.FrontSide : THREE.DoubleSide, wireframe, transparent: sc.xray, opacity: sc.xray ? sc.xrayAlpha : 1, depthWrite: !sc.xray,
             polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
           };
@@ -852,7 +867,7 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
           // and B) or, without PBR, a plain dielectric; the baked AO as its occlusion map (it darkens the ambient light only)
           const ao = paintAO && ts?.aoTex ? ts.aoTex : null;
           if (ts && sc.lighting === 'studio') return pbr
-            ? <meshStandardMaterial key={`${key}-${!!ao}`} {...props} roughnessMap={ts.orm} metalnessMap={ts.orm} roughness={1} metalness={1} aoMap={ao} />
+            ? <meshStandardMaterial key={`${key}-${!!ao}`} {...props} roughnessMap={ts.orm} metalnessMap={ts.orm} roughness={1} metalness={1} aoMap={ao} normalMap={normal ? ts.normal : null} normalScale={normal ? NORMAL_SCALE : undefined} />
             : <meshStandardMaterial key={`${key}-${!!ao}`} {...props} roughness={0.3} metalness={0} aoMap={ao} />; // Substance's default
           if (sc.lighting === 'matcap') return <meshMatcapMaterial key={key} {...props} matcap={matcapTexture(sc.matcap)} />;
           if (sc.lighting === 'flat') return <meshBasicMaterial key={key} {...props} />;

@@ -52,6 +52,9 @@ pub fn unwrap(m: &Mesh, s: &Mirror, seams: &Set<u64>, p: &Params) -> (Vec<Island
     let first = isl.len();
     isl.extend(own);
     if p.join { hang_fragments(m, &mut isl, &mut net, first); }
+    // the kept half, its mirror and the one-sided bits were solved (and normalised) separately: one density for
+    // the lot, or the butterfly's two halves come out at different texel sizes
+    chart::normalise(m, &mut isl);
     let mut ids: Map<usize, usize> = Map::default();
     let net: Vec<usize> = net.iter().map(|&g| { let n = ids.len(); *ids.entry(g).or_insert(n) }).collect();
     let twins = (0..k).filter_map(|g| Some((*ids.get(&g)?, *ids.get(&(g + k))?))).collect();

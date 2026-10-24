@@ -2,7 +2,7 @@ use barista::mesh::Mesh;
 use barista::stroke::{knife, snap};
 use barista::{shapes, unwrap, Params, PartIn};
 
-const CHARTS: Params = Params { sharp: 45., tol: 0.08, seam_weight: 0.1, join: false, one_atlas: false };
+const CHARTS: Params = Params { sharp: 45., tol: 0.08, seam_weight: 0.1, join: false, atlas: 0., one_atlas: false };
 
 /// Points along a line, a + t(b − a).
 fn line(a: [f32; 3], b: [f32; 3], n: usize) -> Vec<f32> {

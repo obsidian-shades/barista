@@ -108,11 +108,15 @@ assert.ok(vertAt(sp.geo, 1, 0) && vertAt(sp.geo, 2, 0), 'spaced');
   const extra = new Float32Array([...g.soup, ...g.soup.subarray(0, 9), 5, 0, 0, 6, 0, 0, 7, 0, 0]);
   const m2 = meshCheck({ soup: extra, ...ownPolygons(extra.length / 9) });
   assert.equal(m2.duplicate.length, 1); assert.equal(m2.zero.length, 1); assert.ok(m2.nonManifold.length >= 1);
-  assert.deepEqual(poles(grid([0, 1, 2, 3], [0, 1, 2, 3])), { three: [], many: [] });
+  assert.deepEqual(poles(grid([0, 1, 2, 3], [0, 1, 2, 3])), { regular: 4, low: [], high: [], big: [] });
   const fan: number[] = [];
   for (let i = 0; i < 6; i++) { const a = (i * Math.PI) / 3, b = (((i + 1) % 6) * Math.PI) / 3; fan.push(0, 0, 0, Math.cos(a), Math.sin(a), 0, Math.cos(b), Math.sin(b), 0); }
   const fs = new Float32Array(fan), fp = poles({ soup: fs, ...ownPolygons(6) });
-  assert.equal(fp.many.length, 1);
+  assert.equal(fp.regular, 6); assert.equal(fp.high.length, 0, 'a 6-valent fan centre is regular for triangles');
+  const fan8: number[] = [];
+  for (let i = 0; i < 8; i++) { const a = (i * Math.PI) / 4, b = (((i + 1) % 8) * Math.PI) / 4; fan8.push(0, 0, 0, Math.cos(a), Math.sin(a), 0, Math.cos(b), Math.sin(b), 0); }
+  const fp8 = poles({ soup: new Float32Array(fan8), ...ownPolygons(8) });
+  assert.equal(fp8.regular, 6); assert.equal(fp8.high.length, 1); assert.equal(fp8.big.length, 1);
 }
 // Even Out: an unevenly spaced strip evens out along its borders (vertices slide on the outline), corners stay
 {

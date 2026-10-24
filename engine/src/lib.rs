@@ -65,12 +65,17 @@ pub struct Params {
     pub seam_weight: f64,
     /// Join islands into nets (a cube's faces into its cross) where they fit without overlapping.
     pub join: bool,
+    /// How far the atlas may break a net up again, 0..1. A net saves seams but spends its own box: one that fills
+    /// under half of the smallest box round it (a band folding back across itself) leaves more texture unused than
+    /// the seam it saves is worth. 0 keeps every net (a paper model, the cube's cross); 1 breaks every net that
+    /// packs better apart, island for island; in between breaks the worst of them (fill, worst first).
+    pub atlas: f64,
     /// Pack every part into one shared atlas; otherwise each part gets its own 0..1 square.
     pub one_atlas: bool,
 }
 
 impl Default for Params {
-    fn default() -> Self { Params { sharp: 45., tol: 0.08, seam_weight: 0.1, join: true, one_atlas: false } }
+    fn default() -> Self { Params { sharp: 45., tol: 0.08, seam_weight: 0.1, join: true, atlas: 0., one_atlas: false } }
 }
 
 #[derive(Deserialize, Default)]
@@ -126,6 +131,88 @@ pub struct Output {
     pub stats: Stats,
 }
 
+/// Pack whole nets, in real units, so every part gets the same texel density: all into one square, or each part's
+/// into its own; a mirrored net packs with its image beside it.
+fn uv_set(m: &mesh::Mesh, isl: &[chart::Island], ms: &[usize]) -> pack::UvSet {
+    let mut set = pack::UvSet { u: vec![], v: vec![], outline: vec![], tris: vec![], along: None, xyz: vec![] };
+    for &i in ms {
+        let (s, r) = (&isl[i], m.radius);
+        let off = set.u.len();
+        // the net's biggest book sets its turn: spine along an axis, pages either side, as in a mockup
+        if let (None, Some([a, b])) = (set.along, s.spine) {
+            let (a, b) = (a as usize, b as usize);
+            set.along = Some((s.f.v[b] - s.f.v[a]).atan2(s.f.u[b] - s.f.u[a]));
+        }
+        set.outline.push(s.l.loops[0].iter().map(|&k| k as usize + off).collect());
+        set.tris.extend(s.l.t.iter().map(|t| t.map(|k| k as usize + off)));
+        set.u.extend(s.f.u.iter().map(|x| x * r));
+        set.v.extend(s.f.v.iter().map(|x| x * r));
+        set.xyz.extend(s.l.orig.iter().map(|&o| m.pt(o).map(|x| x * r)));
+    }
+    set
+}
+
+/// How much of its square a part's islands fill when packed on their own: what that part's atlas will be worth.
+fn fill(m: &mesh::Mesh, isl: &[chart::Island], nets: &[usize]) -> f64 {
+    let n = nets.iter().max().map_or(0, |x| x + 1);
+    let mut members = vec![Vec::new(); n];
+    for (i, &g) in nets.iter().enumerate() { members[g].push(i); }
+    let mut sets: Vec<pack::UvSet> = members.iter().map(|ms| uv_set(m, isl, ms)).collect();
+    pack::pack(&mut sets, true);
+    sets.iter().map(pack::area).sum()
+}
+
+/// How much better the loose islands must pack than the nets before a net is broken up.
+const NETS_PAY: f64 = 1.02;
+
+/// A net that fills less of its own box than this is broken back into its islands before packing: on a mirrored
+/// part the whole part goes loose instead.
+const NET_KEEP: f64 = 0.48;
+
+/// Break up the nets that don't pack, up to `atlas` of the candidates: each net is measured by the box it will be
+/// placed in, and one that leaves too much of that box dead carries more atlas cost than the seam it saves. The
+/// islands themselves stay as they are (same layout, same count) — only their net number changes, so this costs a
+/// pack, not a solve.
+fn loosen(isl: &[chart::Island], nets: &[usize], atlas: f64) -> Vec<usize> {
+    if !(atlas > 0.) { return nets.to_vec(); }
+    let n = nets.iter().max().map_or(0, |x| x + 1);
+    let mut members = vec![Vec::new(); n];
+    for (i, &g) in nets.iter().enumerate() { members[g].push(i); }
+    let mut worst: Vec<(f64, usize)> = members.iter().enumerate()
+        .filter(|(_, ms)| ms.len() > 1)
+        .map(|(g, ms)| (join::net_fill(isl, ms), g))
+        .filter(|&(f, _)| f < NET_KEEP)
+        .collect();
+    worst.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let cut = ((worst.len() as f64) * atlas.min(1.)).round() as usize;
+    let broken: std::collections::HashSet<usize> = worst.iter().take(cut).map(|&(_, g)| g).collect();
+    let (mut out, mut next) = (vec![0usize; nets.len()], 0usize);
+    for (g, ms) in members.iter().enumerate() {
+        let keep = !broken.contains(&g);
+        for (k, &i) in ms.iter().enumerate() { out[i] = if keep { next } else { next + k }; }
+        next += if keep { 1 } else { ms.len().max(1) };
+    }
+    out
+}
+
+/// Nets or loose islands: pack each way and keep whichever fills its square better (the nets have to be worth
+/// `NETS_PAY`). Both assignments run over the same islands.
+fn pick_nets(m: &mesh::Mesh, isl: &[chart::Island], a: Vec<usize>, b: Vec<usize>) -> Vec<usize> {
+    if a == b { return a; } // nothing broke up: no need to pack it twice
+    if fill(m, isl, &a) * NETS_PAY >= fill(m, isl, &b) { a } else { b }
+}
+
+/// The same choice where the two ways solve the part differently (a mirrored part: nets and loose halves are two
+/// runs). `loose` is only called when the nets leave something on the table.
+fn arbitrate(m: &mesh::Mesh, nets: (Vec<chart::Island>, Vec<usize>, Vec<(usize, usize)>),
+             loose: impl FnOnce() -> (Vec<chart::Island>, Vec<usize>, Vec<(usize, usize)>)) -> (Vec<chart::Island>, Vec<usize>, Vec<(usize, usize)>) {
+    if fill(m, &nets.0, &nets.1) >= 0.5 { return nets; }
+    let a = fill(m, &nets.0, &nets.1);
+    let alt = loose();
+    let b = fill(m, &alt.0, &alt.1);
+    if b > a * NETS_PAY { alt } else { nets }
+}
+
 pub fn unwrap(parts: &[PartIn], p: Params) -> Result<Output, String> {
     let t0 = Instant::now();
     if parts.is_empty() {
@@ -139,12 +226,26 @@ pub fn unwrap(parts: &[PartIn], p: Params) -> Result<Output, String> {
     let per_part: Vec<(Vec<chart::Island>, Vec<usize>, Vec<(usize, usize)>)> = meshes.par_iter().enumerate().map(|(i, m)| {
         let seams = m.edges_at(&parts[i].seams);
         // a part with a left and a right comes out as two mirrored halves (`symmetry`)
-        let (mut v, nets, twins) = match symmetry::find(m).filter(|s| s.keeps(&seams) && !s.seam(m).iter().any(|&k| m.inside(k))) {
-            Some(s) => symmetry::unwrap(m, &s, &seams, &p),
+        let sym = symmetry::find(m).filter(|s| s.keeps(&seams) && !s.seam(m).iter().any(|&k| m.inside(k)));
+        let (mut v, nets, twins) = match sym {
+            Some(s) => {
+                let joined = symmetry::unwrap(m, &s, &seams, &p);
+                // a net is a paper-model convenience; the atlas pays for its empty corners. Solve the part both
+                // ways and keep whichever fills its square better (`arbitrate`).
+                if p.join && p.atlas > 0. {
+                    let mut loose = p;
+                    loose.join = false;
+                    arbitrate(m, joined, || symmetry::unwrap(m, &s, &seams, &loose))
+                } else { joined }
+            }
             None => {
                 let mut v = chart::unwrap(m, &seams, &p);
-                let nets = if p.join { join::join(m, &mut v, p.tol) } else { (0..v.len()).collect() };
-                (v, nets, vec![])
+                if !p.join { let n = v.len(); (v, (0..n).collect(), vec![]) } else {
+                    let nets = join::join(m, &mut v, p.tol);
+                    let loose = loosen(&v, &nets, p.atlas);
+                    let nets = pick_nets(m, &v, nets, loose);
+                    (v, nets, vec![])
+                }
             }
         };
         for s in &mut v { s.part = i; }
@@ -168,24 +269,7 @@ pub fn unwrap(parts: &[PartIn], p: Params) -> Result<Output, String> {
     let atlases: Vec<Vec<usize>> = if p.one_atlas { vec![(0..count).filter(|g| !image.contains_key(g)).collect()] } else {
         (0..meshes.len()).map(|k| (0..count).filter(|&g| isl[members[g][0]].part == k && !image.contains_key(&g)).collect()).collect()
     };
-    let sets: Vec<pack::UvSet> = members.iter().map(|ms| {
-        let mut set = pack::UvSet { u: vec![], v: vec![], outline: vec![], tris: vec![], along: None, xyz: vec![] };
-        for &i in ms {
-            let (s, r) = (&isl[i], meshes[isl[i].part].radius);
-            let off = set.u.len();
-            // the net's biggest book sets its turn: spine along an axis, pages either side, as in a mockup
-            if let (None, Some([a, b])) = (set.along, s.spine) {
-                let (a, b) = (a as usize, b as usize);
-                set.along = Some((s.f.v[b] - s.f.v[a]).atan2(s.f.u[b] - s.f.u[a]));
-            }
-            set.outline.push(s.l.loops[0].iter().map(|&k| k as usize + off).collect());
-            set.tris.extend(s.l.t.iter().map(|t| t.map(|k| k as usize + off)));
-            set.u.extend(s.f.u.iter().map(|x| x * r));
-            set.v.extend(s.f.v.iter().map(|x| x * r));
-            set.xyz.extend(s.l.orig.iter().map(|&o| meshes[s.part].pt(o).map(|x| x * r)));
-        }
-        set
-    }).collect();
+    let sets: Vec<pack::UvSet> = members.iter().map(|ms| uv_set(&meshes[isl[ms[0]].part], &isl, ms)).collect();
     let mut slots: Vec<Option<pack::UvSet>> = sets.into_iter().map(Some).collect();
     let mut uv: Vec<(Vec<f64>, Vec<f64>)> = vec![Default::default(); count];
     for a in &atlases {

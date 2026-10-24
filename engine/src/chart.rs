@@ -6,6 +6,7 @@ use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+#[derive(Clone)]
 pub struct Island {
     /// Which input part the island belongs to (set by the caller).
     pub part: usize,
@@ -21,9 +22,43 @@ pub fn unwrap(m: &Mesh, seams: &Set<u64>, p: &Params) -> Vec<Island> {
     islands(m, crate::region::charts(m, p.sharp, seams), seams, p)
 }
 
-/// Each chart solved into islands, their quads straightened.
+/// Each chart solved into islands, their quads straightened, at one texel density.
 pub(crate) fn islands(m: &Mesh, cs: Vec<Vec<u32>>, seams: &Set<u64>, p: &Params) -> Vec<Island> {
-    cs.into_par_iter().flat_map(|t| solve(m, t, seams.clone(), p).0).map(|mut s| { cool(m, &mut s, p.tol); crate::quads::straighten(m, &mut s, p.tol); s }).collect()
+    let mut out: Vec<Island> = cs.into_par_iter().flat_map(|t| solve(m, t, seams.clone(), p).0)
+        .map(|mut s| { cool(m, &mut s, p.tol); crate::quads::straighten(m, &mut s, p.tol); s }).collect();
+    normalise(m, &mut out);
+    out
+}
+
+/// One texel scale for every island of a part: each is scaled about its own centre so that UV area over 3D area
+/// is the same on all of them. The flattener anchors scale by itself (ARAP's right-hand side is built from the
+/// rest edges, so a chart can't drift), but nothing guarantees it, and a chart that came out a few percent off
+/// would carry a different texel density to the atlas for good — the packer has one scale for the lot.
+pub(crate) fn normalise(m: &Mesh, isl: &mut [Island]) {
+    let (mut uv, mut a3) = (0., 0.);
+    let areas: Vec<(f64, f64)> = isl.iter().map(|s| {
+        let u = layout_area(&s.l, &s.f);
+        let a = s.l.tris.iter().map(|&t| m.a[t as usize]).sum::<f64>();
+        (u, a)
+    }).collect();
+    for &(u, a) in &areas { uv += u; a3 += a; }
+    if !(uv > 0. && a3 > 0.) { return; }
+    let want = uv / a3;
+    for (s, &(u, a)) in isl.iter_mut().zip(&areas) {
+        if !(u > 0. && a > 0.) { continue; }
+        let k = (want * a / u).sqrt();
+        if !k.is_finite() || (k - 1.).abs() < 1e-6 { continue; }
+        let (cu, cv) = (s.f.u.iter().sum::<f64>() / s.f.u.len() as f64, s.f.v.iter().sum::<f64>() / s.f.v.len() as f64);
+        for i in 0..s.f.u.len() { s.f.u[i] = cu + (s.f.u[i] - cu) * k; s.f.v[i] = cv + (s.f.v[i] - cv) * k; }
+    }
+}
+
+/// Area of a layout's triangles in UV.
+fn layout_area(l: &Local, f: &Flat) -> f64 {
+    l.t.iter().map(|t| {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        ((f.u[b] - f.u[a]) * (f.v[c] - f.v[a]) - (f.u[c] - f.u[a]) * (f.v[b] - f.v[a])).abs() / 2.
+    }).sum()
 }
 
 /// Stretch at which the editor's Stretch view is fully red (50%).

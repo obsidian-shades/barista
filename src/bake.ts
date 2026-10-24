@@ -48,7 +48,7 @@ async function eachView({ geo, c, R }: ReturnType<typeof modelOf>, each: (d: THR
         // the depth material writes 1 − depth, so the cleared black reads as far
         return ((e[2] * x + e[6] * y + e[10] * z + e[14]) + 1) / 2 <= 1 - buf[(sy * RES + sx) * 4] + eps;
       });
-      if (k % 8 === 7) { progress?.((k + 1) / DIRS); await new Promise((ok) => setTimeout(ok)); }
+      if ((k & 1) === 1) { progress?.((k + 1) / DIRS); await new Promise((ok) => setTimeout(ok)); }
     }
   } finally { rt.dispose(); mat.dispose(); geo.dispose(); gl.dispose(); }
 }
@@ -67,16 +67,19 @@ export async function bake(n: number, positions: number[], all: ArrayLike<number
       if (seen(pos[i * 3] + nrm[i * 3] * off, pos[i * 3 + 1] + nrm[i * 3 + 1] * off, pos[i * 3 + 2] + nrm[i * 3 + 2] * off)) ao[i] += w;
     }
   }, progress && ((f) => progress(f * 0.9)));
-  for (let i = 0; i < n * n; i++) ao[i] = wsum[i] ? ao[i] / wsum[i] : 1;
+  for (let i = 0; i < n * n; i++) {
+    ao[i] = wsum[i] ? ao[i] / wsum[i] : 1;
+    if ((i & 262143) === 262143) await new Promise((ok) => setTimeout(ok, 0));
+  }
   const span = 2 * R;
-  const [convex, concave] = edgeDistances(n, positions, surf, 0.05 * span);
+  const [convex, concave] = await edgeDistances(n, positions, surf, 0.05 * span);
   progress?.(1);
   return { ...surf, ao, convex, concave, span };
 }
 
 /** Per texel, the distance to the nearest sharp (> 20°) convex and concave edge of the part, over the edge's strength
  *  (90° counts full), up to `reach`. Edges are sampled every reach / 8 into a grid of reach-sized cells. */
-function edgeDistances(n: number, positions: number[], surf: Surface, reach: number) {
+async function edgeDistances(n: number, positions: number[], surf: Surface, reach: number) {
   const t = topoOf(positions), tris = positions.length / 9, fn = new Float64Array(tris * 3), fc = new Float64Array(tris * 3);
   for (let f = 0; f < tris; f++) {
     const o = f * 9, p = positions;
@@ -101,19 +104,26 @@ function edgeDistances(n: number, positions: number[], surf: Surface, reach: num
       const key = cell(x, y, z), list = g.get(key);
       if (list) list.push(x, y, z, s); else g.set(key, [x, y, z, s]);
     }
+    if ((e & 2047) === 2047) await new Promise((ok) => setTimeout(ok, 0));
   }
-  return grids.map((g) => {
-    const out = new Float32Array(n * n).fill(Infinity);
-    for (let i = 0; i < n * n; i++) {
-      if (!surf.has[i]) continue;
-      const x = surf.pos[i * 3], y = surf.pos[i * 3 + 1], z = surf.pos[i * 3 + 2], cx = Math.floor(x / reach), cy = Math.floor(y / reach), cz = Math.floor(z / reach);
-      let best = Infinity;
-      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
-        const list = g.get(`${cx + dx},${cy + dy},${cz + dz}`);
-        if (list) for (let k = 0; k < list.length; k += 4) best = Math.min(best, Math.hypot(list[k] - x, list[k + 1] - y, list[k + 2] - z) / list[k + 3]);
+  const out: Float32Array[] = [];
+  for (const g of grids) {
+    const arr = new Float32Array(n * n).fill(Infinity);
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const i = y * n + x;
+        if (!surf.has[i]) continue;
+        const px = surf.pos[i * 3], py = surf.pos[i * 3 + 1], pz = surf.pos[i * 3 + 2], cx = Math.floor(px / reach), cy = Math.floor(py / reach), cz = Math.floor(pz / reach);
+        let best = Infinity;
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+          const list = g.get(`${cx + dx},${cy + dy},${cz + dz}`);
+          if (list) for (let k = 0; k < list.length; k += 4) best = Math.min(best, Math.hypot(list[k] - px, list[k + 1] - py, list[k + 2] - pz) / list[k + 3]);
+        }
+        arr[i] = best <= reach ? best : Infinity;
       }
-      out[i] = best <= reach ? best : Infinity;
+      if ((y & 15) === 15) await new Promise((ok) => setTimeout(ok, 0));
     }
-    return out;
-  });
+    out.push(arr);
+  }
+  return out;
 }

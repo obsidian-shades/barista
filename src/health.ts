@@ -1,46 +1,57 @@
-// Poly Doc's Health: every polygon checked against named rules, scored 0 (solid, green) … 1 (fix, red), and coloured as
-// one face by its worst rule. It reads the mesh alone, never the UVs.
-// The shape rules are the engineering ones: Sandia's Verdict / CUBIT quality metrics and their acceptable ranges (the
-// green limit of each rule); the game-art practice (Polycount) sets where they bend: a flat n-gon is fine, a long thin
-// quad (a bevel strip) is normal, long thin triangles and bent faces are what make bakes shade badly, and a pole only
-// matters where the surface curves.
+// Poly Doc's Health: the pre-bake check, not a simulation-mesh quality report. Every polygon is scored 0 (solid,
+// green) … 1 (fix, red) and coloured as one face by its worst rule. It reads the mesh alone, never the UVs.
+//
+// Three layers, because they mean different things to an artist:
+//   broken  — the mesh isn't a valid surface: non-manifold edges/vertices, inside-out shells, flipped, zero-area or
+//             duplicate faces, a tangled outline. Unwrap, bake and engine import can't be trusted until these are fixed.
+//   bake    — valid geometry that a bake can still get wrong: a folded or strongly non-planar quad (bake and engine may
+//             triangulate it differently, so MikkTSpace tangents disagree), a bent n-gon. Triangulate before baking.
+//   craft   — shape and sampling that a game artist would look at, never a hard error: needles, skew, taper, a visibly
+//             faceted silhouette, a curve split past what any screen shows.
+//
+// The shape limits are Sandia's Verdict / CUBIT metrics moved to their game-art ends (a simulation can demand a 30°
+// minimum angle; a pole fan or a cylinder cap cannot meet that and shades fine). Sampling is scale-free: the turn from
+// one face to the next, not a share of the model's bounding box. Poles are topology, not defects: their indices must sum
+// to the Euler characteristic (Poincaré–Hopf), so a torus may have none and a sphere must have curvature. Health does not
+// colour them; the Topology census reports them (see `meshTopology`). The design notes and sources are in
+// docs/health.md.
 import type { PartOut } from './api.ts';
-import { curveEdges, loopOf, members, meshCheck, poles, type Geo } from './polygeo.ts';
+import { curveEdges, loopOf, members, meshCheck, type Geo } from './polygeo.ts';
 import { topoOfSoup } from './polyedit.ts';
 import { edgeBetween, trisOf } from './topo.ts';
-import { angle, cross, dot, len, shapeIssues, sub, type V } from './quality.ts';
+import { shapeIssues, type V } from './quality.ts';
 
 const deg = Math.PI / 180;
+const ramp = (x: number, good: number, bad: number) => Math.max(0, Math.min(1, (x - good) / (bad - good)));
 
-export type RuleId = 'nonManifold' | 'flipped' | 'zero' | 'duplicate' | 'outline'
-  | 'triMin' | 'triMax' | 'quadJacobian' | 'quadSkew' | 'quadTaper' | 'quadWarp' | 'quadAspect' | 'ngonBent' | 'poleCurve' | 'poleBig' | 'faceted' | 'dense';
-export interface Rule { name: string; good: string; why: string; source: string }
-const CUBIT = 'Sandia CUBIT / Verdict', PC = 'Polycount practice', VALID = 'Mesh validity';
+export type RuleKind = 'broken' | 'bake' | 'craft';
+export type RuleId = 'nonManifold' | 'nonManifoldVert' | 'flipped' | 'insideOut' | 'zero' | 'duplicate' | 'outline'
+  | 'triMin' | 'triMax' | 'quadJacobian' | 'quadSkew' | 'quadTaper' | 'quadWarp' | 'ngonBent' | 'faceted' | 'dense';
+export interface Rule { name: string; good: string; why: string; source: string; kind: RuleKind }
+const CUBIT = 'Sandia CUBIT / Verdict', PC = 'Polycount practice', VALID = 'Mesh validity', BAKE = 'Normal-map baking';
 export const RULES: Record<RuleId, Rule> = {
-  nonManifold: { name: 'Non-manifold edge', good: 'two faces per edge', why: 'More than two faces share an edge: bakers, unwrappers and engines can’t say which side is out', source: VALID },
-  flipped: { name: 'Flipped face', good: 'wound like its neighbours', why: 'Its normal points the other way: it shades black or vanishes with backface culling', source: VALID },
-  zero: { name: 'Zero-area face', good: 'some area', why: 'Corners on top of each other or in a line: no normal, breaks smoothing and bakes', source: VALID },
-  duplicate: { name: 'Duplicate face', good: 'one face per set of corners', why: 'Two faces on the same corners: z-fighting and doubled bakes', source: VALID },
-  outline: { name: 'Tangled outline', good: 'one simple loop', why: 'Its edges don’t form one simple loop (a pinch or a hole)', source: VALID },
-  triMin: { name: 'Sliver triangle', good: 'smallest angle ≥ 30°', why: 'Long thin triangles bend normals and leave gradients in normal-map bakes', source: `${CUBIT} (min angle 30–60°)` },
-  triMax: { name: 'Flat-capped triangle', good: 'largest angle ≤ 120°', why: 'A corner near 180° makes a cap triangle: almost no area, a long edge, shading streaks', source: `${CUBIT} (90° for simulation; 120° for shading)` },
-  quadJacobian: { name: 'Collapsed / concave quad', good: 'scaled Jacobian ≥ 0.5', why: 'A corner near 0° or bent inwards: the quad folds, and its two triangles shade apart', source: `${CUBIT} (0.5–1)` },
-  quadSkew: { name: 'Skewed quad', good: 'skew ≤ 0.5', why: 'Leaning far from square: its triangulation shows in the shading', source: `${CUBIT} (0–0.5)` },
-  quadTaper: { name: 'Tapered quad', good: 'taper ≤ 0.7', why: 'One end much narrower than the other: close to a triangle with a cut corner', source: `${CUBIT} (0–0.7)` },
-  quadWarp: { name: 'Bent quad', good: 'warpage ≥ 0.9 (≤ 26° off flat)', why: 'Not flat: it shades by whichever diagonal splits it, so bakes and engines can disagree. Triangulate it, or flatten it', source: `${CUBIT} (0.9–1)` },
-  quadAspect: { name: 'Long quad', good: 'aspect ratio ≤ 4', why: 'Long and thin. Normal for bevel and support strips; worth a look on big surfaces', source: `${CUBIT} (1–4), softened: bevels are long by design` },
-  ngonBent: { name: 'Bent n-gon', good: 'flat (off its plane ≤ 2% of its size)', why: 'Flat n-gons are fine; a bent one shades by a triangulation you don’t control', source: PC },
-  poleCurve: { name: 'Pole on a curve', good: 'poles on flat areas', why: '3 or 5 edges meeting where the surface bends pinch the shading', source: PC },
-  poleBig: { name: 'Big pole', good: 'at most 5 edges at a vertex', why: '6 or more edges meeting: a star of thin faces, shading pinches round it', source: PC },
-  faceted: { name: 'Faceted curve', good: 'off the curve ≤ 0.1% of the model', why: 'Too few polygons on a smooth curve: the flat faces cut its corners (width across × bend / 8), so the silhouette shows facets. Add a loop', source: `${PC}: spend polygons on the silhouette; chord error as in CAD tessellation` },
-  dense: { name: 'Over-dense curve', good: 'off the curve ≥ 0.002% of the model', why: 'A curve split far finer than the model needs (a many-segment bevel on a small edge): polygons that change nothing on screen; a normal map carries it', source: `${PC}: polycount where it shows, not where it doesn’t` },
+  nonManifold: { name: 'Non-manifold edge', good: 'two faces per edge', why: 'More than two faces share an edge: bakers, unwrappers and engines can’t say which side is out', source: VALID, kind: 'broken' },
+  nonManifoldVert: { name: 'Non-manifold vertex', good: 'one fan of faces round the point', why: 'Two surfaces touch at a single vertex (a bow-tie): unwrappers split them apart and the join becomes a pinhole', source: VALID, kind: 'broken' },
+  flipped: { name: 'Flipped face', good: 'wound like its neighbours', why: 'Its normal points the other way: it shades black or vanishes with backface culling, and bakes through the surface', source: VALID, kind: 'broken' },
+  insideOut: { name: 'Inside-out shell', good: 'normals point out', why: 'A whole closed shell is wound inward (not the inner wall of a cavity): with backface culling it disappears, and a normal/AO bake comes out inverted', source: `${VALID}: signed volume of each closed piece`, kind: 'broken' },
+  zero: { name: 'Zero-area face', good: 'some area', why: 'Corners on top of each other or in a line: no normal, breaks smoothing and bakes', source: VALID, kind: 'broken' },
+  duplicate: { name: 'Duplicate face', good: 'one face per set of corners', why: 'Two faces on the same corners: z-fighting and doubled bakes', source: VALID, kind: 'broken' },
+  outline: { name: 'Tangled outline', good: 'one simple loop', why: 'Its edges don’t form one simple loop (a pinch or a hole), so the polygon can’t be exported as one face', source: VALID, kind: 'broken' },
+  quadWarp: { name: 'Bent quad', good: 'at most 18° off flat', why: 'Bake and engine may split it along different diagonals; MikkTSpace tangents then disagree and a normal map shows black seams. A planar quad has no choice. Export triangles, or flatten it', source: `${BAKE}: triangulation must match (Substance 3D)`, kind: 'bake' },
+  ngonBent: { name: 'Bent n-gon', good: 'flat (off its plane ≤ 2% of its size)', why: 'A baked n-gon is triangulated by an algorithm you don’t control; a bent one shades by that triangulation. Triangulate it', source: BAKE, kind: 'bake' },
+  quadJacobian: { name: 'Collapsed / concave quad', good: 'scaled Jacobian ≥ 0.4', why: 'A corner near 0° or bent inwards: the quad folds, and its two triangles shade apart', source: `${CUBIT} (0.5–1 for simulation)`, kind: 'bake' },
+  triMin: { name: 'Needle triangle', good: 'smallest angle ≥ 6°', why: 'A true needle (< 1.5° at a corner): interpolation and texturing across it are unreliable. Pole fans (a UV sphere or a cylinder cap) sit at 5–15° and are normal; only the extreme end is flagged', source: `${CUBIT} (30–60° for simulation)`, kind: 'craft' },
+  triMax: { name: 'Flat-capped triangle', good: 'largest angle ≤ 150°', why: 'A corner past 150° leaves almost no height: the triangle is a long cap with a thin normal gradient', source: `${CUBIT} (90° for simulation; 150° for shading)`, kind: 'craft' },
+  quadSkew: { name: 'Skewed quad', good: 'skew ≤ 0.7', why: 'Leaning far from square: its triangulation starts to show in the shading', source: `${CUBIT} (0–0.5 for simulation)`, kind: 'craft' },
+  quadTaper: { name: 'Tapered quad', good: 'taper ≤ 0.8', why: 'One end much narrower than the other: close to a triangle with a cut corner', source: `${CUBIT} (0–0.7 for simulation)`, kind: 'craft' },
+  faceted: { name: 'Faceted curve', good: 'at most 32° between segments', why: 'The silhouette turns more than a 12-sided circle between faces: the flat segments show as corners. Add a loop only where the curve is big enough to see', source: `${PC}: chord sagitta, scale-free`, kind: 'craft' },
+  dense: { name: 'Over-dense curve', good: 'at least 1° per segment', why: 'A curve split past ~360 segments: polygons that change nothing on screen; a normal map carries the smoothness', source: `${PC}: polycount where it shows`, kind: 'craft' },
 };
 export interface Issue { rule: RuleId; value: string; score: number }
-
 export interface Report { score: Float32Array; issues: Map<number, Issue[]> }
 const reports = new WeakMap<Int32Array, { soup: Float32Array; size: number; report: Report }>();
-/** The whole model's size (its bounding box diagonal), so density is judged at one scale for every part (a small
- *  part's curves count as small); 0: each part by its own. */
+/** The whole model's size (its bounding-box diagonal), so a curve is only judged for faceting if it is large enough on
+ *  screen to see (a 1 mm bevel on a 1 m gun is not); 0: each part by its own. */
 let modelSize = 0;
 export function setModelSize(soups: Float32Array[]) {
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
@@ -57,43 +68,45 @@ export function healthReport(g: Geo): Report {
   // broken mesh: red
   const m = meshCheck(g);
   for (const [rule, fs] of [['flipped', m.flipped], ['zero', m.zero], ['duplicate', m.duplicate]] as const) for (const f of fs) note(g.poly[f], { rule, score: 1, value: '' });
-  for (const [a, b] of m.nonManifold) for (const f of t.edgeTris[edgeBetween(t, a, b)] ?? []) note(g.poly[f], { rule: 'nonManifold', score: 1, value: `${t.edgeTris[edgeBetween(t, a, b)].length} faces on one edge` });
-  // each polygon's shape
+  for (const [a, b] of m.nonManifold) {
+    const e = edgeBetween(t, a, b), faces = t.edgeTris[e] ?? [];
+    for (const f of faces) note(g.poly[f], { rule: 'nonManifold', score: 1, value: `${faces.length} faces on one edge` });
+  }
+  for (const v of m.nonManifoldVert) {
+    const ps = new Set(trisOf(t, v).map((f) => g.poly[f]));
+    for (const p of ps) note(p, { rule: 'nonManifoldVert', score: 1, value: `${ps.size} faces meet only at a point` });
+  }
+  for (const shell of m.insideOut) for (const f of shell) note(g.poly[f], { rule: 'insideOut', score: 1, value: `${shell.length} faces wound inward` });
+  // each polygon's corner shape
   const mem = members(g.poly);
   for (const [p, tris] of mem) {
     const l = loopOf(t, tris);
-    if (!l) note(p, { rule: 'outline', score: 0.5, value: '' });
+    if (!l) note(p, { rule: 'outline', score: 0.75, value: '' });
     else for (const i of shapeIssues(l.map(at))) note(p, i);
   }
-  // poles where the surface bends, and big poles anywhere: every polygon round them
-  const normal = (f: number) => cross(sub(at(t.vid[f * 3 + 1]), at(t.vid[f * 3])), sub(at(t.vid[f * 3 + 2]), at(t.vid[f * 3])));
-  const pl = poles(g), valence = new Map<number, number>();
-  for (const v of pl.many) { const ps = new Set(trisOf(t, v).map((f) => g.poly[f])); valence.set(v, ps.size); }
-  for (const v of [...pl.three, ...pl.many]) {
-    const fs = trisOf(t, v), ns = fs.map(normal), bend = Math.max(...ns.flatMap((a) => ns.map((b) => angle(a, b)))), k = valence.get(v) ?? 3;
-    const big = k >= 6, curved = bend > 20 * deg;
-    if (!big && !curved) continue;
-    const issue: Issue = big ? { rule: 'poleBig', score: curved ? 1 : 0.5, value: `${k} edges at one vertex${curved ? ', on a curve' : ''}` }
-      : { rule: 'poleCurve', score: 0.5, value: `${k} edges, surface bends ${(bend / deg).toFixed(0)}°` };
-    for (const p of new Set(fs.map((f) => g.poly[f]))) note(p, issue);
-  }
-  // density: a curve's chord error at the model's scale, on both polygons of the edge
+  // sampling: a smooth curve's turn per segment, not its chord error as a share of the model. The segment size gate
+  // keeps a tiny bevel's facets out of it; `even` keeps a deliberate chamfer or bevel strip (a wide face beside a
+  // narrow one) out of it too.
   let D = modelSize;
-  if (!D) { const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity]; for (let i = 0; i < P.length; i++) { lo[i % 3] = Math.min(lo[i % 3], P[i]); hi[i % 3] = Math.max(hi[i % 3], P[i]); } D = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1; }
-  // faceted: both sides wide, alike (segments of one curve) and bent: a bevel strip or a chamfer beside a face passes; dense: a polygon whose own
-  // width × bend is tiny on every curve edge it has (two or more: a segment of a run)
-  const worstErr = new Map<number, number>(), own = new Map<number, number[]>();
+  if (!D) {
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < P.length; i++) { lo[i % 3] = Math.min(lo[i % 3], P[i]); hi[i % 3] = Math.max(hi[i % 3], P[i]); }
+    D = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
+  }
+  const worstTurn = new Map<number, number>(), own = new Map<number, number[]>();
   for (const e of curveEdges(g)) {
-    if (e.even) for (const p of [e.p, e.q]) worstErr.set(p, Math.max(worstErr.get(p) ?? 0, e.err / D));
-    for (const [p, w] of [[e.p, e.wp], [e.q, e.wq]]) (own.get(p) ?? own.set(p, []).get(p)!).push((w * e.bend) / 8 / D);
+    if (!e.even || e.radius <= 0.002 * D) continue;
+    for (const p of [e.p, e.q]) worstTurn.set(p, Math.max(worstTurn.get(p) ?? 0, e.bend));
+    for (const [p, b] of [[e.p, e.bend], [e.q, e.bend]]) (own.get(p) ?? own.set(p, []).get(p)!).push(b);
   }
-  for (const [p, r] of worstErr) {
-    const score = Math.max(0, Math.min(1, (r - 0.001) / 0.003));
-    if (score > 0) note(p, { rule: 'faceted', score, value: `${(r * 100).toFixed(2)}% of the model off the curve` });
+  for (const [p, b] of worstTurn) {
+    // faceting is a look issue, never a bake blocker: it stays in the "worth a look" band (≤ 0.55), so a deliberately
+    // low-poly button or a 2-segment bevel is a hint rather than a red face. Add Loops is offered in its menu.
+    const score = Math.min(0.55, ramp(b, 32 * deg, 45 * deg));
+    if (score > 0) note(p, { rule: 'faceted', score, value: `${(b / deg).toFixed(0)}° between segments` });
   }
-  for (const [p, rs] of own) {
-    const r = Math.max(...rs);
-    if (rs.length >= 2 && r < 0.00002) note(p, { rule: 'dense', score: 0.3, value: `${(r * 100).toFixed(4)}% of the model off the curve` });
+  for (const [p, bs] of own) {
+    if (bs.length >= 2 && Math.max(...bs) < 1 * deg) note(p, { rule: 'dense', score: 0.15, value: `${(Math.max(...bs) / deg).toFixed(2)}° per segment` });
   }
   // a polygon's score is its worst rule, on every one of its triangles: it's one face
   const worst = new Map<number, number>();
@@ -112,26 +125,53 @@ export function health(out: PartOut, g: Geo): Float32Array {
 /** The polygons each rule flags on a part: worth a look (score under 0.6) and to fix (0.6 up). */
 export function ruleCounts(g: Geo): Map<RuleId, { look: number[]; fix: number[] }> {
   const out = new Map<RuleId, { look: number[]; fix: number[] }>();
-  for (const [p, is] of healthReport(g).issues) for (const i of is) {
-    const r = out.get(i.rule) ?? out.set(i.rule, { look: [], fix: [] }).get(i.rule)!;
-    (i.score >= 0.6 ? r.fix : r.look).push(p);
+  for (const [p, is] of healthReport(g).issues) {
+    const seen = new Set<RuleId>(); // one polygon counted once per rule, however many of its edges/faces are hit
+    for (const i of is) {
+      if (seen.has(i.rule)) continue;
+      seen.add(i.rule);
+      const r = out.get(i.rule) ?? out.set(i.rule, { look: [], fix: [] }).get(i.rule)!;
+      (i.score >= 0.6 ? r.fix : r.look).push(p);
+    }
   }
   return out;
 }
 
-/** Green (solid) through yellow to red (fix). */
+/** Green (solid) through yellow (worth a look) to red (fix), continuous at every step. */
+const HEALTH_STOPS: [number, [number, number, number]][] = [
+  [0, [0.24, 0.65, 0.32]],
+  [0.35, [0.70, 0.78, 0.28]],
+  [0.65, [0.96, 0.74, 0.20]],
+  [1, [0.88, 0.22, 0.18]],
+];
 export function healthColor(s: number): [number, number, number] {
-  return s < 0.5 ? [0.2 + 1.5 * s, 0.66 + 0.22 * s, 0.26 - 0.08 * s] : [0.95 - 0.1 * (s - 0.5), 0.77 - 1.1 * (s - 0.5), 0.22];
+  const x = Math.max(0, Math.min(1, s));
+  for (let i = 1; i < HEALTH_STOPS.length; i++) {
+    const [x1, c1] = HEALTH_STOPS[i - 1], [x2, c2] = HEALTH_STOPS[i];
+    if (x <= x2) { const t = (x - x1) / (x2 - x1 || 1); return [c1[0] + (c2[0] - c1[0]) * t, c1[1] + (c2[1] - c1[1]) * t, c1[2] + (c2[2] - c1[2]) * t]; }
+  }
+  return HEALTH_STOPS[HEALTH_STOPS.length - 1][1];
 }
 
-/** Share of a part's area that's solid (< 0.25), worth a look, and to fix (≥ 0.6). */
+/** Share of a part's area that's solid (< 0.2), worth a look, and to fix (≥ 0.6). */
 export function healthSummary(out: PartOut, score: Float32Array) {
   const P = out.positions, sum = [0, 0, 0];
   for (let t = 0; t < score.length; t++) {
     const o = t * 9, u = [P[o + 3] - P[o], P[o + 4] - P[o + 1], P[o + 5] - P[o + 2]], v = [P[o + 6] - P[o], P[o + 7] - P[o + 1], P[o + 8] - P[o + 2]];
     const a = Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]);
-    sum[score[t] < 0.25 ? 0 : score[t] < 0.6 ? 1 : 2] += a;
+    sum[score[t] < 0.2 ? 0 : score[t] < 0.6 ? 1 : 2] += a;
   }
   const all = sum[0] + sum[1] + sum[2] || 1;
   return { solid: sum[0] / all, look: sum[1] / all, fix: sum[2] / all };
+}
+
+/** One line for the panel: what a bake would say about this part. */
+export function healthVerdict(out: PartOut, g: Geo): { kind: 'ok' | 'look' | 'fix'; text: string } {
+  const sum = healthSummary(out, health(out, g)), count = ruleCounts(g);
+  let broken = 0;
+  for (const [id, r] of count) if (RULES[id].kind === 'broken') broken += r.fix.length + r.look.length;
+  if (broken) return { kind: 'fix', text: `${broken} broken` };
+  if (sum.fix > 0.005) return { kind: 'fix', text: 'fix before baking' };
+  if (sum.look > 0.02) return { kind: 'look', text: 'worth a look' };
+  return { kind: 'ok', text: 'ready to bake' };
 }

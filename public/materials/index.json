@@ -1,0 +1,1388 @@
+{
+  "version": 2,
+  "generated": "2026-10-24",
+  "source": "ambientCG",
+  "license": "CC0-1.0",
+  "maxSize": 2048,
+  "normalConvention": "gl",
+  "materials": [
+    {
+      "id": "metal-brushed-dark",
+      "name": "Brushed Dark Aluminum",
+      "category": "Metal",
+      "role": "weapon",
+      "tags": [
+        "aluminum",
+        "brushed",
+        "dark",
+        "anodized",
+        "receiver",
+        "gun"
+      ],
+      "notes": "Fine horizontal brush grain, neutral dark grey. The base coat for anodized receivers and slides.",
+      "asset": "Metal009",
+      "source": "https://ambientcg.com/a/Metal009",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-black-oxide",
+      "name": "Black Oxide Steel",
+      "category": "Metal",
+      "role": "weapon",
+      "tags": [
+        "steel",
+        "black",
+        "oxide",
+        "matte",
+        "slide",
+        "gun"
+      ],
+      "notes": "Near-black mottled oxide finish with a soft sheen; reads as a worn black nitride slide.",
+      "asset": "Metal028",
+      "source": "https://ambientcg.com/a/Metal028",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-charcoal",
+      "name": "Charcoal Steel",
+      "category": "Metal",
+      "role": "weapon",
+      "tags": [
+        "steel",
+        "charcoal",
+        "dark",
+        "matte",
+        "gun"
+      ],
+      "notes": "Very dark charcoal steel with faint handling marks; clean enough for a production slide.",
+      "asset": "Metal029",
+      "source": "https://ambientcg.com/a/Metal029",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-graphite",
+      "name": "Graphite Steel",
+      "category": "Metal",
+      "role": "weapon",
+      "tags": [
+        "steel",
+        "graphite",
+        "grey",
+        "satin",
+        "gun"
+      ],
+      "notes": "Satin graphite steel with a slight patina; a neutral hard-surface base for weapons and props.",
+      "asset": "Metal046A",
+      "source": "https://ambientcg.com/a/Metal046A",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-scratched",
+      "name": "Scratched Steel",
+      "category": "Metal",
+      "role": "weapon",
+      "tags": [
+        "steel",
+        "scratched",
+        "worn",
+        "grey",
+        "gun"
+      ],
+      "notes": "Grey steel crossed by fine scratches; use where a prop has seen real use.",
+      "asset": "Metal038",
+      "source": "https://ambientcg.com/a/Metal038",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-fine-brushed",
+      "name": "Fine Brushed Steel",
+      "category": "Metal",
+      "role": "weapon",
+      "tags": [
+        "steel",
+        "brushed",
+        "silver",
+        "clean",
+        "trim"
+      ],
+      "notes": "Tight vertical brushing on clean steel; a good polished trim and barrel material.",
+      "asset": "Metal041A",
+      "source": "https://ambientcg.com/a/Metal041A",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-brushed-blue",
+      "name": "Brushed Blue Steel",
+      "category": "Metal",
+      "role": "weapon",
+      "tags": [
+        "steel",
+        "brushed",
+        "blue",
+        "cold",
+        "barrel"
+      ],
+      "notes": "Cold blue-grey brushing; barrel steel and industrial trim.",
+      "asset": "Metal010",
+      "source": "https://ambientcg.com/a/Metal010",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-graphite-worn",
+      "name": "Worn Graphite",
+      "category": "Metal",
+      "role": "weapon",
+      "tags": [
+        "steel",
+        "graphite",
+        "worn",
+        "dark",
+        "gun"
+      ],
+      "notes": "Darker, more handled version of the graphite plate.",
+      "asset": "Metal046B",
+      "source": "https://ambientcg.com/a/Metal046B",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "polymer-textured-black",
+      "name": "Textured Black Polymer",
+      "category": "Polymer",
+      "role": "weapon",
+      "tags": [
+        "polymer",
+        "plastic",
+        "black",
+        "textured",
+        "frame",
+        "gun"
+      ],
+      "notes": "Micro-textured injection-moulded black polymer; the frame and grip shell in the reference.",
+      "asset": "Plastic012A",
+      "source": "https://ambientcg.com/a/Plastic012A",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "polymer-satin-black",
+      "name": "Satin Black Polymer",
+      "category": "Polymer",
+      "role": "weapon",
+      "tags": [
+        "polymer",
+        "plastic",
+        "black",
+        "satin",
+        "frame",
+        "gun"
+      ],
+      "notes": "Satin black moulding with a faint flow grain; clean production furniture.",
+      "asset": "Plastic011",
+      "source": "https://ambientcg.com/a/Plastic011",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "polymer-matte-grey",
+      "name": "Matte Grey Polymer",
+      "category": "Polymer",
+      "role": "weapon",
+      "tags": [
+        "polymer",
+        "plastic",
+        "grey",
+        "matte",
+        "prop"
+      ],
+      "notes": "Soft matte grey engineering plastic for tool bodies and internals.",
+      "asset": "Plastic010",
+      "source": "https://ambientcg.com/a/Plastic010",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "rubber-stipple",
+      "name": "Stippled Grip Rubber",
+      "category": "Rubber",
+      "role": "weapon",
+      "tags": [
+        "rubber",
+        "black",
+        "stipple",
+        "grip",
+        "gun"
+      ],
+      "notes": "Fine black stipple; reads as a moulded grip panel at game texel density.",
+      "asset": "Rubber001",
+      "source": "https://ambientcg.com/a/Rubber001",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "rubber-matte",
+      "name": "Matte Rubber",
+      "category": "Rubber",
+      "role": "weapon",
+      "tags": [
+        "rubber",
+        "black",
+        "matte",
+        "grip",
+        "seal"
+      ],
+      "notes": "Dense matte black rubber with no sheen.",
+      "asset": "Rubber004",
+      "source": "https://ambientcg.com/a/Rubber004",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "carbon-twill",
+      "name": "Carbon Fiber Twill",
+      "category": "Carbon",
+      "role": "weapon",
+      "tags": [
+        "carbon",
+        "fiber",
+        "twill",
+        "composite",
+        "gun"
+      ],
+      "notes": "Classic 2x2 carbon twill under clear resin; handguard and stock material.",
+      "asset": "Fabric004",
+      "source": "https://ambientcg.com/a/Fabric004",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "leather-black-fine",
+      "name": "Fine Black Leather",
+      "category": "Leather",
+      "role": "weapon",
+      "tags": [
+        "leather",
+        "black",
+        "fine",
+        "grip",
+        "character"
+      ],
+      "notes": "Supple black leather with a fine pebble grain.",
+      "asset": "Leather026",
+      "source": "https://ambientcg.com/a/Leather026",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "leather-black-grain",
+      "name": "Grained Black Leather",
+      "category": "Leather",
+      "role": "weapon",
+      "tags": [
+        "leather",
+        "black",
+        "grain",
+        "worn",
+        "character"
+      ],
+      "notes": "Heavier black leather grain for grips, straps and seats.",
+      "asset": "Leather027",
+      "source": "https://ambientcg.com/a/Leather027",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "leather-black-quilted",
+      "name": "Quilted Black Leather",
+      "category": "Leather",
+      "role": "weapon",
+      "tags": [
+        "leather",
+        "black",
+        "quilted",
+        "seat",
+        "character"
+      ],
+      "notes": "Diamond-stitched black leather; vehicle and interior detail.",
+      "asset": "Leather034C",
+      "source": "https://ambientcg.com/a/Leather034C",
+      "license": "CC0-1.0",
+      "width": 2048,
+      "height": 2048,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "fabric-webbing",
+      "name": "Woven Webbing",
+      "category": "Fabric",
+      "role": "character",
+      "tags": [
+        "fabric",
+        "webbing",
+        "nylon",
+        "strap",
+        "tactical"
+      ],
+      "notes": "Tight woven nylon webbing for slings, pouches and straps.",
+      "asset": "Fabric061",
+      "source": "https://ambientcg.com/a/Fabric061",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-perforated",
+      "name": "Perforated Steel Panel",
+      "category": "Metal",
+      "role": "environment",
+      "tags": [
+        "steel",
+        "perforated",
+        "panel",
+        "vent",
+        "industrial"
+      ],
+      "notes": "Precision perforated plate; vents, heat shields and sci-fi wall panels.",
+      "asset": "MetalPlates002",
+      "source": "https://ambientcg.com/a/MetalPlates002",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-riveted",
+      "name": "Riveted Steel Panel",
+      "category": "Metal",
+      "role": "environment",
+      "tags": [
+        "steel",
+        "riveted",
+        "panel",
+        "plate",
+        "industrial"
+      ],
+      "notes": "Riveted steel plate with a weathered rolled finish.",
+      "asset": "MetalPlates001",
+      "source": "https://ambientcg.com/a/MetalPlates001",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-diamond-fine",
+      "name": "Fine Diamond Plate",
+      "category": "Metal",
+      "role": "environment",
+      "tags": [
+        "steel",
+        "diamond plate",
+        "tread",
+        "industrial",
+        "floor"
+      ],
+      "notes": "A tighter tread pattern than the starter plate, useful at prop scale.",
+      "asset": "DiamondPlate009",
+      "source": "https://ambientcg.com/a/DiamondPlate009",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "concrete-dark",
+      "name": "Dark Concrete",
+      "category": "Concrete",
+      "role": "environment",
+      "tags": [
+        "concrete",
+        "dark",
+        "wall",
+        "floor",
+        "industrial"
+      ],
+      "notes": "Dark poured concrete with fine aggregate and subtle stains.",
+      "asset": "Concrete030",
+      "source": "https://ambientcg.com/a/Concrete030",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "concrete-worn",
+      "name": "Worn Concrete",
+      "category": "Concrete",
+      "role": "environment",
+      "tags": [
+        "concrete",
+        "worn",
+        "stained",
+        "wall",
+        "floor"
+      ],
+      "notes": "Worn concrete with traffic marks and a chalky surface.",
+      "asset": "Concrete031",
+      "source": "https://ambientcg.com/a/Concrete031",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "concrete-cast",
+      "name": "Cast Concrete",
+      "category": "Concrete",
+      "role": "environment",
+      "tags": [
+        "concrete",
+        "cast",
+        "panel",
+        "wall",
+        "brutalist"
+      ],
+      "notes": "Smooth cast panel with formwork tone; good for modular walls.",
+      "asset": "Concrete042A",
+      "source": "https://ambientcg.com/a/Concrete042A",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "concrete-rough",
+      "name": "Rough Concrete",
+      "category": "Concrete",
+      "role": "environment",
+      "tags": [
+        "concrete",
+        "rough",
+        "aggregate",
+        "floor",
+        "industrial"
+      ],
+      "notes": "Coarse aggregate exposed by wear.",
+      "asset": "Concrete047A",
+      "source": "https://ambientcg.com/a/Concrete047A",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "concrete-clean",
+      "name": "Clean Concrete",
+      "category": "Concrete",
+      "role": "environment",
+      "tags": [
+        "concrete",
+        "clean",
+        "pale",
+        "wall",
+        "floor"
+      ],
+      "notes": "Pale clean concrete for readable level blocks.",
+      "asset": "Concrete048",
+      "source": "https://ambientcg.com/a/Concrete048",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "asphalt-fine",
+      "name": "Fine Asphalt",
+      "category": "Ground",
+      "role": "environment",
+      "tags": [
+        "asphalt",
+        "fine",
+        "road",
+        "dark",
+        "ground"
+      ],
+      "notes": "Tight dark asphalt; reads well at player scale.",
+      "asset": "Asphalt031",
+      "source": "https://ambientcg.com/a/Asphalt031",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "road-marked",
+      "name": "Marked Road",
+      "category": "Ground",
+      "role": "environment",
+      "tags": [
+        "road",
+        "asphalt",
+        "markings",
+        "lines",
+        "street"
+      ],
+      "notes": "Asphalt with worn lane paint; a ready-made street strip.",
+      "asset": "Road012A",
+      "source": "https://ambientcg.com/a/Road012A",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "road-worn",
+      "name": "Worn Road",
+      "category": "Ground",
+      "role": "environment",
+      "tags": [
+        "road",
+        "asphalt",
+        "worn",
+        "patched",
+        "street"
+      ],
+      "notes": "Patched, oil-stained road surface.",
+      "asset": "Road013A",
+      "source": "https://ambientcg.com/a/Road013A",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-corrugated-rust",
+      "name": "Rust Corrugated Steel",
+      "category": "Metal",
+      "role": "environment",
+      "tags": [
+        "steel",
+        "corrugated",
+        "rust",
+        "shed",
+        "industrial"
+      ],
+      "notes": "Corrugated sheet with deep rust runs; industrial walls and roofs.",
+      "asset": "CorrugatedSteel009",
+      "source": "https://ambientcg.com/a/CorrugatedSteel009",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 512,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "metal-gold-polished",
+      "name": "Polished Gold",
+      "category": "Metal",
+      "tags": [
+        "gold",
+        "polished",
+        "clean",
+        "metal"
+      ],
+      "notes": "Bright polished gold; use with low roughness for jewellery and trim.",
+      "asset": "Metal048A",
+      "source": "https://ambientcg.com/a/Metal048A",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "prop"
+    },
+    {
+      "id": "metal-silver-clean",
+      "name": "Clean Silver",
+      "category": "Metal",
+      "tags": [
+        "silver",
+        "steel",
+        "clean",
+        "metal"
+      ],
+      "notes": "Neutral clean metal; the default metal for hard-surface props.",
+      "asset": "Metal049A",
+      "source": "https://ambientcg.com/a/Metal049A",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "weapon"
+    },
+    {
+      "id": "metal-steel-grey",
+      "name": "Grey Steel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "grey",
+        "smooth",
+        "metal"
+      ],
+      "notes": "Soft grey steel with a fine grain.",
+      "asset": "Metal032",
+      "source": "https://ambientcg.com/a/Metal032",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "weapon"
+    },
+    {
+      "id": "metal-rust-worn",
+      "name": "Worn Rust",
+      "category": "Metal",
+      "tags": [
+        "rust",
+        "rusted",
+        "old",
+        "metal",
+        "grunge"
+      ],
+      "notes": "Heavily rusted iron; good base for edge-wear and dirt generators.",
+      "asset": "Metal021",
+      "source": "https://ambientcg.com/a/Metal021",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "metal-diamond-plate",
+      "name": "Diamond Plate",
+      "category": "Metal",
+      "tags": [
+        "diamond plate",
+        "industrial",
+        "steel",
+        "floor"
+      ],
+      "notes": "Industrial tread plate; tile it in triplanar for floors and ramps.",
+      "asset": "DiamondPlate008C",
+      "source": "https://ambientcg.com/a/DiamondPlate008C",
+      "license": "CC0-1.0",
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "width": 1024,
+      "height": 1024,
+      "role": "environment"
+    },
+    {
+      "id": "metal-corrugated-blue",
+      "name": "Blue Corrugated Steel",
+      "category": "Metal",
+      "tags": [
+        "corrugated",
+        "painted",
+        "blue",
+        "steel",
+        "siding"
+      ],
+      "notes": "Painted corrugated sheet; the ridges are in the height map.",
+      "asset": "CorrugatedSteel007A",
+      "source": "https://ambientcg.com/a/CorrugatedSteel007A",
+      "license": "CC0-1.0",
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "metallic": "metallic.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "width": 1024,
+      "height": 1024,
+      "role": "environment"
+    },
+    {
+      "id": "wood-oak-light",
+      "name": "Light Oak",
+      "category": "Wood",
+      "tags": [
+        "oak",
+        "light",
+        "grain",
+        "wood"
+      ],
+      "notes": "Clean light oak with knots.",
+      "asset": "Wood096",
+      "source": "https://ambientcg.com/a/Wood096",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "prop"
+    },
+    {
+      "id": "wood-parquet-dark",
+      "name": "Dark Parquet",
+      "category": "Wood",
+      "tags": [
+        "parquet",
+        "dark",
+        "floor",
+        "wood"
+      ],
+      "notes": "Dark parquet blocks; tile with a 0.5-1 m physical size.",
+      "asset": "WoodFloor064",
+      "source": "https://ambientcg.com/a/WoodFloor064",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "leather-brown-worn",
+      "name": "Brown Leather",
+      "category": "Leather",
+      "tags": [
+        "leather",
+        "brown",
+        "fine",
+        "worn"
+      ],
+      "notes": "Supple brown leather with a fine pebble grain.",
+      "asset": "Leather037",
+      "source": "https://ambientcg.com/a/Leather037",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "character"
+    },
+    {
+      "id": "fabric-canvas-grey",
+      "name": "Grey Canvas",
+      "category": "Fabric",
+      "tags": [
+        "canvas",
+        "cloth",
+        "grey",
+        "weave",
+        "fabric"
+      ],
+      "notes": "Neutral woven canvas.",
+      "asset": "Fabric030",
+      "source": "https://ambientcg.com/a/Fabric030",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "character"
+    },
+    {
+      "id": "carpet-grey",
+      "name": "Grey Carpet",
+      "category": "Fabric",
+      "tags": [
+        "carpet",
+        "rug",
+        "grey",
+        "soft",
+        "fabric"
+      ],
+      "notes": "Short pile office carpet.",
+      "asset": "Carpet001",
+      "source": "https://ambientcg.com/a/Carpet001",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "marble-black",
+      "name": "Black Marble",
+      "category": "Stone",
+      "tags": [
+        "marble",
+        "black",
+        "polished",
+        "stone"
+      ],
+      "notes": "Polished black marble with white veining.",
+      "asset": "Marble016",
+      "source": "https://ambientcg.com/a/Marble016",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "terrazzo-colourful",
+      "name": "Colourful Terrazzo",
+      "category": "Stone",
+      "tags": [
+        "terrazzo",
+        "colourful",
+        "floor",
+        "stone"
+      ],
+      "notes": "White terrazzo with coloured aggregate.",
+      "asset": "Terrazzo013",
+      "source": "https://ambientcg.com/a/Terrazzo013",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "concrete-smooth",
+      "name": "Smooth Concrete",
+      "category": "Concrete",
+      "tags": [
+        "concrete",
+        "smooth",
+        "grey",
+        "plain"
+      ],
+      "notes": "Plain cast concrete; subtle enough to tint.",
+      "asset": "Concrete046",
+      "source": "https://ambientcg.com/a/Concrete046",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "bricks-red",
+      "name": "Red Brick",
+      "category": "Masonry",
+      "tags": [
+        "brick",
+        "red",
+        "wall",
+        "masonry"
+      ],
+      "notes": "Weathered red brick wall.",
+      "asset": "Bricks085",
+      "source": "https://ambientcg.com/a/Bricks085",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 512,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "tiles-white",
+      "name": "White Tiles",
+      "category": "Ceramic",
+      "tags": [
+        "tiles",
+        "white",
+        "ceramic",
+        "clean"
+      ],
+      "notes": "Small white square tiles.",
+      "asset": "Tiles107",
+      "source": "https://ambientcg.com/a/Tiles107",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "plastic-black-gloss",
+      "name": "Gloss Black Plastic",
+      "category": "Plastic",
+      "tags": [
+        "plastic",
+        "black",
+        "gloss",
+        "smooth"
+      ],
+      "notes": "Injection-moulded gloss black plastic.",
+      "asset": "Plastic006",
+      "source": "https://ambientcg.com/a/Plastic006",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "weapon"
+    },
+    {
+      "id": "plaster-white",
+      "name": "White Plaster",
+      "category": "Painted",
+      "tags": [
+        "plaster",
+        "white",
+        "painted",
+        "wall"
+      ],
+      "notes": "Clean painted plaster wall.",
+      "asset": "PaintedPlaster017",
+      "source": "https://ambientcg.com/a/PaintedPlaster017",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 512,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "asphalt-dark",
+      "name": "Dark Asphalt",
+      "category": "Ground",
+      "tags": [
+        "asphalt",
+        "road",
+        "dark",
+        "ground"
+      ],
+      "notes": "Fine dark asphalt.",
+      "asset": "Asphalt033",
+      "source": "https://ambientcg.com/a/Asphalt033",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "environment"
+    },
+    {
+      "id": "wicker-natural",
+      "name": "Natural Wicker",
+      "category": "Organic",
+      "tags": [
+        "wicker",
+        "basket",
+        "weave",
+        "natural"
+      ],
+      "notes": "Woven wicker; good for baskets and furniture.",
+      "asset": "Wicker010A",
+      "source": "https://ambientcg.com/a/Wicker010A",
+      "license": "CC0-1.0",
+      "width": 1024,
+      "height": 1024,
+      "normal": "gl",
+      "maps": {
+        "basecolor": "basecolor.jpg",
+        "normal": "normal.jpg",
+        "roughness": "roughness.jpg",
+        "ao": "ao.jpg",
+        "height": "height.jpg"
+      },
+      "thumb": "thumb.jpg",
+      "role": "prop"
+    }
+  ]
+}

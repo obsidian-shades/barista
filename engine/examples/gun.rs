@@ -1,4 +1,4 @@
-//! Benchmark on a real model: `cargo run --release --example gun [soup] [out_dir] [part]`. Prints per-part stats;
+﻿//! Benchmark on a real model: `cargo run --release --example gun [soup] [out_dir] [part]`. Prints per-part stats;
 //! with `out_dir`, writes per part a PNG: three checker-textured 3D views (islands tinted) beside its UV layout.
 use barista::{unwrap, Params, PartIn, PartOut};
 
@@ -40,8 +40,14 @@ fn main() {
         }
         return;
     }
-    // ONE_ATLAS=1: every part in one square; OBJ=<path>: the result as an OBJ with UVs, one object per part
-    let out = unwrap(&parts, Params { one_atlas: std::env::var("ONE_ATLAS").is_ok(), ..Default::default() }).unwrap();
+    // ONE_ATLAS=1: every part in one square; JOIN=0: islands left apart, not hung into nets; OBJ=<path>: the result
+    // as an OBJ with UVs, one object per part
+    let out = unwrap(&parts, Params {
+        one_atlas: std::env::var("ONE_ATLAS").is_ok(),
+        join: std::env::var("JOIN").map_or(true, |v| v != "0"),
+        atlas: std::env::var("ATLAS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.),
+        ..Default::default()
+    }).unwrap();
     if let Ok(path) = std::env::var("OBJ") {
         let mut s = String::new();
         let mut n = 0;
@@ -66,8 +72,105 @@ fn main() {
             // fully red in the editor's Stretch view (≥ 50%)
             if e >= 1.5f32.ln() { hot += ar; }
         }
-        println!("{}: {:5} tris  {:3} islands  stretch {:5.2}%  hot {:5.2}%  eff {:4.1}%  max {:5.2}", parts[k].name, p.island.len(), ids.len(), se / sa.max(1e-30) * 100.,
-            hot / sa.max(1e-30) * 100., barista::pack::efficiency(&p.uvs) * 100., p.stretch.iter().fold(0f32, |a, &b| a.max(b)));
+        // the packing ceiling: every island's own bounding box. A packer that never nests into another island's
+        // box can't beat area / Σ box, so eff / box says how much of that the packer takes.
+        let mut boxes = vec![[f32::MAX, f32::MAX, f32::MIN, f32::MIN]; ids.len()];
+        let at: std::collections::HashMap<u32, usize> = ids.iter().enumerate().map(|(i, &g)| (g, i)).collect();
+        for t in 0..p.island.len() {
+            let b = &mut boxes[at[&p.island[t]]];
+            for c in 0..3 {
+                let (u, v) = (p.uvs[(t * 3 + c) * 2], p.uvs[(t * 3 + c) * 2 + 1]);
+                *b = [b[0].min(u), b[1].min(v), b[2].max(u), b[3].max(v)];
+            }
+        }
+        let boxed: f32 = boxes.iter().map(|b| (b[2] - b[0]).max(0.) * (b[3] - b[1]).max(0.)).sum();
+        // texel density: UV area over 3D area, per island. One island flattened at a different scale than its
+        // neighbour makes the checker jump at the seam, which is what a pattern does not survive.
+        let (mut uva, mut a3) = (vec![0f64; ids.len()], vec![0f64; ids.len()]);
+        for t in 0..p.island.len() {
+            let i = at[&p.island[t]];
+            let q = |c: usize, k: usize| p.uvs[(t * 3 + c) * 2 + k] as f64;
+            uva[i] += ((q(1, 0) - q(0, 0)) * (q(2, 1) - q(0, 1)) - (q(2, 0) - q(0, 0)) * (q(1, 1) - q(0, 1))).abs() / 2.;
+            a3[i] += area3(p, t);
+        }
+        let part_area: f64 = a3.iter().sum();
+        let dens: Vec<f64> = (0..ids.len()).filter(|&i| a3[i] >= 0.002 * part_area).map(|i| (uva[i] / a3[i]).sqrt()).collect();
+        let (dlo, dhi) = dens.iter().fold((f64::MAX, 0f64), |(lo, hi), &d| (lo.min(d), hi.max(d)));
+        // Where the seams fall. A seam is *open* when the two islands' copies of the edge don't meet in UV (the
+        // texture jumps there — every seam on a packed atlas is), and *mid-panel* when it runs further than 5% of
+        // the model's radius from any sharp crease: that is a seam cutting through a face the eye reads as one
+        // piece, the thing an artist never does and the artifact a checker makes obvious.
+        let (mut seam, mut open, mut open_mid, mut turned) = (0f64, 0f64, 0f64, 0f64);
+        if let Ok(m) = barista::mesh::Mesh::from_soup(&parts[k].positions) {
+            let at_out: std::collections::HashMap<u32, usize> = (0..p.island.len()).map(|t| (p.source[t], t)).collect();
+            let w = |v: u32| { let q = m.pt(v); [q[0] * m.radius + m.center[0], q[1] * m.radius + m.center[1], q[2] * m.radius + m.center[2]] };
+            let uv_of = |t: usize, q: [f64; 3]| -> Option<[f32; 2]> {
+                (0..3).map(|c| (c, [p.positions[(t * 3 + c) * 3], p.positions[(t * 3 + c) * 3 + 1], p.positions[(t * 3 + c) * 3 + 2]])).find(|(_, w)| {
+                    (w[0] as f64 - q[0]).abs() < 1e-6 && (w[1] as f64 - q[1]).abs() < 1e-6 && (w[2] as f64 - q[2]).abs() < 1e-6
+                }).map(|(c, _)| [p.uvs[(t * 3 + c) * 2], p.uvs[(t * 3 + c) * 2 + 1]])
+            };
+            // every vertex's distance to the nearest sharp crease (> 30°), over the mesh's edges
+            let mut adj: Vec<Vec<(u32, f64)>> = vec![Vec::new(); m.p.len()];
+            let mut feat = vec![false; m.p.len()];
+            for (&key, ts) in &m.edges {
+                let (a, b) = ((key >> 32) as u32, (key & 0xffff_ffff) as u32);
+                let len = barista::mesh::dist(m.pt(a), m.pt(b));
+                adj[a as usize].push((b, len));
+                adj[b as usize].push((a, len));
+                if ts.len() == 2 && barista::mesh::dot(m.n[ts[0] as usize], m.n[ts[1] as usize]).clamp(-1., 1.).acos().to_degrees() > 30. {
+                    feat[a as usize] = true;
+                    feat[b as usize] = true;
+                }
+            }
+            let mut dist = vec![f64::INFINITY; m.p.len()];
+            let mut heap = std::collections::BinaryHeap::new();
+            for v in 0..m.p.len() { if feat[v] { dist[v] = 0.; heap.push(std::cmp::Reverse((0u64, v as u32))); } }
+            while let Some(std::cmp::Reverse((d, v))) = heap.pop() {
+                let d = d as f64 / 1e9;
+                if d > dist[v as usize] { continue; }
+                for &(u, w) in &adj[v as usize] {
+                    if d + w < dist[u as usize] { dist[u as usize] = d + w; heap.push(std::cmp::Reverse((((d + w) * 1e9) as u64, u))); }
+                }
+            }
+            let island_of: std::collections::HashMap<u32, u32> = (0..p.island.len()).map(|t| (p.source[t], p.island[t])).collect();
+            for (&key, ts) in &m.edges {
+                if ts.len() != 2 { continue; }
+                let (a, b) = (m.src[ts[0] as usize], m.src[ts[1] as usize]);
+                let (Some(&x), Some(&y)) = (island_of.get(&a), island_of.get(&b)) else { continue };
+                if x == y { continue; }
+                let (va, vb) = ((key >> 32) as u32, (key & 0xffff_ffff) as u32);
+                let len = barista::mesh::dist(m.pt(va), m.pt(vb));
+                seam += len;
+                let mid = dist[va as usize].min(dist[vb as usize]) > 0.05 * m.radius;
+                let (ta, tb) = (at_out[&a], at_out[&b]);
+                let gap = match (uv_of(ta, w(va)), uv_of(ta, w(vb)), uv_of(tb, w(va)), uv_of(tb, w(vb))) {
+                    (Some(a0), Some(a1), Some(b0), Some(b1)) => {
+                        let d = |p: [f32; 2], q: [f32; 2]| ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt();
+                        d(a0, b0).max(d(a1, b1))
+                    }
+                    _ => 0.,
+                };
+                if gap as f64 > 1e-4 {
+                    open += len;
+                    if mid { open_mid += len; }
+                    // how far the two islands' frames turn against each other along that seam: a pattern with a
+                    // direction (brushed steel, knurling, lettering) breaks by this much
+                    if let (Some(a0), Some(a1), Some(b0), Some(b1)) = (uv_of(ta, w(va)), uv_of(ta, w(vb)), uv_of(tb, w(va)), uv_of(tb, w(vb))) {
+                        let (da, db) = ((a1[0] - a0[0], a1[1] - a0[1]), (b1[0] - b0[0], b1[1] - b0[1]));
+                        let (la, lb) = ((da.0 * da.0 + da.1 * da.1).sqrt(), (db.0 * db.0 + db.1 * db.1).sqrt());
+                        if la > 0. && lb > 0. && len > 0.004 * m.radius {
+                            let mut d = (db.1.atan2(db.0) - da.1.atan2(da.0)).to_degrees().rem_euclid(90.);
+                            if d > 45. { d = 90. - d; }
+                            if d > 10. { turned += len; }
+                        }
+                    }
+                }
+            }
+        }
+        println!("{}: {:5} tris  {:3} islands  stretch {:5.2}%  hot {:5.2}%  eff {:4.1}%  box {:4.1}%  dens {:5.2}x  open {:4.1}%  mid {:4.1}%  turn {:4.1}%  max {:5.2}", parts[k].name, p.island.len(), ids.len(), se / sa.max(1e-30) * 100.,
+            hot / sa.max(1e-30) * 100., barista::pack::efficiency(&p.uvs) * 100., barista::pack::efficiency(&p.uvs) / boxed.max(1e-9) as f64 * 100.,
+            if dlo > 0. { dhi / dlo } else { 0. }, if seam > 0. { open / seam * 100. } else { 0. }, if seam > 0. { open_mid / seam * 100. } else { 0. }, if seam > 0. { turned / seam * 100. } else { 0. },
+            p.stretch.iter().fold(0f32, |a, &b| a.max(b)));
     }
     let s = &out.stats;
     println!("TOTAL {} islands, {} tris, flips {}, stretch {:.2}% (max {:.2}), good {:.1}%, overlap {:.3}%, eff {:.1}%, {:.0} ms",
@@ -193,7 +296,11 @@ fn render(img: &mut Img, p: &PartOut, rect: Rect, dir: [f64; 3]) {
         let (a, b, d) = (pos(c[0]), pos(c[1]), pos(c[2]));
         let nn = unit(cr([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]));
         let lam = dt(nn, f).abs() * 0.7 + 0.3;
-        let col = if p.stretch[t] < 0. { [1., 0., 0.] } else { hue(p.island[t]) };
+        // the checker is the honest signal: hue only tints it a little, so a seam is a thin colour change and not
+        // a "broken pattern" (UVTEX=1 draws u red, v green instead: an island's frame and rotation read directly)
+        let h = hue(p.island[t]);
+        let col = if p.stretch[t] < 0. { [1., 0., 0.] } else { [0.85 + 0.15 * h[0], 0.85 + 0.15 * h[1], 0.85 + 0.15 * h[2]] };
+        let uvtex = std::env::var("UVTEX").is_ok();
         let uv: Vec<[f64; 2]> = c.iter().map(|&k| [p.uvs[k * 2] as f64, p.uvs[k * 2 + 1] as f64]).collect();
         img.tri(sc, rect, &|b: [f64; 3]| {
             let x = b[0] * uv[0][0] + b[1] * uv[1][0] + b[2] * uv[2][0];
@@ -217,7 +324,11 @@ fn uv_view(img: &mut Img, p: &PartOut, rect: Rect) {
             let c = 3 * t + k;
             [rect.0 as f64 + 10. + (p.uvs[c * 2] as f64 - lo[0]) * s, (rect.1 + rect.3) as f64 - 10. - (p.uvs[c * 2 + 1] as f64 - lo[1]) * s, 0.]
         });
-        let col = if p.stretch[t] < 0. { [1., 0., 0.] } else { hue(p.island[t]) };
+        // the checker is the honest signal: hue only tints it a little, so a seam is a thin colour change and not
+        // a "broken pattern" (UVTEX=1 draws u red, v green instead: an island's frame and rotation read directly)
+        let h = hue(p.island[t]);
+        let col = if p.stretch[t] < 0. { [1., 0., 0.] } else { [0.85 + 0.15 * h[0], 0.85 + 0.15 * h[1], 0.85 + 0.15 * h[2]] };
+        let uvtex = std::env::var("UVTEX").is_ok();
         let e = p.stretch[t].clamp(0., 0.5) as f64;
         img.tri(sc, rect, &|_| col.map(|v| (v * (1. - e) * 255.) as u8));
     }

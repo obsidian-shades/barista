@@ -64,9 +64,11 @@ const shots = new WeakMap<TexSet, { key: string; uvs: ArrayLike<number>; cv: HTM
  *  environment has loaded. Kept until the paint, the UVs, the AO or the light change. */
 export function materialCanvas(s: TexSet, positions: ArrayLike<number>, uvs: ArrayLike<number>, ao: boolean) {
   if (!env.tex) return null;
-  const pbr = s.channels.includes('rough'), key = `${s.ver}|${env.ver}|${ao}|${pbr}`, hit = shots.get(s);
+  const pbr = s.channels.includes('rough'), normal = s.channels.includes('normal'), key = `${s.ver}|${env.ver}|${ao}|${pbr}|${normal}`, hit = shots.get(s);
   if (hit && hit.key === key && hit.uvs === uvs) return hit.cv;
-  const n = s.size;
+  // The texture view shows this at roughly screen size; rendering a 4K offscreen image only to scale it
+  // down to a 500 px square was most of the pause after a stroke. Cap the preview at 1K.
+  const n = Math.min(s.size, 1024);
   gl ??= new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: false });
   gl.setPixelRatio(1); gl.setSize(n, n, false);
   gl.toneMapping = THREE.NoToneMapping; gl.outputColorSpace = THREE.SRGBColorSpace;
@@ -97,6 +99,7 @@ export function materialCanvas(s: TexSet, positions: ArrayLike<number>, uvs: Arr
   const mat = new THREE.MeshStandardMaterial({
     map: s.color, side: THREE.DoubleSide, aoMap: ao && s.aoTex ? s.aoTex : null,
     ...(pbr ? { roughnessMap: s.orm, metalnessMap: s.orm, roughness: 1, metalness: 1 } : { roughness: 0.3, metalness: 0 }),
+    ...(normal ? { normalMap: s.normal } : {}),
   });
   const scene = new THREE.Scene(), sun = new THREE.DirectionalLight('#ffffff', look.sun);
   scene.background = new THREE.Color(EMPTY);

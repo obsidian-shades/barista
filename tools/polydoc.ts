@@ -5,7 +5,7 @@
 //   quads              Tris to Quads on lone triangles (regroup)
 //   dissolve[:deg]     Limited Dissolve, default 5° (regroup)
 //   tri:RULE[,RULE]    Triangulate the polygons those rules flag red whose triangles come out fine (e.g. tri:quadWarp,ngonBent)
-//   defacet            Add Loops on Curve: a loop through each quad Faceted curve flags red, its points on the arc
+//   defacet            Add Loops on Curve: a loop through each quad Faceted curve flags (a look hint, not red)
 //   relax[:RULE,..]    Even Out (moves vertices, kept on the surface): the whole part, or Relax Around the polygons those rules flag red
 //   clean              duplicate faces: the copy in the bigger polygon goes; a back-to-back pair (a folded zero-area flap) both go
 //   weld:DIST          Merge by Distance: each cluster of edges shorter than DIST (file units) collapses to a point
@@ -75,10 +75,15 @@ function line(name: string, g: Geo) {
   const m = meshCheck(g), broken = Object.entries({ nonManifold: m.nonManifold.length, open: m.open.length, flipped: m.flipped.length, zero: m.zero.length, duplicate: m.duplicate.length })
     .filter(([, n]) => n).map(([r, n]) => `${r} ${n}`).join(', ');
   const fix = new Map<RuleId, number>(), look = new Map<RuleId, number>(), worst: string[] = [];
-  for (const [p, is] of healthReport(g).issues) for (const i of is) {
-    const to = i.score >= 0.6 ? fix : look;
-    to.set(i.rule, (to.get(i.rule) ?? 0) + 1);
-    if (detail && i.score >= 0.6 && worst.length < 6) worst.push(`  p${p} ${i.rule}: ${i.value}`);
+  for (const [p, is] of healthReport(g).issues) {
+    const seen = new Set<RuleId>(); // one polygon per rule, however many edges/faces are hit
+    for (const i of is) {
+      if (seen.has(i.rule)) continue;
+      seen.add(i.rule);
+      const to = i.score >= 0.6 ? fix : look;
+      to.set(i.rule, (to.get(i.rule) ?? 0) + 1);
+      if (detail && i.score >= 0.6 && worst.length < 6) worst.push(`  p${p} ${i.rule}: ${i.value}`);
+    }
   }
   const list = (m: Map<RuleId, number>) => [...m].sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r} ${n}`).join(', ') || '-';
   const s = healthSummary({ positions: g.soup } as never, healthReport(g).score), pc = (x: number) => `${Math.round(x * 100)}%`;
@@ -190,7 +195,11 @@ function run(op: string, g: Geo): Geo | null {
     return edges.length ? merge(g, { faces: [], verts: [], edges }, true)?.geo ?? null : null;
   }
   if (name === 'delpoly') { const ids = new Set(arg.split(',').map(Number)); return drop(g, new Set(all(g).filter((f) => ids.has(g.poly[f])))); }
-  if (name === 'defacet') { const hit = new Set(flagged(g, 'faceted')); return addLoops(g, { faces: all(g).filter((f) => hit.has(g.poly[f])), verts: [], edges: [] })?.geo ?? null; }
+  if (name === 'defacet') {
+    // faceting is a hint, not a red face: take every polygon it flags, at any score
+    const hit = new Set([...healthReport(g).issues].filter(([, is]) => is.some((i) => i.rule === 'faceted')).map(([p]) => p));
+    return addLoops(g, { faces: all(g).filter((f) => hit.has(g.poly[f])), verts: [], edges: [] })?.geo ?? null;
+  }
   if (name === 'relax') {
     if (!arg) return relax(g, { faces: all(g), verts: [], edges: [] })?.geo ?? null;
     // Relax Around: the flagged polygons and the ring of polygons round them

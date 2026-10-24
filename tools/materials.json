@@ -1,0 +1,776 @@
+{
+  "source": "ambientCG",
+  "license": "CC0-1.0",
+  "format": "1K-JPG",
+  "materials": [
+    {
+      "id": "metal-brushed-dark",
+      "asset": "Metal009",
+      "name": "Brushed Dark Aluminum",
+      "category": "Metal",
+      "tags": [
+        "aluminum",
+        "brushed",
+        "dark",
+        "anodized",
+        "receiver",
+        "gun"
+      ],
+      "notes": "Fine horizontal brush grain, neutral dark grey. The base coat for anodized receivers and slides.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "metal-black-oxide",
+      "asset": "Metal028",
+      "name": "Black Oxide Steel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "black",
+        "oxide",
+        "matte",
+        "slide",
+        "gun"
+      ],
+      "notes": "Near-black mottled oxide finish with a soft sheen; reads as a worn black nitride slide.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "metal-charcoal",
+      "asset": "Metal029",
+      "name": "Charcoal Steel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "charcoal",
+        "dark",
+        "matte",
+        "gun"
+      ],
+      "notes": "Very dark charcoal steel with faint handling marks; clean enough for a production slide.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "metal-graphite",
+      "asset": "Metal046A",
+      "name": "Graphite Steel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "graphite",
+        "grey",
+        "satin",
+        "gun"
+      ],
+      "notes": "Satin graphite steel with a slight patina; a neutral hard-surface base for weapons and props.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "metal-scratched",
+      "asset": "Metal038",
+      "name": "Scratched Steel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "scratched",
+        "worn",
+        "grey",
+        "gun"
+      ],
+      "notes": "Grey steel crossed by fine scratches; use where a prop has seen real use.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "metal-fine-brushed",
+      "asset": "Metal041A",
+      "name": "Fine Brushed Steel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "brushed",
+        "silver",
+        "clean",
+        "trim"
+      ],
+      "notes": "Tight vertical brushing on clean steel; a good polished trim and barrel material.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "metal-brushed-blue",
+      "asset": "Metal010",
+      "name": "Brushed Blue Steel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "brushed",
+        "blue",
+        "cold",
+        "barrel"
+      ],
+      "notes": "Cold blue-grey brushing; barrel steel and industrial trim.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "metal-graphite-worn",
+      "asset": "Metal046B",
+      "name": "Worn Graphite",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "graphite",
+        "worn",
+        "dark",
+        "gun"
+      ],
+      "notes": "Darker, more handled version of the graphite plate.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "polymer-textured-black",
+      "asset": "Plastic012A",
+      "name": "Textured Black Polymer",
+      "category": "Polymer",
+      "tags": [
+        "polymer",
+        "plastic",
+        "black",
+        "textured",
+        "frame",
+        "gun"
+      ],
+      "notes": "Micro-textured injection-moulded black polymer; the frame and grip shell in the reference.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "polymer-satin-black",
+      "asset": "Plastic011",
+      "name": "Satin Black Polymer",
+      "category": "Polymer",
+      "tags": [
+        "polymer",
+        "plastic",
+        "black",
+        "satin",
+        "frame",
+        "gun"
+      ],
+      "notes": "Satin black moulding with a faint flow grain; clean production furniture.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "polymer-matte-grey",
+      "asset": "Plastic010",
+      "name": "Matte Grey Polymer",
+      "category": "Polymer",
+      "tags": [
+        "polymer",
+        "plastic",
+        "grey",
+        "matte",
+        "prop"
+      ],
+      "notes": "Soft matte grey engineering plastic for tool bodies and internals.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "rubber-stipple",
+      "asset": "Rubber001",
+      "name": "Stippled Grip Rubber",
+      "category": "Rubber",
+      "tags": [
+        "rubber",
+        "black",
+        "stipple",
+        "grip",
+        "gun"
+      ],
+      "notes": "Fine black stipple; reads as a moulded grip panel at game texel density.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "rubber-matte",
+      "asset": "Rubber004",
+      "name": "Matte Rubber",
+      "category": "Rubber",
+      "tags": [
+        "rubber",
+        "black",
+        "matte",
+        "grip",
+        "seal"
+      ],
+      "notes": "Dense matte black rubber with no sheen.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "carbon-twill",
+      "asset": "Fabric004",
+      "name": "Carbon Fiber Twill",
+      "category": "Carbon",
+      "tags": [
+        "carbon",
+        "fiber",
+        "twill",
+        "composite",
+        "gun"
+      ],
+      "notes": "Classic 2x2 carbon twill under clear resin; handguard and stock material.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "leather-black-fine",
+      "asset": "Leather026",
+      "name": "Fine Black Leather",
+      "category": "Leather",
+      "tags": [
+        "leather",
+        "black",
+        "fine",
+        "grip",
+        "character"
+      ],
+      "notes": "Supple black leather with a fine pebble grain.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "leather-black-grain",
+      "asset": "Leather027",
+      "name": "Grained Black Leather",
+      "category": "Leather",
+      "tags": [
+        "leather",
+        "black",
+        "grain",
+        "worn",
+        "character"
+      ],
+      "notes": "Heavier black leather grain for grips, straps and seats.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "leather-black-quilted",
+      "asset": "Leather034C",
+      "name": "Quilted Black Leather",
+      "category": "Leather",
+      "tags": [
+        "leather",
+        "black",
+        "quilted",
+        "seat",
+        "character"
+      ],
+      "notes": "Diamond-stitched black leather; vehicle and interior detail.",
+      "role": "weapon",
+      "format": "2K-JPG"
+    },
+    {
+      "id": "fabric-webbing",
+      "asset": "Fabric061",
+      "name": "Woven Webbing",
+      "category": "Fabric",
+      "tags": [
+        "fabric",
+        "webbing",
+        "nylon",
+        "strap",
+        "tactical"
+      ],
+      "notes": "Tight woven nylon webbing for slings, pouches and straps.",
+      "role": "character",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "metal-perforated",
+      "asset": "MetalPlates002",
+      "name": "Perforated Steel Panel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "perforated",
+        "panel",
+        "vent",
+        "industrial"
+      ],
+      "notes": "Precision perforated plate; vents, heat shields and sci-fi wall panels.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "metal-riveted",
+      "asset": "MetalPlates001",
+      "name": "Riveted Steel Panel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "riveted",
+        "panel",
+        "plate",
+        "industrial"
+      ],
+      "notes": "Riveted steel plate with a weathered rolled finish.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "metal-diamond-fine",
+      "asset": "DiamondPlate009",
+      "name": "Fine Diamond Plate",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "diamond plate",
+        "tread",
+        "industrial",
+        "floor"
+      ],
+      "notes": "A tighter tread pattern than the starter plate, useful at prop scale.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "concrete-dark",
+      "asset": "Concrete030",
+      "name": "Dark Concrete",
+      "category": "Concrete",
+      "tags": [
+        "concrete",
+        "dark",
+        "wall",
+        "floor",
+        "industrial"
+      ],
+      "notes": "Dark poured concrete with fine aggregate and subtle stains.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "concrete-worn",
+      "asset": "Concrete031",
+      "name": "Worn Concrete",
+      "category": "Concrete",
+      "tags": [
+        "concrete",
+        "worn",
+        "stained",
+        "wall",
+        "floor"
+      ],
+      "notes": "Worn concrete with traffic marks and a chalky surface.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "concrete-cast",
+      "asset": "Concrete042A",
+      "name": "Cast Concrete",
+      "category": "Concrete",
+      "tags": [
+        "concrete",
+        "cast",
+        "panel",
+        "wall",
+        "brutalist"
+      ],
+      "notes": "Smooth cast panel with formwork tone; good for modular walls.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "concrete-rough",
+      "asset": "Concrete047A",
+      "name": "Rough Concrete",
+      "category": "Concrete",
+      "tags": [
+        "concrete",
+        "rough",
+        "aggregate",
+        "floor",
+        "industrial"
+      ],
+      "notes": "Coarse aggregate exposed by wear.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "concrete-clean",
+      "asset": "Concrete048",
+      "name": "Clean Concrete",
+      "category": "Concrete",
+      "tags": [
+        "concrete",
+        "clean",
+        "pale",
+        "wall",
+        "floor"
+      ],
+      "notes": "Pale clean concrete for readable level blocks.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "asphalt-fine",
+      "asset": "Asphalt031",
+      "name": "Fine Asphalt",
+      "category": "Ground",
+      "tags": [
+        "asphalt",
+        "fine",
+        "road",
+        "dark",
+        "ground"
+      ],
+      "notes": "Tight dark asphalt; reads well at player scale.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "road-marked",
+      "asset": "Road012A",
+      "name": "Marked Road",
+      "category": "Ground",
+      "tags": [
+        "road",
+        "asphalt",
+        "markings",
+        "lines",
+        "street"
+      ],
+      "notes": "Asphalt with worn lane paint; a ready-made street strip.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "road-worn",
+      "asset": "Road013A",
+      "name": "Worn Road",
+      "category": "Ground",
+      "tags": [
+        "road",
+        "asphalt",
+        "worn",
+        "patched",
+        "street"
+      ],
+      "notes": "Patched, oil-stained road surface.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "metal-corrugated-rust",
+      "asset": "CorrugatedSteel009",
+      "name": "Rust Corrugated Steel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "corrugated",
+        "rust",
+        "shed",
+        "industrial"
+      ],
+      "notes": "Corrugated sheet with deep rust runs; industrial walls and roofs.",
+      "role": "environment",
+      "format": "1K-JPG"
+    },
+    {
+      "id": "metal-gold-polished",
+      "asset": "Metal048A",
+      "name": "Polished Gold",
+      "category": "Metal",
+      "tags": [
+        "gold",
+        "polished",
+        "clean",
+        "metal"
+      ],
+      "notes": "Bright polished gold; use with low roughness for jewellery and trim.",
+      "role": "prop"
+    },
+    {
+      "id": "metal-silver-clean",
+      "asset": "Metal049A",
+      "name": "Clean Silver",
+      "category": "Metal",
+      "tags": [
+        "silver",
+        "steel",
+        "clean",
+        "metal"
+      ],
+      "notes": "Neutral clean metal; the default metal for hard-surface props.",
+      "role": "weapon"
+    },
+    {
+      "id": "metal-steel-grey",
+      "asset": "Metal032",
+      "name": "Grey Steel",
+      "category": "Metal",
+      "tags": [
+        "steel",
+        "grey",
+        "smooth",
+        "metal"
+      ],
+      "notes": "Soft grey steel with a fine grain.",
+      "role": "weapon"
+    },
+    {
+      "id": "metal-rust-worn",
+      "asset": "Metal021",
+      "name": "Worn Rust",
+      "category": "Metal",
+      "tags": [
+        "rust",
+        "rusted",
+        "old",
+        "metal",
+        "grunge"
+      ],
+      "notes": "Heavily rusted iron; good base for edge-wear and dirt generators.",
+      "role": "environment"
+    },
+    {
+      "id": "metal-diamond-plate",
+      "asset": "DiamondPlate008C",
+      "name": "Diamond Plate",
+      "category": "Metal",
+      "tags": [
+        "diamond plate",
+        "industrial",
+        "steel",
+        "floor"
+      ],
+      "notes": "Industrial tread plate; tile it in triplanar for floors and ramps.",
+      "role": "environment"
+    },
+    {
+      "id": "metal-corrugated-blue",
+      "asset": "CorrugatedSteel007A",
+      "name": "Blue Corrugated Steel",
+      "category": "Metal",
+      "tags": [
+        "corrugated",
+        "painted",
+        "blue",
+        "steel",
+        "siding"
+      ],
+      "notes": "Painted corrugated sheet; the ridges are in the height map.",
+      "role": "environment"
+    },
+    {
+      "id": "wood-oak-light",
+      "asset": "Wood096",
+      "name": "Light Oak",
+      "category": "Wood",
+      "tags": [
+        "oak",
+        "light",
+        "grain",
+        "wood"
+      ],
+      "notes": "Clean light oak with knots.",
+      "role": "prop"
+    },
+    {
+      "id": "wood-parquet-dark",
+      "asset": "WoodFloor064",
+      "name": "Dark Parquet",
+      "category": "Wood",
+      "tags": [
+        "parquet",
+        "dark",
+        "floor",
+        "wood"
+      ],
+      "notes": "Dark parquet blocks; tile with a 0.5-1 m physical size.",
+      "role": "environment"
+    },
+    {
+      "id": "leather-brown-worn",
+      "asset": "Leather037",
+      "name": "Brown Leather",
+      "category": "Leather",
+      "tags": [
+        "leather",
+        "brown",
+        "fine",
+        "worn"
+      ],
+      "notes": "Supple brown leather with a fine pebble grain.",
+      "role": "character"
+    },
+    {
+      "id": "fabric-canvas-grey",
+      "asset": "Fabric030",
+      "name": "Grey Canvas",
+      "category": "Fabric",
+      "tags": [
+        "canvas",
+        "cloth",
+        "grey",
+        "weave",
+        "fabric"
+      ],
+      "notes": "Neutral woven canvas.",
+      "role": "character"
+    },
+    {
+      "id": "carpet-grey",
+      "asset": "Carpet001",
+      "name": "Grey Carpet",
+      "category": "Fabric",
+      "tags": [
+        "carpet",
+        "rug",
+        "grey",
+        "soft",
+        "fabric"
+      ],
+      "notes": "Short pile office carpet.",
+      "role": "environment"
+    },
+    {
+      "id": "marble-black",
+      "asset": "Marble016",
+      "name": "Black Marble",
+      "category": "Stone",
+      "tags": [
+        "marble",
+        "black",
+        "polished",
+        "stone"
+      ],
+      "notes": "Polished black marble with white veining.",
+      "role": "environment"
+    },
+    {
+      "id": "terrazzo-colourful",
+      "asset": "Terrazzo013",
+      "name": "Colourful Terrazzo",
+      "category": "Stone",
+      "tags": [
+        "terrazzo",
+        "colourful",
+        "floor",
+        "stone"
+      ],
+      "notes": "White terrazzo with coloured aggregate.",
+      "role": "environment"
+    },
+    {
+      "id": "concrete-smooth",
+      "asset": "Concrete046",
+      "name": "Smooth Concrete",
+      "category": "Concrete",
+      "tags": [
+        "concrete",
+        "smooth",
+        "grey",
+        "plain"
+      ],
+      "notes": "Plain cast concrete; subtle enough to tint.",
+      "role": "environment"
+    },
+    {
+      "id": "bricks-red",
+      "asset": "Bricks085",
+      "name": "Red Brick",
+      "category": "Masonry",
+      "tags": [
+        "brick",
+        "red",
+        "wall",
+        "masonry"
+      ],
+      "notes": "Weathered red brick wall.",
+      "role": "environment"
+    },
+    {
+      "id": "tiles-white",
+      "asset": "Tiles107",
+      "name": "White Tiles",
+      "category": "Ceramic",
+      "tags": [
+        "tiles",
+        "white",
+        "ceramic",
+        "clean"
+      ],
+      "notes": "Small white square tiles.",
+      "role": "environment"
+    },
+    {
+      "id": "plastic-black-gloss",
+      "asset": "Plastic006",
+      "name": "Gloss Black Plastic",
+      "category": "Plastic",
+      "tags": [
+        "plastic",
+        "black",
+        "gloss",
+        "smooth"
+      ],
+      "notes": "Injection-moulded gloss black plastic.",
+      "role": "weapon"
+    },
+    {
+      "id": "plaster-white",
+      "asset": "PaintedPlaster017",
+      "name": "White Plaster",
+      "category": "Painted",
+      "tags": [
+        "plaster",
+        "white",
+        "painted",
+        "wall"
+      ],
+      "notes": "Clean painted plaster wall.",
+      "role": "environment"
+    },
+    {
+      "id": "asphalt-dark",
+      "asset": "Asphalt033",
+      "name": "Dark Asphalt",
+      "category": "Ground",
+      "tags": [
+        "asphalt",
+        "road",
+        "dark",
+        "ground"
+      ],
+      "notes": "Fine dark asphalt.",
+      "role": "environment"
+    },
+    {
+      "id": "wicker-natural",
+      "asset": "Wicker010A",
+      "name": "Natural Wicker",
+      "category": "Organic",
+      "tags": [
+        "wicker",
+        "basket",
+        "weave",
+        "natural"
+      ],
+      "notes": "Woven wicker; good for baskets and furniture.",
+      "role": "prop"
+    }
+  ],
+  "note": "2K-JPG for weapon hero materials; 1K-JPG for environment support sets."
+}

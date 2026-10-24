@@ -26,7 +26,7 @@ const NUMPAD: Record<string, [ViewOp, ViewOp?]> = {
 
 const XFORMS: Record<string, XformKind> = { g: 'move', r: 'rotate', s: 'scale' };
 /** Van Gogh's tool keys, Photoshop's. */
-const PAINT_KEYS: Record<string, PaintTool> = { m: 'marquee', l: 'lasso', w: 'wand', b: 'brush', e: 'erase', g: 'bucket', i: 'picker' };
+const PAINT_KEYS: Record<string, PaintTool> = { m: 'marquee', l: 'lasso', w: 'wand', d: 'decal', b: 'brush', e: 'erase', g: 'bucket', i: 'picker' };
 
 /** Where the mouse is (the pie covers the views, so their own tracking stops), and when Z went down. */
 const mouse = { x: 0, y: 0 };
@@ -61,7 +61,7 @@ function onKey(e: KeyboardEvent) {
     if (!e.repeat) { zDown = performance.now(); viewPie(); }
     return;
   }
-  // Van Gogh: Photoshop's keys (tools M L W B E G I; Ctrl+A / Ctrl+D / Ctrl+Shift+I selection; Alt+Backspace fill,
+  // Van Gogh: Photoshop's keys (tools M L W D B E G I; Ctrl+A / Ctrl+D / Ctrl+Shift+I selection; Alt+Backspace fill,
   // Delete clear; Ctrl+J duplicate, Ctrl+Shift+N new layer, Ctrl+[ ] move it; [ ] brush size) and the view keys
   if (useApp.getState().workspace === 'paint') {
     const p = useApp.getState().paint;

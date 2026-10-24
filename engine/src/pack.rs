@@ -101,6 +101,9 @@ fn turns(s: &UvSet, total: Option<f64>) -> Vec<f64> {
     (0..4).map(|k| th + k as f64 * q).collect()
 }
 
+/// Area of a set's triangles: after `pack`, the share of its square it fills.
+pub fn area(s: &UvSet) -> f64 { area_of(s) }
+
 fn area_of(s: &UvSet) -> f64 {
     s.tris.iter().map(|&[a, b, c]| ((s.u[b] - s.u[a]) * (s.v[c] - s.v[a]) - (s.u[c] - s.u[a]) * (s.v[b] - s.v[a])).abs() / 2.).sum()
 }

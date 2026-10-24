@@ -81,6 +81,11 @@ button.primary.wide { justify-content: center; }
 .healthbar { display: flex; height: 8px; margin: 2px 0 6px; border-radius: 0; overflow: hidden; background: var(--well); }
 .healthbar span { min-width: 0; }
 .rules { display: grid; margin-top: 6px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
+.rules .rkind { grid-column: 1 / -1; padding: 5px 8px 2px; font-size: var(--fs-xs); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line-2); }
+.tsec .hint.ok, .hint.ok { color: var(--ok); }
+.tsec .hint.look, .hint.look { color: var(--warn); }
+.tsec .hint.fix, .hint.fix { color: var(--bad); }
+.hint.topo { margin: 2px 0 4px; line-height: 1.35; }
 .rule { display: flex; align-items: center; gap: 6px; min-height: var(--ctl-lg); padding: 0 8px; border: 0; border-bottom: 1px solid var(--line-2); border-radius: 0; background: none; text-align: left; }
 .rule:last-child { border-bottom: 0; }
 .rule .rname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -93,6 +98,7 @@ button.primary.wide { justify-content: center; }
 .layer > button.ltype { border: 0; border-left: 1px solid var(--line-2); padding: 0 8px; width: auto; }
 .lopacity { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .lopacity input { flex: 1; min-width: 0; }
+.lopacity select { margin-left: auto; min-width: 92px; }
 .pslayers { display: flex; flex-direction: column; gap: 6px; min-height: 0; flex: 1; }
 .pslayers .layers { max-height: none; flex: 1; }
 .layers.thumbs .layer { grid-template-columns: var(--row) 36px minmax(0, 1fr) auto; height: 40px; }
@@ -118,10 +124,89 @@ button.primary.wide { justify-content: center; }
 .cwread label { display: flex; align-items: center; gap: 4px; }
 .cwread input { width: 70px; font-family: inherit; text-transform: uppercase; }
 .cwflow { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) 44px; align-items: center; gap: 8px; color: var(--muted); }
-/* Van Gogh's dock: the top panels scroll, Layers stays pinned at the bottom. */
-.paintdock { overflow: hidden; }
-.paintdock .dock-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-.paintdock .dock-scroll > .dock-group { flex-shrink: 0; }
-.paintdock > .dock-group.pinned { flex: 1 1 44%; min-height: 180px; max-height: 58%; border-top: 1px solid var(--line); }
-.paintdock > .dock-group.pinned.closed { flex: 0 0 auto; min-height: 0; }
-.paintdock > .dock-group.pinned.grow .pbody { overflow: auto; }
+/* Van Gogh's dock: color on top, then one tab at a time (Layers / Materials / Maps), so the panels
+   never stack into a 300 px column. The tab body is the only scroll container. */
+.paintdock { display: flex; flex-direction: column; overflow: hidden; }
+.vgcolor { flex: 0 0 auto; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.vgtabs { display: flex; flex: 0 0 var(--row); align-items: stretch; background: var(--chrome); border-bottom: 1px solid var(--line); }
+.vgtabs button { flex: 1; min-height: 0; height: var(--row); justify-content: center; padding: 0 4px; border: 0; border-radius: 0; color: var(--muted); font-size: var(--fs-s); }
+.vgtabs button:hover { background: var(--hair); color: var(--fg); }
+.vgtabs button[aria-selected="true"] { color: var(--fg); background: var(--row-on); box-shadow: inset 0 -2px var(--accent); }
+.vgbody { flex: 1; min-height: 0; overflow-y: auto; }
+.vgtab { display: grid; gap: 8px; align-content: start; padding: 10px; }
+.vgtab.colorpane { justify-items: center; }
+.vgtab .matgrid { max-height: none; }
+.vgtab .pslayers { min-height: 0; }
+.setbar { display: flex; align-items: center; gap: 6px; }
+.setbar select { flex: 1; min-width: 0; }
+.setbar .pbr { flex: 0 0 auto; min-height: var(--ctl-sm); padding: 0 8px; background: var(--hair); font-size: var(--fs-xs); }
+.setbar .pbr[aria-pressed="true"] { background: var(--accent-soft); color: var(--fg); box-shadow: inset 0 0 0 1px var(--accent); }
+.exportpreset { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 6px; color: var(--muted); }
+.exportpreset select { min-width: 0; }
+
+/* Van Gogh: the material shelf (Substance's Assets panel, one grid) */
+.matshelf { display: grid; gap: 6px; }
+.matbar { display: flex; gap: 4px; }
+.matsearch { flex: 1; min-width: 0; height: var(--ctl-sm); padding: 0 6px; font: inherit; }
+.matbar button { min-height: var(--ctl-sm); padding: 0 8px; background: var(--hair); font-size: var(--fs-xs); }
+.matchips { display: flex; flex-wrap: wrap; gap: 2px; }
+.matchips button { min-height: var(--ctl-sm); padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); background: none; color: var(--muted); font-size: 10px; }
+.matchips button.on { color: var(--fg); border-color: var(--accent); background: var(--accent-soft); }
+.mathint { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.mathint .hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.allparts { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+
+.matgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 4px; max-height: 300px; overflow-y: auto; padding-right: 2px; }
+.mattile { display: grid; align-items: start; gap: 2px; padding: 3px; min-height: 0; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); text-align: left; }
+.mattile:hover { border-color: var(--accent); }
+.mattile img { width: 100%; height: auto; aspect-ratio: 1; object-fit: cover; border-radius: 1px; display: block; }
+.mattile span { font-size: 9px; line-height: 1.2; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.moremats { justify-content: center; min-height: var(--ctl); background: var(--hair); font-size: var(--fs-xs); color: var(--muted); }
+.moremats:hover { background: var(--hair-hi); color: var(--fg); }
+.fillsettings .seg { display: flex; gap: 2px; justify-self: end; }
+.fillsettings .seg button { min-height: var(--ctl-sm); padding: 0 6px; font-size: var(--fs-xs); background: var(--hair); }
+.fillsettings .seg button.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); color: var(--fg); }
+.fillchans { display: flex; gap: 10px; color: var(--muted); }
+.fillchans label { display: flex; align-items: center; gap: 3px; }
+.fillmask { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; }
+.fillmask button { min-height: var(--ctl-sm); padding: 0 2px; background: var(--hair); font-size: 10px; justify-content: center; }
+.maskbadge { padding: 2px 7px; border-radius: 999px; background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); font-size: var(--fs-xs); color: var(--fg); }
+.fillmark { color: var(--accent); }
+.decalmark { color: #b388ff; }
+.decalhint { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Van Gogh: the game-first material filters and the smart finish picker */
+
+.matgroups { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.matgroups .caps { margin-right: 2px; color: var(--muted); }
+.matgroups button { display: inline-flex; align-items: center; gap: 4px; min-height: var(--ctl-sm); padding: 0 7px; border-radius: 999px;
+  border: 1px solid var(--line); background: none; color: var(--muted); font-size: 10px; }
+.matgroups button:hover { background: var(--hair); color: var(--fg); }
+.matgroups button.on { color: var(--fg); border-color: var(--accent); background: var(--accent-soft); }
+.matgroups .matcount { color: var(--muted); font: 9px var(--num); }
+.matgroups button.on .matcount { color: var(--fg); opacity: .7; }
+.foverride { grid-template-columns: 18px 40px minmax(0, 1fr) 40px !important; }
+.foverride input[type="checkbox"] { margin: 0; }
+.foverride input[type="range"]:disabled { opacity: .3; }
+
+/* Van Gogh: decals are transparent marks; show the checker so the art reads on the dark shelf */
+.decalplace { display: flex; align-items: flex-start; gap: 7px; }
+.decalbadge { flex: 0 0 20px; height: 20px; display: grid; place-items: center; border-radius: var(--r-s); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); color: var(--fg); font: 11px var(--num); }
+.decalshelf .decalsettings { grid-template-columns: 1fr; }
+.decalsettings { display: grid; gap: 4px; }
+.decalsettings label { display: grid; grid-template-columns: 48px minmax(0, 1fr) 38px; align-items: center; gap: 6px; color: var(--muted); }
+.decalsettings label input[type="range"] { min-width: 0; }
+.decalsettings label input[type="color"] { width: 30px; height: 22px; justify-self: start; }
+.decalsettings .num { text-align: right; }
+.decalpreview { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.decalpreview .decalimg { flex: 0 0 70px; height: 48px; }
+.decalpreview .hint { line-height: 1.35; }
+.decalimg { display: grid; place-items: center; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-s);
+  background-color: #1d1e22; background-image: linear-gradient(45deg,#26272c 25%,transparent 25%),linear-gradient(-45deg,#26272c 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#26272c 75%),linear-gradient(-45deg,transparent 75%,#26272c 75%); background-size: 14px 14px; background-position: 0 0,0 7px,7px -7px,-7px 0; }
+.decalimg img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.decalgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; align-content: start; }
+.decaltile { display: grid; gap: 3px; padding: 3px; min-height: 0; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); text-align: left; }
+.decaltile:hover { border-color: var(--accent); }
+.decaltile.on { border-color: #b388ff; box-shadow: inset 0 0 0 1px #b388ff; }
+.decaltile .decalimg { height: 62px; }
+.decaltile span:last-child { font-size: 9px; line-height: 1.2; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

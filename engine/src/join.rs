@@ -1,4 +1,4 @@
-//! Join islands into nets, the way paper-model unfolders do. Blender's Paper Model add-on joins faces edge by
+﻿//! Join islands into nets, the way paper-model unfolders do. Blender's Paper Model add-on joins faces edge by
 //! edge, flattest edges first (concave ones penalised), refusing any join that would overlap. Here the units
 //! are whole islands, already flat: a join only turns and moves the child so it hangs off its parent along one
 //! shared edge, so it never adds stretch. Growth is Prim-like from the biggest island: flattest hinge first,
@@ -26,6 +26,8 @@ type Seg = [f64; 4];
 /// How many books and fills one part's islands may take before joining runs once more as is.
 const STITCHES: usize = 96;
 /// An island under this share of its part's area that can't hang is an orphan, filled back into its neighbour.
+/// How much longer one copy of a shared border may be than the other before a rigid hinge would stretch it.
+const HINGE_DENSITY: f64 = 1.05;
 const ORPHAN: f64 = 0.03;
 /// Least share of an orphan's outline (holes too) it must share with one bigger island to be filled into it first.
 const ENCLOSED: f64 = 0.5;
@@ -185,6 +187,12 @@ fn join_once(m: &Mesh, isl: &mut [Island], mut redo: Option<(f64, &mut Set<[(u32
         while let Some(Reverse((_, _, depth, j, i))) = heap.pop() {
             if net[j] != usize::MAX { continue; }
             let Some((u, v)) = hang(&isl[i], &isl[j], &pairs[&(i, j)].0) else { continue };
+            // The two copies of the shared border have to be the same length: hanging the child rigidly on a
+            // border that is 5% longer stretches (or shrinks) it along the seam, and one atlas scale can't hide
+            // that. A pair that close still gives, through `book`, which lays the child out against the spine.
+            let (hs, _) = &pairs[&(i, j)];
+            let (pa, ch) = (border_uv(&isl[i], hs, 0), border_uv(&isl[j], hs, 1));
+            if pa > 0. && ch > 0. && pa.max(ch) > HINGE_DENSITY * pa.min(ch) { continue; }
             let seg = outline(&isl[j], Some((&u, &v)));
             let pt = transform_point(&isl[j], &u, &v, interior[j]);
             if crosses(&grid, cell, &seg, tol) || members.iter().any(|&k| contains(&isl[k], interior[k], &seg, pt)) {
@@ -203,7 +211,13 @@ fn join_once(m: &Mesh, isl: &mut [Island], mut redo: Option<(f64, &mut Set<[(u32
                         // folds along the shorter ones too
                         if let (Some(run), false) = (spines(m, &isl[i], hs).first(), busy.contains(&i) || busy.contains(&j)) {
                             let glue: Vec<(u32, u32)> = run.iter().flat_map(|h| [(h.la, h.ja), (h.lb, h.jb)]).collect();
-                            if let Some(both) = book(m, &isl[i], &isl[j], &glue, *stretch, true) { merges.push((i, j, both)); return Err(merges); }
+                            let Some(both) = book(m, &isl[i], &isl[j], &glue, *stretch, true) else { continue };
+                            // a book has to pack as well as a join does: the page it opens out leaves a box
+                            // the packer can't use, which is what the seam it saves would have cost doubled
+                            let bpts: Vec<(f64, f64)> = outline(&both, None).iter().map(|s| (s[0], s[1])).collect();
+                            if uv_area(&both) / min_box(&bpts) < MIN_FILL { continue; }
+                            merges.push((i, j, both));
+                            return Err(merges);
                         }
                     }
                 }
@@ -221,12 +235,13 @@ fn join_once(m: &Mesh, isl: &mut [Island], mut redo: Option<(f64, &mut Set<[(u32
                 }
                 continue;
             }
-            // A join must keep the net compact: it fills at least half its convex hull, or no less than
-            // before. Paper nets can sprawl; a texture atlas pays for every empty corner of a bounding box.
+            // A join must keep the net compact enough to pack: the net, as it will lie, has to fill MIN_FILL of
+            // its smallest box — the box is all the packer can place, and the space a net leaves inside its own
+            // box is dead. Paper nets can sprawl; a texture atlas pays for every empty corner.
             let mut more = pts.clone();
             more.extend(seg.iter().map(|s| (s[0], s[1])));
-            let (before, after) = (net_area / hull_area(&pts), (net_area + uv_area(&isl[j])) / hull_area(&more));
-            if after < MIN_FILL && after < before - 1e-9 { continue; }
+            let after = (net_area + uv_area(&isl[j])) / min_box(&more);
+            if after < MIN_FILL { continue; }
             // snap the copies along every edge shared with the net, so it really is one piece
             let (mut u, mut v) = (u, v);
             for &k in &members {
@@ -306,6 +321,14 @@ fn runs(n: usize, hs: &[Hinge]) -> Vec<Vec<Hinge>> {
     out
 }
 
+/// Total UV length of the shared border, on the parent (`side` 0) or the child (1).
+fn border_uv(s: &Island, hs: &[Hinge], side: usize) -> f64 {
+    hs.iter().map(|h| {
+        let (a, b) = if side == 0 { (h.la, h.lb) } else { (h.ja, h.jb) };
+        (s.f.u[a as usize] - s.f.u[b as usize]).hypot(s.f.v[a as usize] - s.f.v[b as usize])
+    }).sum()
+}
+
 /// Length of an island's outline in 3D.
 fn perimeter(m: &Mesh, s: &Island) -> f64 {
     let lp = &s.l.loops[0];
@@ -313,16 +336,41 @@ fn perimeter(m: &Mesh, s: &Island) -> f64 {
 }
 
 
-/// Least share of its convex hull a net must fill to take another island (the Latin cross fills about 2/3).
-const MIN_FILL: f64 = 0.5;
+/// Least share of its smallest box a net must fill to take another island. The box is what the packer places —
+/// the space a net leaves inside its own box is dead — and the smallest box is the one the packer finds when it
+/// turns the net, so this is what a join really costs. A Latin cross fills half of it; a band that folds back
+/// across itself fills a third, and packs better as two islands.
+const MIN_FILL: f64 = 0.45;
 
 fn uv_area(s: &Island) -> f64 { (0..s.l.t.len()).map(|i| tri_area(s, i)).sum::<f64>() / 2. }
 
-/// Area of the convex hull (monotone chain).
-fn hull_area(pts: &[(f64, f64)]) -> f64 {
+/// Area of the smallest box round the points: rotating calipers over the hull, one turn per hull edge.
+fn min_box(pts: &[(f64, f64)]) -> f64 {
+    let h = hull(pts);
+    if h.len() < 3 { return f64::MIN_POSITIVE; }
+    let mut best = f64::MAX;
+    for i in 0..h.len() {
+        let (a, b) = (h[i], h[(i + 1) % h.len()]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l = dx.hypot(dy);
+        if l < 1e-12 { continue; }
+        let (ux, uy) = (dx / l, dy / l);
+        let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+        for &(x, y) in &h {
+            let (p, q) = (x * ux + y * uy, -x * uy + y * ux);
+            lo = (lo.0.min(p), lo.1.min(q));
+            hi = (hi.0.max(p), hi.1.max(q));
+        }
+        best = best.min((hi.0 - lo.0) * (hi.1 - lo.1));
+    }
+    best.max(f64::MIN_POSITIVE)
+}
+
+/// The convex hull of the points (monotone chain).
+fn hull(pts: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut p = pts.to_vec();
     p.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    if p.len() < 3 { return f64::MIN_POSITIVE; }
+    if p.len() < 3 { return p; }
     let turn = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
     let mut h: Vec<(f64, f64)> = Vec::with_capacity(p.len() * 2);
     for pass in 0..2 {
@@ -334,8 +382,7 @@ fn hull_area(pts: &[(f64, f64)]) -> f64 {
         h.pop();
         if pass == 0 { p.reverse(); }
     }
-    let a: f64 = (0..h.len()).map(|i| { let (x, y) = (h[i], h[(i + 1) % h.len()]); x.0 * y.1 - x.1 * y.0 }).sum();
-    (a / 2.).abs().max(f64::MIN_POSITIVE)
+    h
 }
 
 fn tri_area(s: &Island, i: usize) -> f64 {
@@ -431,4 +478,16 @@ fn inside(segs: &[Seg], p: (f64, f64)) -> bool {
         if (s[1] > p.1) != (s[3] > p.1) && p.0 < s[0] + (p.1 - s[1]) / (s[3] - s[1]) * (s[2] - s[0]) { odd = !odd; }
     }
     odd
+}
+
+/// Share of its smallest box a net fills: the measure `join_once` uses before it lets a net grow, so a net that
+/// slipped through (a book, a fill) can be judged afterwards the same way.
+pub(crate) fn net_fill(isl: &[Island], ms: &[usize]) -> f64 {
+    let (mut pts, mut area) = (Vec::new(), 0.);
+    for &i in ms {
+        let s = &isl[i];
+        for lp in &s.l.loops { for &k in lp { pts.push((s.f.u[k as usize], s.f.v[k as usize])); } }
+        area += uv_area(s);
+    }
+    area / min_box(&pts)
 }

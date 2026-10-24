@@ -1,7 +1,7 @@
 // The Rust engine's HTTP API (engine/src/main.rs), or its Tauri commands (src-tauri/src/main.rs) in the desktop app.
 // Field names mirror engine/src/lib.rs: change both together.
 import { invoke, isTauri } from '@tauri-apps/api/core';
-export interface Params { sharp: number; tol: number; seam_weight: number; join: boolean; one_atlas: boolean }
+export interface Params { sharp: number; tol: number; seam_weight: number; join: boolean; atlas: number; one_atlas: boolean }
 export interface Stats { islands: number; tris: number; flips: number; mean_stretch: number; max_stretch: number; good_area: number; overlap: number; efficiency: number; ms: number }
 /** Per corner: positions (xyz), uvs (uv). Per triangle: stretch (−1 = flipped), island (numbered across all parts),
  *  source (its triangle in the part's input soup). */

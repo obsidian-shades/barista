@@ -3,16 +3,18 @@
 // (Brush, Eraser, Bucket) stays inside, on the model and in the texture view alike; the options bar holds the current
 // tool's settings; the panel the parts (collapsible, with their channels: Substance's texture sets) and the active
 // part's Layers, as Photoshop's panel lays them out.
-import { useMemo, useState } from 'react';
-import { CHANNELS, thumbOf, type Channel, type Gen, type GenKind } from '../paint';
-import { Panel, Parts, eye } from './Dock';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { CHANNELS, thumbOf, type BlendMode, type BrushTip, type Channel, type Decal, type Fill, type Gen, type GenKind, type TexturePreset } from '../paint';
+import { MATERIAL_GROUPS, materialGroup, thumbUrl, type MaterialGroup } from '../materials';
+import { decalUrl } from '../decals';
+import { Parts, eye } from './Dock';
 import { ColorWheel } from './ColorWheel';
 import { ToolStrip, type ToolDef } from '../shell/PolyTools';
 import { ViewControls } from '../shell/Chrome';
 import { glyph, Icon } from '../ui/Icon';
 import {
-  addGenerator, bakePaint, editGen, setPaintAO, addPaintLayer, beginPaintEdit, deletePaintLayer, duplicatePaintLayer, editPaintLayer, fillPaintSelection, movePaintLayerTo, pickPaintLayer,
-  setPaint, texSet, undoPaint, useApp, type PaintTool,
+  addGenerator, addPaintLayer, assignMaterial, bakeAllPaint, bakePaint, beginPaintEdit, clearFillMask, deletePaintLayer, duplicatePaintLayer, editGen, editPaintLayer, exportPaint, fillPaintSelection, importDecal, importMaterialFiles,
+  invertFillMask, loadDecals, loadMaterials, modelDiagonal, movePaintLayerTo, pickDecal, pickPaintLayer, pickPaintPart, setDecalSize, setDecalRotation, setFillMask, setPaint, setPaintAO, setPaintTab, setPbr, setTexturePreset, texSet, undoPaint, updateDecal, updateFill, useApp, type PaintTool,
 } from '../store';
 
 const PAINT_TOOLS: Partial<Record<PaintTool, ToolDef>>[] = [
@@ -23,6 +25,10 @@ const PAINT_TOOLS: Partial<Record<PaintTool, ToolDef>>[] = [
       icon: glyph('M8 3c3.6 0 6 1.4 6 3.2S11.6 9.5 8 9.5 2 8 2 6.2 4.4 3 8 3zM4.5 9c-1 1.2-.6 2.6.8 3 .8.3.6 1.5-.3 2') },
     wand: { name: 'Select Faces', key: 'W', tip: 'Click to select a face, an island or the whole part (options bar); Shift adds, Alt takes away', run: () => setPaint({ tool: 'wand' }), on: () => true,
       icon: glyph('M2 14l8-8M10.5 1.5v2M13 4l-1.4 1.4M14.5 6.5h-2M8.5 4.5L10 6') },
+  },
+  {
+    decal: { name: 'Decal', key: 'D', tip: 'Place the mark armed in the Decals tab; click the model to place it, drag a mark to move it', run: () => setPaint({ tool: 'decal' }), on: () => true,
+      icon: glyph('M8 2.5l5.5 5.5L8 13.5 2.5 8zM8 5.2l2.8 2.8L8 10.8 5.2 8z') },
   },
   {
     brush: { name: 'Brush', key: 'B', tip: 'Paint where you drag, on the model or the texture; Alt+click picks a color', run: () => setPaint({ tool: 'brush' }), on: () => true,
@@ -49,10 +55,210 @@ const useChannels = () => {
   return part < 0 ? (['color'] as Channel[]) : texSet(part).channels;
 };
 
+/** Substance's shelf: built-in CC0 sets plus folders imported this session. Click adds a fill layer. */
+const PAGE = 36;
+
+function Materials() {
+  const list = useApp((s) => s.materials), loading = useApp((s) => s.materialsLoading), error = useApp((s) => s.materialsError);
+  const part = useApp((s) => s.parts[s.activePart]?.name ?? '—');
+  const [q, setQ] = useState(''), [group, setGroup] = useState<MaterialGroup | 'all'>('all'), [limit, setLimit] = useState(PAGE), [all, setAll] = useState(false), input = useRef<HTMLInputElement>(null);
+  useEffect(() => { loadMaterials(); }, []);
+  useEffect(() => { setLimit(PAGE); }, [q, group, list.length]);
+  const groups = useMemo(() => MATERIAL_GROUPS.flatMap(([id, name]) => {
+    const n = list.filter((m) => materialGroup(m) === id).length;
+    return n ? [[id, name, n] as const] : [];
+  }), [list]);
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return list.filter((m) => (group === 'all' || materialGroup(m) === group)
+      && (!needle || `${m.name} ${m.category} ${m.tags.join(' ')} ${m.role ?? ''}`.toLowerCase().includes(needle)));
+  }, [list, q, group]);
+  const visible = shown.slice(0, limit);
+  const add = (files: FileList | null) => {
+    if (!files?.length) return;
+    const name = (files[0] as File & { webkitRelativePath?: string }).webkitRelativePath?.split('/')[0] || 'Imported material';
+    void importMaterialFiles(name, Array.from(files));
+  };
+  return (
+    <div className="matshelf">
+      <div className="matbar">
+        <input className="matsearch" type="search" placeholder="Search materials" value={q} onChange={(e) => setQ(e.target.value)} />
+        <button title="Import a folder of PBR maps (Substance's exported textures, ambientCG, any baker)" onClick={() => input.current?.click()}>Import</button>
+      </div>
+      <div className="mathint">
+        <span className="hint">Fill goes to <b>{part}</b> · {shown.length} of {list.length}</span>
+        <label className="allparts" title="Apply to every visible part's texture set"><input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />All parts</label>
+      </div>
+      <div className="matgroups">
+        <span className="caps">Material</span>
+        <button className={group === 'all' ? 'on' : ''} onClick={() => setGroup('all')}>All</button>
+        {groups.map(([id, name, n]) => (
+          <button key={id} className={group === id ? 'on' : ''} onClick={() => setGroup(id)}>
+            {name} <span className="matcount">{n}</span>
+          </button>
+        ))}
+      </div>
+      {error && <div className="hint fix">{error}</div>}
+      {loading && !list.length && <div className="hint">Loading the shelf…</div>}
+      <div className="matgrid">
+        {visible.map((m) => (
+          <button key={m.id} className="mattile" title={`${m.name} — ${m.category}${m.notes ? `\n${m.notes}` : ''}\n${m.width}×${m.height} · ${m.license} · ${m.source}`} onMouseDown={(e) => e.preventDefault()} onClick={() => assignMaterial(m.id, all)}>
+            <img src={thumbUrl(m)} alt="" loading="lazy" draggable={false} />
+            <span>{m.name}</span>
+          </button>
+        ))}
+      </div>
+      {shown.length > limit && <button className="moremats" onClick={() => setLimit((n) => n + PAGE * 2)}>Show more · {shown.length - limit} left</button>}
+      {!loading && !shown.length && <div className="hint">No material matches.</div>}
+      <input ref={input} type="file" multiple style={{ display: 'none' }} onChange={(e) => { add(e.target.files); e.target.value = ''; }} {...({ webkitdirectory: '' } as Record<string, string>)} />
+    </div>
+  );
+}
+
+/** The decal shelf: choose a mark, then click the model. Marks are layers, so paint, masks and export behave alike. */
+function Decals() {
+  const list = useApp((s) => s.decals), loading = useApp((s) => s.decalsLoading), error = useApp((s) => s.decalsError);
+  const armed = useApp((s) => s.paint.decalAsset), size = useApp((s) => s.paint.decalSize), rotation = useApp((s) => s.paint.decalRotation), tint = useApp((s) => s.paint.decalTint);
+  const [q, setQ] = useState(''), [cat, setCat] = useState('All'), input = useRef<HTMLInputElement>(null);
+  useEffect(() => { loadDecals(); }, []);
+  const cats = useMemo(() => ['All', ...Array.from(new Set(list.map((d) => d.category)))], [list]);
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return list.filter((d) => (cat === 'All' || d.category === cat) && (!needle || `${d.name} ${d.category} ${d.tags.join(' ')}`.toLowerCase().includes(needle)));
+  }, [list, q, cat]);
+  return (
+    <div className="matshelf decalshelf">
+      <div className="matbar">
+        <input className="matsearch" type="search" placeholder="Search decals" value={q} onChange={(e) => setQ(e.target.value)} />
+        <button title="Import a transparent PNG mark from disk" onClick={() => input.current?.click()}>Import</button>
+      </div>
+      <div className="decalplace">
+        <span className="decalbadge">D</span>
+        <span className="hint">Pick a mark, then click the model. Drag it to move; size and rotation are under Layers.</span>
+      </div>
+      <div className="decalsettings">
+        <label title="Width of the next mark, as a share of the model's diagonal">Size
+          <input type="range" min={2} max={40} step={1} value={size} onChange={(e) => setDecalSize(+e.target.value)} />
+          <span className="num readout">{size}%</span>
+        </label>
+        <label title="Rotation of the next mark">Rotate
+          <input type="range" min={-180} max={180} step={5} value={rotation} onChange={(e) => setDecalRotation(+e.target.value)} />
+          <span className="num readout">{rotation}°</span>
+        </label>
+        <label title="Ink for the next mark; white leaves the image as drawn">Ink
+          <input type="color" className="cswatch" value={tint} onChange={(e) => setPaint({ decalTint: e.target.value })} />
+        </label>
+      </div>
+      <div className="matchips">
+        {cats.map((c) => <button key={c} className={c === cat ? 'on' : ''} onClick={() => setCat(c)}>{c}</button>)}
+      </div>
+      {error && <div className="hint fix">{error}</div>}
+      {loading && !list.length && <div className="hint">Loading decals…</div>}
+      <div className="decalgrid">
+        {shown.map((d) => (
+          <button key={d.id} className={`decaltile${d.id === armed ? ' on' : ''}`} title={`${d.name} — ${d.category}${d.notes ? `\n${d.notes}` : ''}\n${d.width}×${d.height} · ${d.license}`} onClick={() => pickDecal(d.id)}>
+            <span className="decalimg"><img src={decalUrl(d)} alt="" draggable={false} /></span>
+            <span>{d.name}</span>
+          </button>
+        ))}
+      </div>
+      {!loading && !shown.length && <div className="hint">No decal matches.</div>}
+      <input ref={input} type="file" accept="image/png,image/jpeg,image/webp,image/gif" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void importDecal(f); e.target.value = ''; }} />
+    </div>
+  );
+}
+
+/** The active fill layer's material, projection, scale and mask. */
+function FillSettings({ f }: { f: Fill }) {
+  const slider = (label: string, key: 'tiling' | 'tiles' | 'rotation' | 'normalStrength', min: number, max: number, step: number, title: string, fmt: (v: number) => string) => (
+    <label title={title}>{label}
+      <input type="range" min={min} max={max} step={step} value={f[key]} onPointerDown={beginPaintEdit} onChange={(e) => updateFill({ [key]: +e.target.value }, false)} />
+      <span className="num readout">{fmt(f[key])}</span>
+    </label>
+  );
+  const channel = (ch: Channel) => (
+    <label key={ch}><input type="checkbox" checked={f.channels.includes(ch)} onChange={(e) => updateFill({ channels: e.target.checked ? [...f.channels, ch] : f.channels.filter((x) => x !== ch) })} />{CHANNELS[ch].name}</label>
+  );
+  return (
+    <div className="gensettings fillsettings">
+      <label title="UV repeats inside each island; Tri-planar projects in world space and has no seams on a packed atlas">Projection
+        <span className="seg">
+          <button className={f.projection === 'uv' ? 'on' : ''} onClick={() => updateFill({ projection: 'uv' })}>UV</button>
+          <button className={f.projection === 'triplanar' ? 'on' : ''} onClick={() => updateFill({ projection: 'triplanar' })}>Tri-planar</button>
+        </span>
+      </label>
+      {f.projection === 'uv'
+        ? slider('Tiling', 'tiling', 0.25, 8, 0.25, 'How many times the material repeats inside the UVs', (v) => `${v}×`)
+        : slider('Tiles', 'tiles', 0.5, 16, 0.5, 'How many times the material crosses the model', (v) => `${v}×`)}
+      {slider('Rotate', 'rotation', -180, 180, 5, 'Rotate the projection', (v) => `${Math.round(v)}°`)}
+      {slider('Strength', 'normalStrength', 0, 2, 0.05, 'Normal map strength', (v) => `${Math.round(v * 100)}%`)}
+      <label title="Tint the material's base color">Tint
+        <input type="color" className="cswatch" value={f.tint} onPointerDown={beginPaintEdit} onChange={(e) => updateFill({ tint: e.target.value }, false)} />
+      </label>
+      {(['roughness', 'metallic'] as const).map((key) => (
+        <label key={key} className="foverride" title={`Override the map's ${key} with one value for this finish`}>
+          <input type="checkbox" checked={f[key] != null} onChange={(e) => updateFill({ [key]: e.target.checked ? (f[key] ?? 0.5) : undefined })} />
+          {key === 'roughness' ? 'Rough' : 'Metal'}
+          <input type="range" min={0} max={1} step={0.01} disabled={f[key] == null} value={f[key] ?? 0.5} onPointerDown={beginPaintEdit} onChange={(e) => updateFill({ [key]: +e.target.value }, false)} />
+          <span className="num readout">{f[key] == null ? 'map' : `${Math.round(f[key]! * 100)}%`}</span>
+        </label>
+      ))}
+      <div className="fillchans">{channel('normal')}{channel('height')}</div>
+      <div className="fillmask">
+        <button title="Make the fill visible everywhere" onClick={() => setFillMask(255)}>White</button>
+        <button title="Hide the fill everywhere" onClick={() => setFillMask(0)}>Black</button>
+        <button title="Swap what the mask hides and shows" onClick={invertFillMask}>Invert</button>
+        <button title="Remove the mask (visible everywhere)" onClick={clearFillMask}>Clear</button>
+      </div>
+      <div className="hint">Brush paints the mask white, Eraser black. Start with Black to paint the material in.</div>
+    </div>
+  );
+}
+
+/** A placed decal's projector and ink. The layer's opacity and blend modes sit above it as usual. */
+function DecalSettings({ d }: { d: Decal }) {
+  const list = useApp((s) => s.decals), span = modelDiagonal(); // eslint-disable-line react-hooks/exhaustive-deps
+  const a = list.find((x) => x.id === d.asset);
+  const pct = Math.max(1, Math.min(60, (d.width / span) * 100));
+  return (
+    <div className="gensettings decalsettings">
+      <div className="decalpreview">
+        <span className="decalimg">{a && <img src={decalUrl(a)} alt="" />}</span>
+        <span className="hint">{a?.name ?? 'Imported decal'}<br />{Math.round(pct)}% of the model · {Math.round(d.rotation)}°</span>
+      </div>
+      <label title="How wide the mark is across the model">Size
+        <input type="range" min={1} max={60} step={0.5} value={pct} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ width: span * (+e.target.value) / 100 }, false)} />
+        <span className="num readout">{Math.round(pct)}%</span>
+      </label>
+      <label title="Rotate around the surface normal">Rotate
+        <input type="range" min={-180} max={180} step={1} value={d.rotation} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ rotation: +e.target.value }, false)} />
+        <span className="num readout">{Math.round(d.rotation)}°</span>
+      </label>
+      <label title="Tint the mark's ink">Ink
+        <input type="color" className="cswatch" value={d.tint} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ tint: e.target.value }, false)} />
+      </label>
+      <label title="Roughness where the decal covers the surface">Rough
+        <input type="range" min={0} max={1} step={0.01} value={d.roughness} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ roughness: +e.target.value }, false)} />
+        <span className="num readout">{Math.round(d.roughness * 100)}%</span>
+      </label>
+      <label title="Metallic where the decal covers the surface; metal decals catch the environment">Metal
+        <input type="range" min={0} max={1} step={0.01} value={d.metallic} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ metallic: +e.target.value }, false)} />
+        <span className="num readout">{Math.round(d.metallic * 100)}%</span>
+      </label>
+      <div className="hint">With the Decal tool active, drag the mark on the model to move it. A click elsewhere adds another.</div>
+    </div>
+  );
+}
+
 /** Photoshop's options bar: the current tool and its settings. The right end is the shared ViewControls cluster:
  *  select-by (Face / Island / Part) | display | Shading. */
 export function PaintOptionsBar() {
   const p = useApp((s) => s.paint), channels = useChannels(), t = ALL[p.tool];
+  const fill = useApp((s) => {
+    if (!s.parts[s.activePart]) return false;
+    const set = texSet(s.activePart);
+    return !!set.layers[set.active]?.fill;
+  });
   const slider = (label: string, key: 'size' | 'flow' | 'hardness' | 'rough' | 'metal', min: number, max: number, step: number, title: string) => (
     <label title={title}>{label}
       <input type="range" min={min} max={max} step={step} value={p[key]} onChange={(e) => setPaint({ [key]: +e.target.value })} />
@@ -70,12 +276,24 @@ export function PaintOptionsBar() {
     <div className="options">
       <span className="toolname">{t.icon}{t.name}</span>
       {p.tool === 'bucket' && values}
-      {p.tool === 'brush' && values}
+      {p.tool === 'brush' && !fill && values}
+      {p.tool === 'brush' && fill && <span className="maskbadge" title="This layer is a fill: the brush paints its mask. Use a paint layer above it to paint color.">Mask</span>}
+      {p.tool === 'erase' && fill && <span className="maskbadge" title="Erase the fill's mask here">Mask</span>}
       {(p.tool === 'brush' || p.tool === 'erase') && <>
         {slider('Size', 'size', 0.2, 20, 0.2, 'Brush radius: a share of the model, or of the texture in the texture view ([ and ])')}
         {slider('Flow', 'flow', 0.05, 1, 0.05, 'How much each dab lays down; strokes build up')}
         {slider('Hardness', 'hardness', 0, 1, 0.05, 'How much of the radius paints at full strength before it fades')}
+        <label title="Brush tip silhouette and grain">Tip
+          <select value={p.tip} onChange={(e) => setPaint({ tip: e.target.value as BrushTip })}>
+            <option value="round">Round</option>
+            <option value="square">Square</option>
+            <option value="chalk">Chalk</option>
+            <option value="spray">Spray</option>
+            <option value="ring">Ring</option>
+          </select>
+        </label>
       </>}
+      {p.tool === 'decal' && <span className="decalhint" title="Pick the mark in the Decals tab, then click the model">Decal tool · click to place, drag a mark to move</span>}
       {p.tool === 'picker' && <span className="swatch" style={{ background: p.color }} />}
       <ViewControls />
     </div>
@@ -86,6 +304,7 @@ export function PaintOptionsBar() {
  *  reorder, double-click to rename), the new / duplicate / delete buttons along the bottom. */
 function Layers() {
   const rev = useApp((s) => s.paintRev), part = useApp((s) => (s.parts[s.activePart] ? s.activePart : -1));
+  useApp((s) => s.paintPanel); // a full recomposite is async; the panel still updates immediately
   const [drag, setDrag] = useState<number | null>(null);
   const [renaming, setRenaming] = useState<number | null>(null), [name, setName] = useState('');
   const s = part < 0 ? null : texSet(part);
@@ -99,6 +318,23 @@ function Layers() {
         <input type="range" min={0} max={1} step={0.01} value={l.opacity} onPointerDown={beginPaintEdit} onChange={(e) => editPaintLayer(s.active, { opacity: +e.target.value }, false)} />
         <span className="num readout">{Math.round(l.opacity * 100)}%</span>
       </label>
+      <label className="lopacity" title="How the active layer combines with the layers below; normals always use the whiteout blend">Blend
+        <select value={l.blend ?? 'normal'} onChange={(e) => editPaintLayer(s.active, { blend: e.target.value as BlendMode })}>
+          <option value="normal">Normal</option>
+          <option value="multiply">Multiply</option>
+          <option value="screen">Screen</option>
+          <option value="overlay">Overlay</option>
+          <option value="add">Add</option>
+        </select>
+      </label>
+      {l.fill && <details className="tsec-details fillprops">
+        <summary className="tsec"><span className="caps"><Icon name="chevron" size={11} className="chev" />Fill settings</span><span className="hint">{l.fill.projection === 'uv' ? 'UV' : 'Tri-planar'} · {l.fill.projection === 'uv' ? `${l.fill.tiling}×` : `${l.fill.tiles}×`}</span></summary>
+        <FillSettings f={l.fill} />
+      </details>}
+      {l.decal && <details className="tsec-details decalprops" open>
+        <summary className="tsec"><span className="caps"><Icon name="chevron" size={11} className="chev" />Decal settings</span><span className="hint">drag on model</span></summary>
+        <DecalSettings d={l.decal} />
+      </details>}
       {l.gen && <GenSettings g={l.gen} />}
       <ul className="layers doc thumbs" aria-label="Layers (drag to reorder, double-click to rename)">
         {s.layers.map((x, j) => (
@@ -112,9 +348,9 @@ function Layers() {
               <input className="lname-edit" value={name} autoFocus onChange={(e) => setName(e.target.value)} onBlur={commit} onClick={(e) => e.stopPropagation()}
                 onKeyDown={(e) => { if (e.key === 'Enter') commit(); else if (e.key === 'Escape') setRenaming(null); }} />
             ) : (
-              <span className="lname">{x.gen && <span className="genmark" title="Generator layer: made from the baked maps">◆ </span>}{x.name}</span>
+              <span className="lname">{x.fill && <span className="fillmark" title="Fill layer: a PBR material">▤ </span>}{x.decal && <span className="decalmark" title="Decal layer: projected onto the model">◆ </span>}{x.gen && <span className="genmark" title="Generator layer: made from the baked maps">◇ </span>}{x.name}</span>
             )}
-            <span className="ltype num">{x.opacity < 1 ? `${Math.round(x.opacity * 100)}%` : ''}</span>
+            <span className="ltype num">{x.fill ? 'Fill' : x.decal ? 'Decal' : x.opacity < 1 ? `${Math.round(x.opacity * 100)}%` : ''}</span>
           </li>
         )).reverse()}
       </ul>
@@ -163,9 +399,10 @@ function Bake() {
   return (
     <>
       <div className="tgrid two">
-        <button className="primary" disabled={!has} title="Bake ambient occlusion and curvature for every visible part (every part shades the others)" onClick={() => void bakePaint()}>{baked ? 'Bake again' : 'Bake mesh maps'}</button>
-        <label className="toggle" title="Shade the model with the baked ambient occlusion (only on screen; the textures stay as painted)"><input type="checkbox" checked={ao} disabled={!baked} onChange={(e) => setPaintAO(e.target.checked)} />Show AO</label>
+        <button className="primary" disabled={!has} title="Bake ambient occlusion and curvature for the active texture set; the other visible parts cast occlusion" onClick={() => void bakePaint()}>{baked ? 'Bake again' : 'Bake this part'}</button>
+        <button disabled={!has} title="Bake every visible texture set; slower, but smart materials on other parts need it" onClick={() => void bakeAllPaint()}>All parts</button>
       </div>
+      <label className="toggle" title="Shade the model with the baked ambient occlusion (only on screen; the textures stay as painted)"><input type="checkbox" checked={ao} disabled={!baked} onChange={(e) => setPaintAO(e.target.checked)} />Show AO</label>
       <div className="tsec"><span className="caps">Generators</span><span className="hint">{baked ? 'a new layer, inside the selection' : 'bake first'}</span></div>
       <div className="tgrid">
         {GENS.map(([k, name, title]) => <button key={k} disabled={!baked} title={title} onClick={() => addGenerator(k)}>{name}</button>)}
@@ -174,15 +411,67 @@ function Bake() {
   );
 }
 
+/** Export settings for the Maps tab: one click writes the selected engine's set. */
+function TextureExport() {
+  const preset = useApp((s) => s.texturePreset), has = useApp((s) => !!s.result);
+  return (
+    <>
+      <div className="tsec"><span className="caps">Texture export</span><span className="hint">the active part</span></div>
+      <label className="exportpreset">Preset
+        <select value={preset} onChange={(e) => setTexturePreset(e.target.value as TexturePreset)}>
+          <option value="generic">Generic PNG + ORM</option>
+          <option value="unreal">Unreal (DX normal, ORM)</option>
+          <option value="unity-hdrp">Unity HDRP (MaskMap)</option>
+          <option value="unity-urp">Unity URP (Metallic/Smoothness)</option>
+        </select>
+      </label>
+      <button className="primary wide" disabled={!has} title="Write this part's textures to Downloads" onClick={() => void exportPaint(preset)}>Export textures</button>
+      <div className="hint">The same presets are under File › Export. Includes a material.json.</div>
+    </>
+  );
+}
+
+const TABS = [['layers', 'Layers'], ['materials', 'Materials'], ['decals', 'Decals'], ['maps', 'Maps']] as const;
+
+/** One compact texture-set row instead of the full Parts tree: choose the part, toggle PBR, and keep the
+ *  tree itself collapsed below the layers for the rare times it is needed. */
+function LayersTab() {
+  const parts = useApp((s) => s.parts), active = useApp((s) => s.activePart), rev = useApp((s) => s.paintRev);
+  const channels = parts[active] ? texSet(active).channels : ['color'];
+  return (
+    <div className="vgtab layerspane">
+      <div className="setbar">
+        <span className="caps">Texture set</span>
+        <select value={active} onChange={(e) => pickPaintPart(+e.target.value)} aria-label="Active texture set">
+          {parts.map((p, i) => <option key={i} value={i}>{p.name}</option>)}
+        </select>
+        <button className="pbr" aria-pressed={channels.length > 1} title={channels.length > 1 ? 'Back to Base Color only' : 'Add Roughness, Metallic, Normal and Height'}
+          onClick={() => setPbr(active, channels.length === 1)}>{channels.length > 1 ? 'PBR' : '+ PBR'}</button>
+      </div>
+      <Layers />
+      <details className="tsec-details setlist" key={active}>
+        <summary className="tsec"><span className="caps"><Icon name="chevron" size={11} className="chev" />All texture sets</span><span className="hint">{parts.length} parts</span></summary>
+        <Parts workspace="paint" />
+      </details>
+    </div>
+  );
+}
+
 export function VanGogh() {
+  const tab = useApp((s) => s.paintTab);
+  useEffect(() => { loadDecals(); }, []);
   return (
     <aside className="dock paintdock">
-      <div className="dock-scroll">
-        <Panel title="Color"><ColorWheel /></Panel>
-        <Panel title="Parts"><Parts workspace="paint" /></Panel>
-        <Panel title="Mesh Maps"><Bake /></Panel>
+      <div className="vgcolor" title="Paint color"><ColorWheel /></div>
+      <div className="vgtabs" role="tablist" aria-label="Van Gogh panels">
+        {TABS.map(([id, name]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setPaintTab(id)}>{name}</button>)}
       </div>
-      <Panel title="Layers" grow pinned><Layers /></Panel>
+      <div className="vgbody">
+        {tab === 'layers' && <LayersTab />}
+        {tab === 'materials' && <div className="vgtab"><Materials /></div>}
+        {tab === 'decals' && <div className="vgtab"><Decals /></div>}
+        {tab === 'maps' && <div className="vgtab"><Bake /><TextureExport /></div>}
+      </div>
     </aside>
   );
 }

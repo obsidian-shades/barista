@@ -67,7 +67,13 @@ export function MenuBar() {
               <M.SubContent className="mc" sideOffset={4} alignOffset={-4}>
                 <Item onSelect={exportFbx} disabled={!has} kbd="Ctrl+Shift+E">FBX (Blender, Substance Painter)</Item>
                 <Item onSelect={exportObjParts} disabled={!has}>OBJ per part (ZIP)</Item>
-                {paint && <><Sep /><Item onSelect={() => void exportPaint()} disabled={!has}>Textures (PNG per channel)</Item></>}
+                {paint && <>
+                  <Sep />
+                  <Item onSelect={() => void exportPaint('generic')} disabled={!has}>Textures (PNG + ORM)</Item>
+                  <Item onSelect={() => void exportPaint('unreal')} disabled={!has}>Textures for Unreal (DX normal, ORM)</Item>
+                  <Item onSelect={() => void exportPaint('unity-hdrp')} disabled={!has}>Textures for Unity HDRP (MaskMap)</Item>
+                  <Item onSelect={() => void exportPaint('unity-urp')} disabled={!has}>Textures for Unity URP (Metallic/Smoothness)</Item>
+                </>}
               </M.SubContent>
             </M.Portal>
           </M.Sub>

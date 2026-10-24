@@ -1,7 +1,7 @@
 use barista::{check, repack, shapes, unwrap, unwrap_soup, Params, PartIn};
 
 // charting tests count islands before they're joined into nets
-const CHARTS: Params = Params { sharp: 45., tol: 0.08, seam_weight: 0.1, join: false, one_atlas: false };
+const CHARTS: Params = Params { sharp: 45., tol: 0.08, seam_weight: 0.1, join: false, atlas: 0., one_atlas: false };
 
 #[test]
 fn core_shapes_unwrap_perfectly() {

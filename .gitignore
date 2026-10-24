@@ -10,4 +10,10 @@ src-tauri/target
 src-tauri/gen/schemas
 out
 *.zip
+__pycache__/
+*.pyc
+# PBR material maps are fetched locally (tools/fetch-materials.mjs); keep the manifest and previews
+public/materials/*/
+# Purchased pack: generated locally from the .blend files, never redistributed
+public/materials-pack/
 .claude/settings.local.json

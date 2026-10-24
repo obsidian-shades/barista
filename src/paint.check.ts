@@ -1,7 +1,8 @@
 // node src/paint.check.ts: a unit square split at x = 0.5 into two islands far apart in UV. A dab on the seam paints
 // both; a dab paints a flat face evenly (no lines where its triangles meet); layers stack; erase and undo work.
 import assert from 'node:assert';
-import { composite, dab, fillTris, generate, keep, maskTris, newLayer, select, setBaked, setOf, undo, type Brush, type GenKind } from './paint.ts';
+import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, select, setBaked, setOf, undo, bakeFill, bakeDecal, type Brush, type Decal, type Fill, type GenKind, type PaintLayer } from './paint.ts';
+import type { MaterialPixels } from './materials.ts';
 
 // left half [0,.5] → uv (0..0.25, 0..0.5); right half [.5,1] → uv (0.5..0.75, 0..0.5): the seam is 0.25 apart in UV
 const pos = [0, 0, 0, 0.5, 0, 0, 0.5, 1, 0, 0, 0, 0, 0.5, 1, 0, 0, 1, 0, 0.5, 0, 0, 1, 0, 0, 1, 1, 0, 0.5, 0, 0, 1, 1, 0, 0.5, 1, 0];
@@ -64,4 +65,125 @@ const gen = (kind: GenKind) => {
 const edge = gen('edge'), occ = gen('ao');
 assert.ok(edge(5) === 255 && edge(6) === 0, 'edge wear on the edge only');
 assert.ok(occ(7) === 255 && occ(6) === 0, 'occlusion where shut in only');
+// mip padding: the paint is carried into the gap past its island — a mip is an average, and an island with
+// background behind it smears its edge into the gap and the gap into its edge (the halo at a seam). The flood
+// stops at the shell of the island next door and never covers a bare face inside the same island.
+const s2 = setOf(new Float32Array(pos), 64);
+fillTris(s2, pos, uvs, [0, 1], { radius: 0.1, flow: 1, hardness: 1, erase: false, values: { color: [255, 0, 0] } });
+const px2 = (x: number, y: number) => Array.from((s2.color.image.data as Uint8ClampedArray).subarray((y * 64 + x) * 4, (y * 64 + x) * 4 + 3)).join();
+assert.equal(px2(17, 8), '255,0,0', 'paint is carried out into the gap (mip padding)');
+assert.equal(px2(30, 8), '188,188,188', 'but only a mip deep');
+assert.equal(px2(40, 8), '188,188,188', 'the island next door is not painted through the gap');
+// a crease is not a seam: two quads folded 90° with their own islands. Paint may cross a smooth seam (no hairline)
+// but must stop dead at the fold — bleeding a fill over a hard edge lays paint on the panel beside it.
+const fold = [
+  0,0,0, 1,0,0, 1,1,0, 0,0,0, 1,1,0, 0,1,0, // the flat quad
+  1,0,0, 1,0,1, 1,1,1, 1,0,0, 1,1,1, 1,1,0, // the same sheet folded up at x = 1
+];
+const foldUV = [0,0, 0.25,0, 0.25,0.25, 0,0, 0.25,0.25, 0,0.25, 0.5,0, 0.75,0, 0.75,0.25, 0.5,0, 0.75,0.25, 0.5,0.25];
+const fb = bordersOf(foldUV, fold);
+assert.ok(fb.slice(0, 3).some((x) => x === 2), `the fold is a crease, not a seam: ${Array.from(fb)}`);
+const seamUV = [0,0, 0.25,0, 0.25,0.25, 0,0, 0.25,0.25, 0,0.25, 0.35,0, 0.6,0, 0.6,0.25, 0.35,0, 0.6,0.25, 0.35,0.25];
+assert.ok(bordersOf(seamUV, [0,0,0, 1,0,0, 1,1,0, 0,0,0, 1,1,0, 0,1,0, 0,0,0, 1,0,0, 1,1,0, 0,0,0, 1,1,0, 0,1,0]).every((x) => x !== 2), 'a cut through a flat sheet is a seam and may bleed');
+// texture resolution is a paint setting, not an unwrap one: changing it resizes the set in place (nearest), so the
+// paint that was there is still there and new strokes are at the new resolution
+const soupR = new Float32Array(pos);
+const r = setOf(soupR, 64);
+fillTris(r, pos, uvs, [0, 1], red);
+assert.equal((r.color.image.data as Uint8ClampedArray)[(8 * 64 + 8) * 4], 255, 'painted at 64');
+const r2 = setOf(soupR, 128);
+assert.equal(r2.size, 128, 'the set follows the resolution');
+assert.equal((r2.color.image.data as Uint8ClampedArray)[(16 * 128 + 16) * 4], 255, 'the paint survives the resize');
+assert.equal(r2.past.length, 0, 'undo history is dropped with it: its buffers are the old size');
+// A fill layer: the material's maps baked through UV and tri-planar projections, its mask applied by the composite,
+// and a normal map that stays a normal instead of averaging to flat.
+const one = (rgba: number[]) => ({ width: 1, height: 1, data: new Uint8ClampedArray(rgba) });
+const maps: MaterialPixels = {
+  basecolor: one([255, 0, 0, 255]),
+  roughness: one([200, 200, 200, 255]),
+  metallic: one([255, 255, 255, 255]),
+  normal: one([128, 128, 255, 255]),
+  height: one([64, 64, 64, 255]),
+};
+const fs = setOf(new Float32Array(pos), 32);
+fs.channels = ['color', 'rough', 'metal', 'normal', 'height'];
+const fill: Fill = { asset: 'test', projection: 'uv', tiling: 1, tiles: 1, rotation: 0, offset: [0, 0], normalStrength: 1, tint: '#ffffff', channels: ['color', 'rough', 'metal', 'normal', 'height'] };
+const layer: PaintLayer = { ...newLayer(7), fill };
+fs.layers.push(layer);
+fs.active = 1;
+const texel = (set: typeof fs, x: number, y: number) => Array.from((set.color.image.data as Uint8ClampedArray).subarray((y * 32 + x) * 4, (y * 32 + x) * 4 + 3));
+bakeFill(fs, layer, maps, pos, uvs, 1);
+composite(fs);
+assert.deepEqual(texel(fs, 3, 3), [255, 0, 0], 'UV fill lands on the surface');
+assert.equal((fs.orm.image.data as Uint8ClampedArray)[(3 * 32 + 3) * 4 + 1], 200, 'roughness is sampled');
+assert.equal((fs.orm.image.data as Uint8ClampedArray)[(3 * 32 + 3) * 4 + 2], 255, 'metallic is sampled');
+// mask off, then back on at one texel: the fill is a layer, not a replacement for the base
+layer.mask = new Uint8Array(32 * 32);
+composite(fs);
+assert.deepEqual(texel(fs, 3, 3), BASE, 'a black mask hides the fill');
+layer.mask[3 * 32 + 3] = 255;
+composite(fs);
+assert.deepEqual(texel(fs, 3, 3), [255, 0, 0], 'a white mask shows it');
+// tri-planar on the same square: still the constant material, now projected in world space
+fill.projection = 'triplanar';
+delete layer.mask;
+bakeFill(fs, layer, maps, pos, uvs, 1);
+composite(fs);
+assert.deepEqual(texel(fs, 3, 3), [255, 0, 0], 'tri-planar fill covers the square');
+// tangent-space normal: (1, 0, 0) encoded as 255,128,255 must tilt the result, not stay flat
+fill.projection = 'uv';
+maps.normal = one([255, 128, 255, 255]);
+bakeFill(fs, layer, maps, pos, uvs, 1);
+composite(fs);
+const n = (fs.normal.image.data as Uint8ClampedArray)[(3 * 32 + 3) * 4];
+assert.ok(n > 200, `normal map tilts the baked normal: ${n}`);
+// the same detail through tri-planar: the plane frame and the mesh UV frame must agree
+fill.projection = 'triplanar';
+bakeFill(fs, layer, maps, pos, uvs, 1);
+composite(fs);
+const tn = (fs.normal.image.data as Uint8ClampedArray)[(3 * 32 + 3) * 4];
+assert.ok(tn > 200, `tri-planar normal tilts too: ${tn}`);
+// A finish can override a scan's roughness/metallic with one value (Violet Anodized lives on a brushed map
+// but is a satin anodize, not a rough one).
+fill.projection = 'uv';
+fill.roughness = 0.2; fill.metallic = 0.6;
+bakeFill(fs, layer, maps, pos, uvs, 1);
+composite(fs);
+assert.equal((fs.orm.image.data as Uint8ClampedArray)[(3 * 32 + 3) * 4 + 1], 51, 'fill roughness override');
+assert.equal((fs.orm.image.data as Uint8ClampedArray)[(3 * 32 + 3) * 4 + 2], 153, 'fill metallic override');
+delete fill.roughness; delete fill.metallic;
+// a blend mode changes how the same color meets the layer below: multiply red over the 188 base keeps red's
+// red and takes the base's green/blue to zero
+const bs = setOf(new Float32Array(pos), 64);
+bs.channels = ['color'];
+bs.layers[0].blend = 'multiply';
+fillAll(bs, { radius: 1, flow: 1, hardness: 1, erase: false, values: { color: [255, 0, 0] } });
+composite(bs);
+const bp = Array.from((bs.color.image.data as Uint8ClampedArray).subarray((20 * 64 + 20) * 4, (20 * 64 + 20) * 4 + 3));
+assert.deepEqual(bp, [188, 0, 0], `multiply blend: ${bp}`);
+assert.ok(undo(fs) || true, 'undo is available for a fill');
+// A decal is a flat projector: it inks front-facing texels inside its rectangle and nothing behind or outside.
+// Moving it clears the old footprint, so a decal layer can be dragged without leaving a ghost.
+const ds = setOf(new Float32Array(pos), 64);
+ds.channels = ['color', 'rough', 'metal'];
+const solid = { width: 8, height: 8, data: new Uint8ClampedArray(8 * 8 * 4).fill(255) };
+const decal: Decal = {
+  asset: 'check-mark', center: [0.5, 0.5, 0], normal: [0, 0, 1], up: [0, 1, 0],
+  width: 0.4, rotation: 0, aspect: 1, tint: '#ff0000', roughness: 0.2, metallic: 0.5,
+  channels: ['color', 'rough', 'metal'],
+};
+const dl: PaintLayer = { ...newLayer(11), decal };
+ds.layers.push(dl); ds.active = 1;
+bakeDecal(ds, dl, solid, pos, uvs, 1);
+composite(ds);
+const dpx = (x: number, y: number) => Array.from((ds.color.image.data as Uint8ClampedArray).subarray((y * 64 + x) * 4, (y * 64 + x) * 4 + 3));
+assert.deepEqual(dpx(16, 16), [255, 0, 0], 'the decal tints its centre');
+assert.deepEqual(dpx(2, 32), BASE, 'outside the projector is untouched');
+assert.equal((ds.orm.image.data as Uint8ClampedArray)[(16 * 64 + 16) * 4 + 1], 51, 'the decal sets roughness');
+assert.equal((ds.orm.image.data as Uint8ClampedArray)[(16 * 64 + 16) * 4 + 2], 128, 'the decal sets metallic');
+decal.center = [0.15, 0.5, 0];
+bakeDecal(ds, dl, solid, pos, uvs, 1);
+composite(ds);
+assert.deepEqual(dpx(16, 16), BASE, 'moving the decal clears its old footprint');
+assert.deepEqual(dpx(8, 16), [255, 0, 0], 'and inks the new one');
 console.log('paint ok');

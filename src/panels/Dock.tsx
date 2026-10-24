@@ -33,6 +33,8 @@ function UnwrapSettings() {
         <span><Field disabled={busy} min={0} max={5} step={0.05} value={params.seam_weight} aria-label="Seam cost" onCommit={(v) => setParams({ seam_weight: Math.max(0, v) })} /></span></label>
       <label className="toggle" title="Hang islands off each other along shared edges wherever they fit without overlapping: a cube becomes its cross.">
         <input type="checkbox" disabled={busy} checked={params.join} onChange={(e) => setParams({ join: e.target.checked })} />Join into nets</label>
+      <label title="How far the atlas may break a net up again. A net saves seams but spends its own bounding box; one that fills under half of it (a band folding back across itself) wastes more texture than the seam is worth. 0 keeps every net, 1 breaks every net that packs better apart.">Atlas over nets
+        <span><Field disabled={busy} min={0} max={1} step={0.1} value={params.atlas} aria-label="Atlas over nets" onCommit={(v) => setParams({ atlas: Math.min(1, Math.max(0, v)) })} /></span></label>
       <label className="toggle" title="Pack every part into one shared UV square. Off: each part gets its own square.">
         <input type="checkbox" disabled={busy} checked={params.one_atlas} onChange={(e) => setParams({ one_atlas: e.target.checked })} />One atlas</label>
       <label className="toggle" title="After a Cut, Stitch or Unwrap Selection: turn the islands it made so their straight edges run along U or V.">
@@ -76,7 +78,14 @@ export function Parts({ workspace = 'uv' }: { workspace?: 'uv' | 'doc' | 'paint'
   const isl = result ? islandsOf(result) : [], picked = new Set(layerSel);
   const seams = (parts[activePart]?.marked.length ?? 0) / 6;
   const list = useRef<HTMLUListElement>(null);
-  useEffect(() => { if (paint) list.current?.querySelector('.layer.active')?.scrollIntoView({ block: 'nearest' }); }, [paint, activePart, open, paintParts]);
+  // Scroll only the Parts list, never its ancestors: scrollIntoView also moves the dock and hides Materials/Color.
+  useEffect(() => {
+    const box = list.current, el = box?.querySelector<HTMLElement>('.layer.active');
+    if (!paint || !box || !el) return;
+    const r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
+    if (r.top < b.top) box.scrollTop += r.top - b.top;
+    else if (r.bottom > b.bottom) box.scrollTop += r.bottom - b.bottom;
+  }, [paint, activePart, open, paintParts]);
   const counts = (p: (typeof parts)[number], n: number) => {
     const tris = p.soup.length / 9, seams = p.seams.length / 6, marked = p.marked.length / 6;
     return `${tris.toLocaleString()} ${tris === 1 ? 'triangle' : 'triangles'} · ${n} ${n === 1 ? 'island' : 'islands'} · ${seams} ${seams === 1 ? 'seam' : 'seams'}${marked ? ` (${marked} marked)` : ''}`;
@@ -88,7 +97,7 @@ export function Parts({ workspace = 'uv' }: { workspace?: 'uv' | 'doc' | 'paint'
         <div className="partshead">
           <span className="caps">Texture set</span>
           <span className="hint">{parts[activePart]?.name}</span>
-          <button className="pbr" aria-pressed={activeChannels.length > 1} title={activeChannels.length > 1 ? 'Back to Base Color only' : 'Add Roughness and Metallic (PBR metal/rough, what glTF, Unity and Unreal read)'}
+          <button className="pbr" aria-pressed={activeChannels.length > 1} title={activeChannels.length > 1 ? 'Back to Base Color only' : 'Add Roughness, Metallic, Normal and Height (PBR metal/rough, what glTF, Unity and Unreal read)'}
             onClick={() => setPbr(activePart, activeChannels.length === 1)}>{activeChannels.length > 1 ? 'PBR' : '+ PBR'}</button>
         </div>
       )}

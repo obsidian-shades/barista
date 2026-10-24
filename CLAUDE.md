@@ -112,8 +112,11 @@ no checker toggle). Panels collapse from their headers; Van Gogh pins Layers to 
 Layout (Photoshop / espresso-level-designer): options bar on top (`PolyOptionsBar`: current tool, its settings `docOpts` = slide
 amount, Limited Dissolve angle, Relax rounds, `fixNote`, then the shared ViewControls), tool strip on the left (`PolyToolStrip`, `shell/PolyTools.tsx`:
 line glyphs in Spectrum's stroke weight, grouped clean up / shape / edge loops; a click runs the tool and makes it `docTool`; dimmed
-until the selection fits), the panel on the right for looking only. Panel order: Health, Mesh Check (non-manifold / flipped / zero-area / duplicate faces, open edges: `polygeo.meshCheck`, each selectable),
-Polygons (census, poles = inside vertices with 3 or 5+ polygon edges, `polygeo.poles`, dots on the model).
+until the selection fits), the panel on the right for looking only. Panel order: Health (verdict + rules grouped broken / bake / craft,
+`healthVerdict`), Mesh Check (non-manifold edges and vertices, flipped faces, inside-out closed shells, zero-area / duplicate faces,
+open edges: `polygeo.meshCheck`, each selectable), Polygons (census, low/high poles = inside vertices below/above the regular valence
+for the part's dominant polygon kind — 4 for quads, 6 for triangles — `polygeo.poles`, dots on the model) and one line of topology
+(`meshTopology`: shells, closed, genus, χ, borders).
 Even Out (strip, was Relax; `polygeo.relax`): smart Laplacian: inside vertices toward their polygon-edge neighbours' middle, put back
 on the original surface; vertices on a feature line (selection border, open edge, crease > 35°) slide along their own two edges of it,
 corners stay; a move is kept only if no polygon round the vertex gets worse by Health's shape rules (`src/quality.ts`, shared with
@@ -129,21 +132,26 @@ rails), Space / Straighten (snapped to the surface) / Circle, Grid Fill (an even
 patch). They share `rebuild` (replaced polygons re-triangulated by ear clipping, a neighbour's triangle on a new mid-edge vertex split).
 Selections cross between the output and the soup through `polyedit.link` (nearest corner per source triangle). Limited Dissolve (5°)
 is a regroup. Poly Doc view (`docView`, the Display control, Z pie or View › Display: hold Z and let go toward an item, or tap Z and click): Wire (flat polygons +
-wireframe), Smooth (Auto Smooth within Sharp edges, no wireframe), Health (`src/health.ts`, `healthReport`: named rules
-per polygon, each with its green limit, why and source (`RULES`): broken mesh (non-manifold, flipped, zero-area, duplicate: red);
-Sandia CUBIT / Verdict shape metrics with their acceptable ranges as the green limit: triangle min angle ≥ 30° / max ≤ 120° (CUBIT
-says 90°, that's for simulation), quad scaled Jacobian ≥ 0.5, skew ≤ 0.5, taper ≤ 0.7, warpage ≥ 0.9, aspect ≤ 4 (only ever yellow:
-bevel strips are long by design); Polycount practice: a bent n-gon, a 3/5 pole where the surface bends, a 6+ pole; density
-(`polygeo.curveEdges`, at the whole model's scale, `setModelSize` on load): Faceted curve = chord error (narrower width across
-a smooth 1–45° edge × bend / 8) red from 0.1% to 0.4% of the model, only between faces of like width (a chamfer or bevel beside
-a wide face is drawn that way), cure Add Loops on Curve (`addLoops`: a loop through each faceted quad, `loopCut` with its points
-on the arc there, kept in the plane of any polygon on the edge not being rounded, so caps and faces beside it stay flat); Over-dense curve (yellow): a run of segments each under 0.002% off (wasted on screen, a normal map carries it). A polygon's colour
-is its worst rule on all its triangles (one face, one colour). The panel lists the rules that flag anything (red / yellow counts,
-click selects them); `polyContextMenu` (right-click in Poly Doc, `shell/PolyTools.tsx`) selects the face under the mouse and shows its
+wireframe), Smooth (Auto Smooth within Sharp edges, no wireframe), Health (`src/health.ts`, `healthReport`: the pre-bake check,
+not a simulation report. Three layers: **Broken** (non-manifold edges and vertices, whole inside-out closed shells by signed
+volume, flipped, zero-area, duplicate, tangled outline: red, score 1); **Bake** (folded or >18° non-planar quads, bent n-gons:
+a baker and the engine may triangulate them differently, so MikkTSpace tangents disagree and a normal map shows black seams;
+triangulate before baking); **Craft** (needle triangles under 6°, quad skew > 0.7, taper > 0.8, a faceted curve where the
+silhouette turns > 32° between segments — yellow only, capped at 0.55 — and over-dense curves under 1° per segment). The shape
+limits are Sandia CUBIT / Verdict moved to their game-art ends: 30–60° min angle and 90° max are simulation limits; a pole fan
+or a cylinder cap cannot meet them and shades fine. Sampling is scale-free (`polygeo.curveEdges`: turn, chord sagitta and local
+radius, not a share of the model), and only curves whose radius is > 0.2% of the model and whose two sides are of like width are
+judged (a chamfer or bevel beside a wide face is drawn that way). Poles are topology, not defects: their indices must sum to the
+Euler characteristic (Poincaré–Hopf), so a torus may have none and a sphere must have curvature; Health does not colour them, the
+census reports low/high poles, genus, χ and borders (`meshTopology`). A polygon's colour is its worst rule on all its triangles
+(one face, one colour). The panel groups the rules that flag anything (broken / bake / craft, red / yellow counts, click selects
+them); `polyContextMenu` (right-click in Poly Doc, `shell/PolyTools.tsx`) selects the face under the mouse and shows its
 diagnosis, the cures for its rules (`CURES`: Triangulate, Merge into Neighbour, Collapse Shortest Edge, Relax Around), only the tools
 that would do something there, and Select every-like-this. Instead of Unfold; Edge / UV / Unwrap menus, the seam right-click and UV keys
-are off there. Checks: `node src/polygeo.check.ts` (every tool on small grids). The engine's test cube is half wound inward (the engine
-fixes winding), so Mesh Check rightly reports 96 flipped there.
+are off there. Checks: `node src/polygeo.check.ts` (every tool on small grids), `node src/health.check.ts` (a quad and a triangulated
+torus are all green; pole fans, long flat strips and 12-sided curves pass; defects and inside-out shells are still caught). The engine's
+test cube is half wound inward (the engine fixes winding), so Mesh Check rightly reports 96 flipped there. Design notes and sources:
+`docs/health.md`.
 Export (FBX and OBJ) writes the polygons: `files.faceLoops` joins each polygon's triangles back into one loop in winding order; a
 polygon with a seam inside (its corners would need two UVs) or a hole in its outline (dropped degenerate triangles) goes out as
 triangles. Normals: the file's own per corner (`polyedit.outNormals`; Move carries them, `carryNormals`; a rebuilding
@@ -153,7 +161,7 @@ Agents: `node tools/polydoc.ts <in.fbx> [--detail] [--part NAME] [--do OP]... [-
 back-to-back zero-area flaps both go), flip (n-gons with earcut slivers re-triangulated by Lawson flips), delpoly:IDs (internal
 caps), weld:DIST, degen, defacet (Add Loops on Curve), relax[:RULES] (Relax Around), tri:RULES, quads, dissolve. Each is guarded per part (no more red faces,
 no new open / non-manifold edges). `-o` unwraps through the running engine and writes the FBX like Export. Usual recipe:
-report with --detail → clean, flip → defacet → relax:quadSkew,quadTaper,quadJacobian,poleBig,triMin,faceted → tri:quadWarp,ngonBent,… → -o
+report with --detail → clean, flip → defacet (faceting is a hint now, so it takes every flagged quad) → relax:quadSkew,quadTaper,quadJacobian,triMin → tri:quadWarp,ngonBent,… → -o
 (which also lists polygons that still had to go out as triangles, and why).
 Next: fixes that move geometry (relax, slide); later a sculpt
 decimator and retopo on a high poly.
@@ -199,5 +207,18 @@ pane. Unpainted Base Color is Substance's 0.5 linear (188). Baked AO and Curvatu
 the part (texture view). Generators (smart masks: Edge Wear, Dirt, Occlusion) are layers (`gen`) whose coverage comes
 from the bake (`generate`: band from the edge distance, AO, value noise for grunge, amount / softness threshold, the
 selection at creation as `clip`); their settings sit above the layer list and make the layer again live.
-Check: `node src/paint.check.ts`. Next: layer masks, blend modes, normal / height (and baking from a high poly),
-packed exports (Unreal ORM, Unity mask map).
+Materials/Decals: `src/materials.ts` loads the 4,981-material purchased pack (`public/materials-pack`) as the
+shelf; the 50-set `public/materials` core is only a fallback when the pack is missing. Clicking a shelf tile adds a
+tri-planar fill layer. Browse is nine visible **Material** chips (Metal, Wood, Stone & Masonry, Tile & Ceramic,
+Concrete & Ground, Fabric & Leather, Polymer & Carbon, Organic & Food, Other) plus search, paging and **All parts**;
+the precise source category stays in the tile tooltip and search text. The core/pack switch, role filter and
+smart-finish rows were removed; `smartmaterials.ts` remains in the codebase but is not exposed. `src/decals.ts` +
+`public/decals/` hold 20 original CC0 transparent marks; the Decals tab arms one and the Decal tool D places it. A
+decal is a `PaintLayer.decal` (`bakeDecal` in `paint.ts`): a tangent projector at the clicked point, front-facing and
+depth-limited, baked to BaseColor/Roughness/Metallic so masks, blend modes and export behave like any layer; drag it
+on the model to move, or use Size/Rotate/Ink/Rough/Metal under Layers. A purchased 4,981-material Blender pack is
+installed locally at `public/materials-pack` (git-ignored, excluded from `dist`): `tools/extract-pack.ps1` runs
+`blender-extract.py` over the `.blend` files into `D:\barista-pack-raw`, then `tools/build-pack.py` caches 1K maps
+and writes the pack manifest; `tools/pack-thumbs.py` renders the lit PBR sphere previews, and paging handles the size. `node
+src/paint.check.ts` covers projection, finish overrides and old-footprint clearing. Next: layer masks, blend modes,
+normal / height (and baking from a high poly), packed exports (Unreal ORM, Unity mask map).
