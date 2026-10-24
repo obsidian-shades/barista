@@ -1,7 +1,7 @@
 // node src/paint.check.ts: a unit square split at x = 0.5 into two islands far apart in UV. A dab on the seam paints
 // both; a dab paints a flat face evenly (no lines where its triangles meet); layers stack; erase and undo work.
 import assert from 'node:assert';
-import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, select, setBaked, setOf, undo, bakeFill, bakeDecal, type Brush, type Decal, type Fill, type GenKind, type PaintLayer } from './paint.ts';
+import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, blendOf, DEFAULT_BLEND, type Brush, type Decal, type Fill, type GenKind, type PaintLayer } from './paint.ts';
 import type { MaterialPixels } from './materials.ts';
 
 // left half [0,.5] → uv (0..0.25, 0..0.5); right half [.5,1] → uv (0.5..0.75, 0..0.5): the seam is 0.25 apart in UV
@@ -156,7 +156,7 @@ delete fill.roughness; delete fill.metallic;
 // red and takes the base's green/blue to zero
 const bs = setOf(new Float32Array(pos), 64);
 bs.channels = ['color'];
-bs.layers[0].blend = 'multiply';
+bs.layers[0].blend = { color: 'multiply' };
 fillAll(bs, { radius: 1, flow: 1, hardness: 1, erase: false, values: { color: [255, 0, 0] } });
 composite(bs);
 const bp = Array.from((bs.color.image.data as Uint8ClampedArray).subarray((20 * 64 + 20) * 4, (20 * 64 + 20) * 4 + 3));
@@ -186,4 +186,53 @@ bakeDecal(ds, dl, solid, pos, uvs, 1);
 composite(ds);
 assert.deepEqual(dpx(16, 16), BASE, 'moving the decal clears its old footprint');
 assert.deepEqual(dpx(8, 16), [255, 0, 0], 'and inks the new one');
+// Blends are per channel, as Substance Painter's stack holds them: a grunge layer can multiply Base Color and still
+// lay its roughness straight down, and a channel nobody set keeps Substance's default.
+const pc: PaintLayer = { ...newLayer(12), blend: { color: 'multiply' } };
+assert.equal(blendOf(pc, 'color'), 'multiply', 'the channel that was set');
+assert.equal(blendOf(pc, 'rough'), DEFAULT_BLEND.rough, 'the others keep their default');
+assert.equal(DEFAULT_BLEND.height, 'add', 'height adds by default (Linear Dodge)');
+assert.equal(DEFAULT_BLEND.color, 'normal', 'colour replaces by default');
+// Height adds around mid grey (127/128 is zero), so stacked height detail grows instead of replacing the layer below.
+const hs = setOf(new Float32Array(pos), 32);
+hs.channels = ['height'];
+hs.layers.push(newLayer(2)); hs.active = 1;
+const hB = { radius: 1, flow: 1, hardness: 1, erase: false, values: { height: [160] } };
+fillAll(hs, hB); composite(hs);
+const hAt = () => (hs.height.image.data as Uint8ClampedArray)[(10 * 32 + 10) * 4];
+const h1 = hAt();
+hs.layers.push(newLayer(3)); hs.active = 2;
+fillAll(hs, hB); composite(hs);
+assert.ok(hAt() > h1 + 20, `a second height layer adds (${h1} → ${hAt()})`);
+hs.layers[2].blend = { height: 'normal' }; composite(hs);
+assert.equal(hAt(), h1, 'an explicit Normal on height replaces instead');
+// Undo keeps the state it took back, so a Ctrl+Shift+Z can put it again — a stroke, back, and forward.
+const us = setOf(new Float32Array(pos), 64);
+keep(us);
+dab(us, pos, uvs, [0.5, 0.5, 0], red);
+const uAt = () => Array.from((us.color.image.data as Uint8ClampedArray).subarray((16 * 64 + 16) * 4, (16 * 64 + 16) * 4 + 3)).join();
+assert.equal(uAt(), '255,0,0', 'painted');
+assert.ok(undo(us));
+assert.equal(uAt(), BASE.join(), 'undone');
+assert.ok(redo(us));
+assert.equal(uAt(), '255,0,0', 'redone');
+assert.equal(redo(us), null, 'and nothing left to redo');
+// Upload ranges: a banded pass must leave every band pending, because three uploads what is pending at the next draw
+// and only then clears it. Clearing per call (as this did) left the GPU with the last band only — a stroke that showed
+// in stripes, and the patchwork an undo left behind.
+const up = setOf(new Float32Array(pos), 32);
+up.color.clearUpdateRanges();
+composite(up, 0, 0, 31, 3, undefined, false);
+const rows1 = up.color.updateRanges.length;
+composite(up, 0, 8, 31, 11, undefined, false);
+assert.ok(rows1 > 0 && up.color.updateRanges.length > rows1, `both bands stay pending (${rows1} → ${up.color.updateRanges.length})`);
+composite(up);
+assert.equal(up.color.updateRanges.length, 0, 'a full composite asks for one whole-texture upload');
+// A selection step shares the layers: an island pick is document-wide, so copying every part's buffers (hundreds of
+// megabytes at 4K) per click is what made a wand click feel like a save point.
+const ss = setOf(new Float32Array(pos), 32);
+fillTris(ss, pos, uvs, [0], red);
+const painted0 = ss.layers[0].px.color;
+select(ss, maskTris(ss, pos, uvs, [1]), 'set');
+assert.equal(ss.past[ss.past.length - 1].layers[0].px.color, painted0, 'a selection step does not copy the layer buffers');
 console.log('paint ok');

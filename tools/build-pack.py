@@ -40,22 +40,7 @@ def atomic_write(path: Path, data: bytes):
             tmp.unlink(missing_ok=True)
 
 
-def process_map(raw: Path, kind: str, channel: str | None, out: Path, size: int) -> dict | None:
-    try:
-        im = Image.open(raw)
-        im.load()
-    except Exception:
-        return None
-    if channel in ('r', 'g', 'b', 'a'):
-        im = im.convert('RGB').getchannel(channel.upper()) if channel != 'a' else im.convert('RGBA').getchannel('A')
-    elif kind in ('roughness', 'metallic', 'height', 'ao'):
-        im = im.convert('L')
-    else:
-        im = im.convert('RGB')
-    w, h = im.size
-    scale = min(1.0, size / max(w, h))
-    if scale < 1:
-        im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.Resampling.LANCZOS)
+def save_map(im: Image.Image, kind: str, out: Path) -> dict:
     quality, subsampling = (92, 0) if kind == 'normal' else (88, 2)
     buf = io.BytesIO()
     im.save(buf, 'JPEG', quality=quality, subsampling=subsampling)
@@ -64,6 +49,38 @@ def process_map(raw: Path, kind: str, channel: str | None, out: Path, size: int)
     rel = f'assets/{digest}.jpg'
     atomic_write(out / rel, data)
     return {'path': '/' + out.name + '/' + rel, 'width': im.width, 'height': im.height, 'bytes': len(data)}
+
+
+def solid_map(kind: str, value, out: Path) -> dict:
+    """A constant Principled input as a 4 px map, so the painter and the thumbnails need no special case."""
+    if isinstance(value, str):
+        im = Image.new('RGB', (4, 4), tuple(int(value[i:i + 2], 16) for i in (1, 3, 5)))
+    else:
+        im = Image.new('L', (4, 4), round(max(0.0, min(1.0, float(value))) * 255))
+    return save_map(im, kind, out)
+
+
+def process_map(raw: Path, kind: str, channel: str | None, out: Path, size: int, dx: bool = False) -> dict | None:
+    try:
+        im = Image.open(raw)
+        im.load()
+    except Exception:
+        return None
+    if channel in ('r', 'g', 'b', 'a'):
+        im = im.convert('RGB').getchannel(channel.upper()) if channel != 'a' else im.convert('RGBA').getchannel('A')
+    elif kind in ('roughness', 'metallic', 'height', 'ao', 'opacity'):
+        im = im.convert('L')
+    else:
+        im = im.convert('RGB')
+    if kind == 'normal' and dx:
+        # Store every normal as OpenGL: DirectX maps differ only in green.
+        r, g, b = im.split()
+        im = Image.merge('RGB', (r, ImageOps.invert(g), b))
+    w, h = im.size
+    scale = min(1.0, size / max(w, h))
+    if scale < 1:
+        im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.Resampling.LANCZOS)
+    return save_map(im, kind, out)
 
 
 def thumb_for(raw: Path, out: Path) -> str | None:
@@ -89,20 +106,27 @@ def work(job: tuple[dict, str, int]):
     for kind, info in entry.get('maps_raw', {}).items():
         path = Path(info['path'])
         ch = info.get('channel')
-        got = process_map(path, kind, ch, out, size)
+        got = process_map(path, kind, ch, out, size, entry.get('normal') == 'dx')
         if got:
             maps[kind] = got['path']
             if kind == 'basecolor':
                 base = (got['width'], got['height'], path)
+    for kind, value in (entry.get('values') or {}).items():
+        if kind not in maps and kind != 'opacity':
+            got = solid_map(kind, value, out)
+            maps[kind] = got['path']
+            if kind == 'basecolor':
+                base = (1024, 1024, None)
     if 'basecolor' not in maps or base is None:
         return None
-    thumb = thumb_for(base[2], out)
+    thumb = thumb_for(base[2], out) if base[2] else maps['basecolor']
     tags = list(dict.fromkeys([*(entry.get('tags') or []), 'purchased', 'pack']))
     tags = [t.replace('concerete', 'concrete') for t in tags]
     out_entry = {
         'id': entry['id'],
         'name': entry['name'],
         'category': entry['category'].replace('Concerete', 'Concrete'),
+        'catalog': entry.get('catalog'),
         'role': entry.get('role', 'prop'),
         'library': 'pack',
         'tags': tags,
@@ -112,7 +136,8 @@ def work(job: tuple[dict, str, int]):
         'license': entry.get('license', 'Purchased — local use only'),
         'width': base[0],
         'height': base[1],
-        'normal': entry.get('normal', 'gl'),
+        'normal': 'gl',
+        'scale': entry.get('scale', 1),
         'maps': maps,
         'thumb': thumb,
     }

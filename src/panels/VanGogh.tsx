@@ -4,8 +4,8 @@
 // tool's settings; the panel the parts (collapsible, with their channels: Substance's texture sets) and the active
 // part's Layers, as Photoshop's panel lays them out.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CHANNELS, thumbOf, type BlendMode, type BrushTip, type Channel, type Decal, type Fill, type Gen, type GenKind, type TexturePreset } from '../paint';
-import { MATERIAL_GROUPS, materialGroup, thumbUrl, type MaterialGroup } from '../materials';
+import { CHANNELS, blendOf, thumbOf, type BlendMode, type BrushTip, type Channel, type Decal, type Fill, type Gen, type GenKind, type TexturePreset } from '../paint';
+import { MATERIAL_GROUPS, TILE_KINDS, materialGroup, thumbUrl, tileKind } from '../materials';
 import { decalUrl } from '../decals';
 import { Parts, eye } from './Dock';
 import { ColorWheel } from './ColorWheel';
@@ -13,8 +13,8 @@ import { ToolStrip, type ToolDef } from '../shell/PolyTools';
 import { ViewControls } from '../shell/Chrome';
 import { glyph, Icon } from '../ui/Icon';
 import {
-  addGenerator, addPaintLayer, assignMaterial, bakeAllPaint, bakePaint, beginPaintEdit, clearFillMask, deletePaintLayer, duplicatePaintLayer, editGen, editPaintLayer, exportPaint, fillPaintSelection, importDecal, importMaterialFiles,
-  invertFillMask, loadDecals, loadMaterials, modelDiagonal, movePaintLayerTo, pickDecal, pickPaintLayer, pickPaintPart, setDecalSize, setDecalRotation, setFillMask, setPaint, setPaintAO, setPaintTab, setPbr, setTexturePreset, texSet, undoPaint, updateDecal, updateFill, useApp, type PaintTool,
+  addGenerator, addMetalLayer, addPaintLayer, assignMaterial, bakeAllPaint, bakePaint, beginPaintEdit, clearFillMask, deletePaintLayer, duplicatePaintLayer, editGen, editPaintLayer, exportPaint, fillPaintSelection, importDecal, importMaterialFiles,
+  invertFillMask, loadDecals, loadMaterials, modelDiagonal, movePaintLayerTo, pickDecal, pickPaintLayer, pickPaintPart, setDecalSize, setDecalRotation, setFillBlend, setFillMask, setLayerBlend, setPaint, setPaintAO, setPaintTab, setPbr, setTexturePreset, texSet, undoPaint, updateDecal, updateFill, useApp, type PaintTool,
 } from '../store';
 
 const PAINT_TOOLS: Partial<Record<PaintTool, ToolDef>>[] = [
@@ -55,25 +55,39 @@ const useChannels = () => {
   return part < 0 ? (['color'] as Channel[]) : texSet(part).channels;
 };
 
-/** Substance's shelf: built-in CC0 sets plus folders imported this session. Click adds a fill layer. */
+/** Substance's shelf: built-in CC0 sets plus folders imported this session. Click adds a fill layer.
+ *  Tiles (800+ of the pack) have their own tab, browsed by kind; the Materials tab leaves them out. */
 const PAGE = 36;
 
-function Materials() {
-  const list = useApp((s) => s.materials), loading = useApp((s) => s.materialsLoading), error = useApp((s) => s.materialsError);
+function Materials({ tiles = false }: { tiles?: boolean }) {
+  const all = useApp((s) => s.materials), loading = useApp((s) => s.materialsLoading), error = useApp((s) => s.materialsError);
   const part = useApp((s) => s.parts[s.activePart]?.name ?? '—');
-  const [q, setQ] = useState(''), [group, setGroup] = useState<MaterialGroup | 'all'>('all'), [limit, setLimit] = useState(PAGE), [all, setAll] = useState(false), input = useRef<HTMLInputElement>(null);
+  const fillBlend = useApp((s) => s.paint.fillBlend);
+  const [q, setQ] = useState(''), [group, setGroup] = useState('all'), [limit, setLimit] = useState(PAGE), [allParts, setAllParts] = useState(false), input = useRef<HTMLInputElement>(null);
   useEffect(() => { loadMaterials(); }, []);
+  const list = useMemo(() => all.filter((m) => (materialGroup(m) === 'tile') === tiles), [all, tiles]);
+  const keyOf = tiles ? tileKind : materialGroup;
   useEffect(() => { setLimit(PAGE); }, [q, group, list.length]);
-  const groups = useMemo(() => MATERIAL_GROUPS.flatMap(([id, name]) => {
-    const n = list.filter((m) => materialGroup(m) === id).length;
+  const groups = useMemo(() => (tiles ? [...TILE_KINDS.map(([k]) => [k, k] as const), ['Other', 'Other'] as const] : MATERIAL_GROUPS).flatMap(([id, name]) => {
+    const n = list.filter((m) => keyOf(m) === id).length;
     return n ? [[id, name, n] as const] : [];
-  }), [list]);
+  }), [list, tiles]);
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return list.filter((m) => (group === 'all' || materialGroup(m) === group)
-      && (!needle || `${m.name} ${m.category} ${m.tags.join(' ')} ${m.role ?? ''}`.toLowerCase().includes(needle)));
-  }, [list, q, group]);
+    return list.filter((m) => (group === 'all' || keyOf(m) === group)
+      && (!needle || `${m.name} ${m.category} ${m.catalog ?? ''} ${m.tags.join(' ')} ${m.role ?? ''}`.toLowerCase().includes(needle)));
+  }, [list, q, group, tiles]);
   const visible = shown.slice(0, limit);
+  // Infinite scroll: the next page loads as the end of the grid comes near (re-observed per page, so a
+  // short page that leaves the sentinel in view keeps loading).
+  const more = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = more.current;
+    if (!el) return;
+    const io = new IntersectionObserver((e) => { if (e[0]?.isIntersecting) setLimit((n) => n + PAGE * 2); }, { rootMargin: '400px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [limit, shown.length]);
   const add = (files: FileList | null) => {
     if (!files?.length) return;
     const name = (files[0] as File & { webkitRelativePath?: string }).webkitRelativePath?.split('/')[0] || 'Imported material';
@@ -81,16 +95,31 @@ function Materials() {
   };
   return (
     <div className="matshelf">
+      <div className="matsticky">
       <div className="matbar">
-        <input className="matsearch" type="search" placeholder="Search materials" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className="matsearch" type="search" placeholder={tiles ? 'Search tiles' : 'Search materials'} value={q} onChange={(e) => setQ(e.target.value)} />
         <button title="Import a folder of PBR maps (Substance's exported textures, ambientCG, any baker)" onClick={() => input.current?.click()}>Import</button>
       </div>
       <div className="mathint">
         <span className="hint">Fill goes to <b>{part}</b> · {shown.length} of {list.length}</span>
-        <label className="allparts" title="Apply to every visible part's texture set"><input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />All parts</label>
+        <label className="allparts" title="Apply to every visible part's texture set"><input type="checkbox" checked={allParts} onChange={(e) => setAllParts(e.target.checked)} />All parts</label>
+      </div>
+      <div className="mathint">
+        <label className="fillblend" title={fillBlend === 'normal'
+          ? 'A material added over paint already there covers it, as a new base layer would. Pick Multiply or Overlay to tint what is below instead: the choice sticks for the next materials too (and is the Base Color blend in the Layers panel).'
+          : `New materials over paint already there blend their Base Color with ${fillBlend}: the layers below stay visible through the texture. The choice sticks until you change it.`}>
+          Blend over paint
+          <select value={fillBlend} onChange={(e) => setFillBlend(e.target.value as BlendMode)}>
+            <option value="normal">Normal (covers)</option>
+            <option value="multiply">Multiply</option>
+            <option value="screen">Screen</option>
+            <option value="overlay">Overlay</option>
+            <option value="add">Add</option>
+          </select>
+        </label>
       </div>
       <div className="matgroups">
-        <span className="caps">Material</span>
+        <span className="caps">{tiles ? 'Tile' : 'Material'}</span>
         <button className={group === 'all' ? 'on' : ''} onClick={() => setGroup('all')}>All</button>
         {groups.map(([id, name, n]) => (
           <button key={id} className={group === id ? 'on' : ''} onClick={() => setGroup(id)}>
@@ -98,17 +127,18 @@ function Materials() {
           </button>
         ))}
       </div>
+      </div>
       {error && <div className="hint fix">{error}</div>}
       {loading && !list.length && <div className="hint">Loading the shelf…</div>}
       <div className="matgrid">
         {visible.map((m) => (
-          <button key={m.id} className="mattile" title={`${m.name} — ${m.category}${m.notes ? `\n${m.notes}` : ''}\n${m.width}×${m.height} · ${m.license} · ${m.source}`} onMouseDown={(e) => e.preventDefault()} onClick={() => assignMaterial(m.id, all)}>
+          <button key={m.id} className="mattile" title={`${m.name} — ${m.category}${m.catalog ? ` · ${m.catalog}` : ''}${m.notes ? `\n${m.notes}` : ''}\n${m.width}×${m.height} · ${m.license} · ${m.source}`} onMouseDown={(e) => e.preventDefault()} onClick={() => assignMaterial(m.id, allParts)}>
             <img src={thumbUrl(m)} alt="" loading="lazy" draggable={false} />
             <span>{m.name}</span>
           </button>
         ))}
       </div>
-      {shown.length > limit && <button className="moremats" onClick={() => setLimit((n) => n + PAGE * 2)}>Show more · {shown.length - limit} left</button>}
+      {shown.length > limit && <div ref={more} className="moremats hint">Loading more · {shown.length - limit} left</div>}
       {!loading && !shown.length && <div className="hint">No material matches.</div>}
       <input ref={input} type="file" multiple style={{ display: 'none' }} onChange={(e) => { add(e.target.files); e.target.value = ''; }} {...({ webkitdirectory: '' } as Record<string, string>)} />
     </div>
@@ -305,12 +335,16 @@ export function PaintOptionsBar() {
 function Layers() {
   const rev = useApp((s) => s.paintRev), part = useApp((s) => (s.parts[s.activePart] ? s.activePart : -1));
   useApp((s) => s.paintPanel); // a full recomposite is async; the panel still updates immediately
+  const shown = useApp((s) => s.paintChannel);
   const [drag, setDrag] = useState<number | null>(null);
   const [renaming, setRenaming] = useState<number | null>(null), [name, setName] = useState('');
   const s = part < 0 ? null : texSet(part);
   const thumbs = useMemo(() => (s ? s.layers.map((l) => thumbOf(s, l)) : []), [s, rev]);
   if (!s) return null;
   const l = s.layers[s.active];
+  // Substance's layer stack has one blend per channel, and the stack follows the channel being viewed: so does this.
+  const ch: Channel = shown === 'rough' || shown === 'metal' || shown === 'normal' || shown === 'height' ? shown : 'color';
+  const mode = blendOf(l, ch);
   const commit = () => { if (renaming !== null && name.trim()) editPaintLayer(renaming, { name: name.trim() }); setRenaming(null); };
   return (
     <div className="pslayers">
@@ -318,13 +352,16 @@ function Layers() {
         <input type="range" min={0} max={1} step={0.01} value={l.opacity} onPointerDown={beginPaintEdit} onChange={(e) => editPaintLayer(s.active, { opacity: +e.target.value }, false)} />
         <span className="num readout">{Math.round(l.opacity * 100)}%</span>
       </label>
-      <label className="lopacity" title="How the active layer combines with the layers below; normals always use the whiteout blend">Blend
-        <select value={l.blend ?? 'normal'} onChange={(e) => editPaintLayer(s.active, { blend: e.target.value as BlendMode })}>
-          <option value="normal">Normal</option>
+      <label className="lopacity" title={ch === 'normal'
+        ? 'Normals always combine with what is below (the whiteout blend): a plain mix would flatten the detail'
+        : `How this layer's ${CHANNELS[ch].name} meets the layers below. Each channel keeps its own blend (Substance Painter's stack); switch channel in the Parts tree to change another one.`}>
+        Blend <span className="hint">{ch === 'normal' ? '· Combine' : `· ${CHANNELS[ch].name}`}</span>
+        <select value={ch === 'normal' ? 'normal' : mode} disabled={ch === 'normal'} onChange={(e) => setLayerBlend(ch, e.target.value as BlendMode)}>
+          <option value="normal">{ch === 'height' ? 'Replace' : 'Normal'}</option>
           <option value="multiply">Multiply</option>
           <option value="screen">Screen</option>
           <option value="overlay">Overlay</option>
-          <option value="add">Add</option>
+          <option value="add">{ch === 'height' ? 'Add (Linear Dodge)' : 'Add'}</option>
         </select>
       </label>
       {l.fill && <details className="tsec-details fillprops">
@@ -356,6 +393,7 @@ function Layers() {
       </ul>
       <div className="lbar">
         <button title="Fill the active layer (or the selection) with the color (Alt+Backspace)" aria-label="Fill" onClick={() => fillPaintSelection()}>{glyph('M3 7l5-5 5 5-5 5zM13.5 10.5c0 1.5-1 2.5-1 2.5s-1-1-1-2.5 1-2 1-2 1 .5 1 2z')}</button>
+        <button title="Metal sheen: a new layer that makes the selection (say islands picked with Select Faces W, Island) shiny metal, Metallic 100% / Roughness 25%, colour untouched; its opacity sets how much" aria-label="Metal sheen layer" onClick={addMetalLayer}>{glyph('M8 1.5l1.6 4.9 4.9 1.6-4.9 1.6L8 14.5l-1.6-4.9L1.5 8l4.9-1.6z')}</button>
         <button title="Duplicate the layer (Ctrl+J)" aria-label="Duplicate layer" onClick={duplicatePaintLayer}><Icon name="duplicate" size={16} /></button>
         <button title="New layer (Ctrl+Shift+N)" aria-label="New layer" onClick={addPaintLayer}><Icon name="plus" size={16} /></button>
         <button title="Delete the layer" aria-label="Delete layer" disabled={s.layers.length < 2} onClick={deletePaintLayer}><Icon name="trash" size={16} /></button>
@@ -431,7 +469,7 @@ function TextureExport() {
   );
 }
 
-const TABS = [['layers', 'Layers'], ['materials', 'Materials'], ['decals', 'Decals'], ['maps', 'Maps']] as const;
+const TABS = [['layers', 'Layers'], ['materials', 'Materials'], ['tiles', 'Tiles'], ['decals', 'Decals'], ['maps', 'Maps']] as const;
 
 /** One compact texture-set row instead of the full Parts tree: choose the part, toggle PBR, and keep the
  *  tree itself collapsed below the layers for the rare times it is needed. */
@@ -468,7 +506,8 @@ export function VanGogh() {
       </div>
       <div className="vgbody">
         {tab === 'layers' && <LayersTab />}
-        {tab === 'materials' && <div className="vgtab"><Materials /></div>}
+        {tab === 'materials' && <div className="vgtab" key="materials"><Materials /></div>}
+        {tab === 'tiles' && <div className="vgtab" key="tiles"><Materials tiles /></div>}
         {tab === 'decals' && <div className="vgtab"><Decals /></div>}
         {tab === 'maps' && <div className="vgtab"><Bake /><TextureExport /></div>}
       </div>

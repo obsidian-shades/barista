@@ -13,7 +13,7 @@ import { UVOptionsBar, UVToolStrip } from './shell/UVTools';
 import {
   armBox, cancelDocMove, cancelXform, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, exportFbx, flipSel, invertSelection, pickFile, pinSelected, pointer, redo, repack,
   pieMenu, scaleSel, cutSelection, stitchSelection, selectAll, selectAllPaint, selectLinked, selectLinkedUnder, setSelectMode, startXform, undo, unwrap, unwrapSelected, useApp, viewOp, viewPie, xformKey, xformSnap, openFile, type SelectMode,
-  type ViewOp, type XformKind, setPaint, undoPaint, deselectPaint, invertPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, fillPaintSelection, type PaintTool,
+  type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, fillPaintSelection, type PaintTool,
 } from './store';
 import { Tooltip } from './ui/Tooltip';
 
@@ -66,7 +66,8 @@ function onKey(e: KeyboardEvent) {
   if (useApp.getState().workspace === 'paint') {
     const p = useApp.getState().paint;
     if (ctrl) {
-      if (k === 'z') return run(undoPaint);
+      if (k === 'z') return run(e.shiftKey ? redoPaint : undoPaint);
+      if (k === 'y') return run(redoPaint);
       if (k === 'a') return run(selectAllPaint);
       if (k === 'd') return run(deselectPaint);
       if (k === 'i') return run(invertPaintSelection);

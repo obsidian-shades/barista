@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import {
   clearRecent, clearSeams, clearSelection, cutSelection, deselectPaint, displayChoices, exportFbx, exportObjParts, exportPaint, fillPaintSelection, flipSel, invertPaintSelection, invertSelection,
   loadShape, openRecent, selectAllPaint, setDisplay, setTriangulate, pinSelected, unwrapSelected, pickFile, redo, repack, rotateSel, selectAll, selectEdgeLoop, selectLinked,
-  stitchSelection, undo, undoPaint, unwrap, useApp, viewOp, pointer,
+  stitchSelection, undo, undoPaint, redoPaint, unwrap, useApp, viewOp, pointer,
 } from '../store';
 import { Icon, Mark } from '../ui/Icon';
 
@@ -86,6 +86,7 @@ export function MenuBar() {
           {paint ? (
             <>
               <Item onSelect={undoPaint} disabled={!has} kbd="Ctrl+Z">Undo paint or selection</Item>
+              <Item onSelect={redoPaint} disabled={!has} kbd="Ctrl+Shift+Z">Redo paint or selection</Item>
               <Sep />
               <Item onSelect={() => fillPaintSelection()} disabled={!has} kbd="Alt+Backspace">Fill selection</Item>
               <Item onSelect={() => fillPaintSelection(true)} disabled={!has} kbd="Delete">Clear selection</Item>

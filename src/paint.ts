@@ -52,12 +52,18 @@ export interface Decal {
   metallic: number;
   channels: Channel[];
 }
-/** How a layer combines with what is below it. Normals always use the whiteout blend. */
+/** How a layer combines with what is below it, per channel as Substance Painter holds it: the base colour, the
+ *  roughness and the metallic each carry their own mode, so a grunge layer can multiply the colour and still lay its
+ *  roughness on straight. Normals always compose with the whiteout blend (averaging one flattens the detail). */
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'add';
+/** A channel's blend when the layer leaves it alone: Substance's defaults. Height adds (Linear Dodge, where mid grey
+ *  is zero, so stacked detail grows instead of replacing the layer below); a new layer's normal map combines. */
+export const DEFAULT_BLEND: Record<Channel, BlendMode> = { color: 'normal', rough: 'normal', metal: 'normal', normal: 'normal', height: 'add' };
+export const blendOf = (l: PaintLayer, ch: Channel): BlendMode => l.blend?.[ch] ?? DEFAULT_BLEND[ch];
 /** A layer: per channel it paints, k values + coverage per texel (row 0 = v 0). A generator layer (`gen`) is a fill of
  *  one value per channel whose coverage the generator makes from the baked maps, again whenever its settings change.
  *  A fill layer (`fill`) holds a material; its pixels are the baked cache, and `mask` applies the layer. */
-export interface PaintLayer { id: number; name: string; visible: boolean; opacity: number; blend?: BlendMode; px: Partial<Record<Channel, Uint8ClampedArray>>; gen?: Gen; fill?: Fill; decal?: Decal; mask?: Uint8Array }
+export interface PaintLayer { id: number; name: string; visible: boolean; opacity: number; blend?: Partial<Record<Channel, BlendMode>>; px: Partial<Record<Channel, Uint8ClampedArray>>; gen?: Gen; fill?: Fill; decal?: Decal; mask?: Uint8Array }
 export type GenKind = 'edge' | 'dirt' | 'ao';
 /** A generator (Substance's smart mask): `amount` how much it covers, `soft` how gradual its border, `width` the edge
  *  band (share of the model), `grunge` how much noise breaks it up, `scale` the noise's size (share of the model);
@@ -67,7 +73,7 @@ export interface Gen { kind: GenKind; amount: number; soft: number; width: numbe
 interface State { channels: Channel[]; layers: PaintLayer[]; active: number; sel: Uint8Array | null; undoRect?: [number, number, number, number] }
 /** The composite: `color` (sRGB) and `orm` (G roughness, B metallic, as three and glTF read them); `shade` darkens
  *  what's outside the selection; `normal` (tangent space, RGB) and `height` (R) are the extra PBR maps. */
-export interface TexSet extends State { size: number; color: THREE.DataTexture; orm: THREE.DataTexture; shade: THREE.DataTexture; normal: THREE.DataTexture; height: THREE.DataTexture; past: State[]; ver: number; bake?: Baked; aoTex?: THREE.DataTexture; shell?: Uint8Array; shellFor?: unknown; cov?: Uint8Array; dirty?: [number, number, number, number]; preview?: THREE.Texture }
+export interface TexSet extends State { size: number; color: THREE.DataTexture; orm: THREE.DataTexture; shade: THREE.DataTexture; normal: THREE.DataTexture; height: THREE.DataTexture; past: State[]; future: State[]; ver: number; bake?: Baked; aoTex?: THREE.DataTexture; shell?: Uint8Array; shellFor?: unknown; cov?: Uint8Array; dirty?: [number, number, number, number]; preview?: THREE.Texture }
 export type BrushTip = 'round' | 'square' | 'chalk' | 'spray' | 'ring';
 export interface Brush { radius: number; flow: number; hardness: number; erase: boolean; tip?: BrushTip; values: Partial<Record<Channel, number[]>> }
 export type SelOp = 'set' | 'add' | 'sub';
@@ -90,7 +96,7 @@ export const newLayer = (n: number): PaintLayer => ({ id: ++ids, name: `Layer ${
 export function setOf(soup: Float32Array, size: number): TexSet {
   let s = sets.get(soup);
   if (!s) {
-    s = { size, channels: ['color'], layers: [newLayer(1)], active: 0, sel: null, color: tex(size, true), orm: tex(size, false), shade: tex(size, false), normal: tex(size, false), height: tex(size, false), past: [], ver: 0 };
+    s = { size, channels: ['color'], layers: [newLayer(1)], active: 0, sel: null, color: tex(size, true), orm: tex(size, false), shade: tex(size, false), normal: tex(size, false), height: tex(size, false), past: [], future: [], ver: 0 };
     sets.set(soup, s);
     composite(s);
   } else if (s.size !== size) resize(s, size);
@@ -133,6 +139,7 @@ export function resize(s: TexSet, size: number) {
   s.normal = tex(m, false);
   s.height = tex(m, false);
   s.past = [];
+  s.future = [];
   s.dirty = undefined;
   s.bake = undefined;
   s.aoTex = undefined;
@@ -143,18 +150,33 @@ export function resize(s: TexSet, size: number) {
   shade(s);
 }
 
+type Rect = [number, number, number, number];
+const snapshot = (s: TexSet): State => ({ channels: [...s.channels], layers: s.layers.map((l) => ({ ...l, px: { ...l.px }, mask: l.mask?.slice() })), active: s.active, sel: s.sel, undoRect: undefined });
 /** Keep the set as it is, for one undo step. Copy on write: the layers' buffers are shared with the step, and the
  *  active layer gets fresh copies before paint goes into them. */
 export function keep(s: TexSet) {
-  s.past.push({ channels: [...s.channels], layers: s.layers.map((l) => ({ ...l, px: { ...l.px }, mask: l.mask?.slice() })), active: s.active, sel: s.sel, undoRect: undefined });
+  s.past.push(snapshot(s));
   // ponytail: 20 steps, each a copy of the painted layer's channels (4 MB each at 1K); keep dirty tiles if memory bites
   if (s.past.length > 20) s.past.shift();
+  s.future.length = 0;
   const l = s.layers[s.active];
   if (l) s.layers[s.active] = { ...l, px: Object.fromEntries(Object.entries(l.px).map(([c, a]) => [c, a!.slice()])), mask: l.mask?.slice() };
 }
-export function undo(s: TexSet, defer = false): { rect?: [number, number, number, number]; full: boolean } | null {
+/** A selection change only moves the mask: its step can share the layers instead of copying every buffer of every
+ *  visible part (island picks are document-wide), which at 4K was hundreds of megabytes per click. */
+export function keepSelection(s: TexSet) {
+  s.past.push({ channels: s.channels, layers: s.layers.slice(), active: s.active, sel: s.sel, undoRect: undefined });
+  if (s.past.length > 20) s.past.shift();
+  s.future.length = 0;
+}
+/** Restore the last step, and keep what it replaced so `redo` can put it back (`defer`: the caller composites
+ *  the returned box itself, through the queue). */
+export function undo(s: TexSet, defer = false): { rect?: Rect; full: boolean } | null {
   const prev = s.past.pop();
   if (!prev) return null;
+  // the state being taken back is where a redo lands, over the same box the stroke touched
+  s.future.push({ ...snapshot(s), undoRect: prev.undoRect });
+  if (s.future.length > 20) s.future.shift();
   const oldSel = s.sel, rect = prev.undoRect;
   Object.assign(s, prev);
   if (oldSel !== prev.sel) shade(s);
@@ -167,32 +189,74 @@ export function undo(s: TexSet, defer = false): { rect?: [number, number, number
   }
   return { rect, full: !rect };
 }
-/** Full layer changes (opacity, order, add/delete) in bands, yielding between them: the editor stays
- *  interactive while a 4K recomposite runs, and a newer edit cancels the older pass. */
-export async function compositeAsync(s: TexSet, only?: Channel[], cancelled?: () => boolean) {
-  const n = s.size, band = Math.max(32, Math.ceil(n / 64));
-  for (let y = 0; y < n; y += band) {
-    composite(s, 0, y, n - 1, Math.min(n - 1, y + band - 1), only, false);
-    if (cancelled?.()) return false;
-    await new Promise((ok) => setTimeout(ok, 0));
+/** Put back what the last undo took away. */
+export function redo(s: TexSet, defer = false): { rect?: Rect; full: boolean } | null {
+  const next = s.future.pop();
+  if (!next) return null;
+  s.past.push({ ...snapshot(s), undoRect: next.undoRect });
+  if (s.past.length > 20) s.past.shift();
+  const oldSel = s.sel, rect = next.undoRect;
+  Object.assign(s, next);
+  if (oldSel !== next.sel) shade(s);
+  if (!defer) {
+    if (rect) {
+      composite(s, rect[0], rect[1], rect[2], rect[3], undefined, false);
+      s.dirty = rect;
+      bleedAll(s);
+    } else composite(s);
   }
-  s.dirty = undefined;
-  return true;
+  return { rect, full: !rect };
 }
-/** Undo's dirty box, in yielding bands. No padding pass: the old padding outside the box is still valid. */
-export async function compositeRectAsync(s: TexSet, rect: [number, number, number, number], cancelled?: () => boolean) {
-  const band = Math.max(32, Math.ceil(s.size / 64));
-  for (let y = rect[1]; y <= rect[3]; y += band) {
-    composite(s, rect[0], y, rect[2], Math.min(rect[3], y + band - 1), undefined, false);
-    if (cancelled?.()) return false;
-    await new Promise((ok) => setTimeout(ok, 0));
+
+// ---- non-blocking composites ----
+// A full layer change, an undo or a fill is recomposited in yielding bands so 4K stays interactive. Requests are
+// queued per set instead of cancelling each other: a pass abandoned halfway would leave the part of its box it had
+// not reached showing an older layer state, which is exactly what a Ctrl+Z followed by a stroke used to do.
+interface CompQueue { full: boolean; rects: Rect[]; running: boolean; notify?: () => void; waiters: Array<() => void> }
+const queues = new WeakMap<TexSet, CompQueue>();
+const union = (rects: Rect[]): Rect => rects.reduce<Rect>((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])], [Infinity, Infinity, -Infinity, -Infinity]);
+
+/** Composite `rect` (all texels when omitted) after the pass already running, merging requests made meanwhile.
+ *  `notify` is called once a batch lands, so the views can redraw; the promise resolves when the queue is empty. */
+export function requestComposite(s: TexSet, rect?: Rect, notify?: () => void): Promise<void> {
+  const q = queues.get(s) ?? { full: false, rects: [], running: false, waiters: [] };
+  queues.set(s, q);
+  if (notify) q.notify = notify;
+  if (rect) q.rects.push(rect); else q.full = true;
+  const done = new Promise<void>((ok) => q.waiters.push(ok));
+  if (!q.running) void drainComposite(s, q);
+  return done;
+}
+async function drainComposite(s: TexSet, q: CompQueue) {
+  q.running = true;
+  try {
+    while (q.full || q.rects.length) {
+      const full = q.full, rects = q.rects;
+      q.full = false; q.rects = [];
+      const n = s.size, band = Math.max(32, Math.ceil(n / 64));
+      if (full) {
+        for (let y = 0; y < n; y += band) {
+          composite(s, 0, y, n - 1, Math.min(n - 1, y + band - 1), undefined, false);
+          await new Promise((ok) => setTimeout(ok, 0));
+        }
+        s.dirty = undefined;
+      } else {
+        const [x0, y0, x1, y1] = union(rects);
+        for (let y = y0; y <= y1; y += band) {
+          composite(s, x0, y, x1, Math.min(y1, y + band - 1), undefined, false);
+          await new Promise((ok) => setTimeout(ok, 0));
+        }
+      }
+      q.notify?.();
+    }
+  } finally {
+    q.running = false;
+    for (const ok of q.waiters.splice(0)) ok();
   }
-  s.dirty = rect;
-  return true;
 }
 /** The paint operation that just finished touched only `rect`: its undo can recomposite that box instead of
  *  all 4K texels. Called after a stroke/fill, before the padding pass clears `s.dirty`. */
-export function setUndoRect(s: TexSet, rect: [number, number, number, number]) {
+export function setUndoRect(s: TexSet, rect: Rect) {
   const h = s.past[s.past.length - 1];
   if (h) h.undoRect = rect;
 }
@@ -204,6 +268,11 @@ function blended(dst: number, src: number, mode: BlendMode) {
   if (mode === 'overlay') return dst < 0.5 ? 2 * dst * src : 1 - 2 * (1 - dst) * (1 - src);
   if (mode === 'add') return Math.min(1, dst + src);
   return src;
+}
+/** Height is signed data around mid grey: `add` (Substance's Linear Dodge) grows the detail instead of clipping a
+ *  plain sum, so a bright ridge and a dark groove both survive the stack. */
+function blendedHeight(dst: number, src: number, mode: BlendMode) {
+  return mode === 'add' ? Math.max(0, Math.min(1, dst + (src - 0.5))) : blended(dst, src, mode);
 }
 
 /** The layers flattened into the textures the model shows, within a texel rectangle (all of it by default).
@@ -223,7 +292,7 @@ export function composite(s: TexSet, x0 = 0, y0 = 0, x1 = s.size - 1, y1 = s.siz
   for (const ch of ['color', 'rough', 'metal'] as Channel[]) {
     if (!want(ch)) continue;
     const { k, base } = CHANNELS[ch], on = s.channels.includes(ch);
-    const stack = shown.flatMap((l) => (writes(l, ch) && l.px[ch] ? [[l.px[ch]!, l.opacity, l.mask, l.blend ?? 'normal'] as const] : []));
+    const stack = shown.flatMap((l) => (writes(l, ch) && l.px[ch] ? [[l.px[ch]!, l.opacity, l.mask, blendOf(l, ch)] as const] : []));
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
       const i = y * n + x;
       for (let c = 0; c < k; c++) v[c] = base[c];
@@ -246,7 +315,7 @@ export function composite(s: TexSet, x0 = 0, y0 = 0, x1 = s.size - 1, y1 = s.siz
   const nOn = s.channels.includes('normal') && want('normal');
   const nstack = nOn ? shown.flatMap((l) => (writes(l, 'normal') && l.px.normal ? [[l.px.normal, l.opacity, l.mask] as const] : [])) : [];
   const hOn = s.channels.includes('height') && want('height');
-  const hstack = hOn ? shown.flatMap((l) => (writes(l, 'height') && l.px.height ? [[l.px.height, l.opacity, l.mask, l.blend ?? 'normal'] as const] : [])) : [];
+  const hstack = hOn ? shown.flatMap((l) => (writes(l, 'height') && l.px.height ? [[l.px.height, l.opacity, l.mask, blendOf(l, 'height')] as const] : [])) : [];
   if (nOn || hOn) for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
     const i = y * n + x;
     if (nOn) {
@@ -268,16 +337,18 @@ export function composite(s: TexSet, x0 = 0, y0 = 0, x1 = s.size - 1, y1 = s.siz
       let h = 128;
       for (const [px, op, mask, mode] of hstack) {
         const a = (px[i * 2 + 1] / 255) * op * (mask ? mask[i] / 255 : 1);
-        if (a > 0) { const d = h / 255, sv = px[i * 2] / 255; h = (d + (blended(d, sv, mode) - d) * a) * 255; }
+        if (a > 0) { const d = h / 255, sv = px[i * 2] / 255; h = (d + (blendedHeight(d, sv, mode) - d) * a) * 255; }
       }
       hgt[i * 4] = hgt[i * 4 + 1] = hgt[i * 4 + 2] = h; hgt[i * 4 + 3] = 255;
     }
   }
   const mark = (t: THREE.DataTexture) => {
     t.needsUpdate = true;
-    t.clearUpdateRanges();
-    // A live dab uploads only its dirty rows; a padded/full composite uploads the whole texture.
-    if (pad || (x0 === 0 && y0 === 0 && x1 === n - 1 && y1 === n - 1)) return;
+    // A whole-texture composite uploads in one go (no ranges). A banded pass or a dab must *add* to the ranges: three
+    // uploads every pending range on the next render and only clears them then. Clearing here (as this did) dropped
+    // every band's rows but the last one, so the GPU kept an old patchwork of the texture while the CPU copy was
+    // right — a stroke that landed only in stripes, and undo leaving pieces of itself on screen.
+    if (pad || (x0 === 0 && y0 === 0 && x1 === n - 1 && y1 === n - 1)) { t.clearUpdateRanges(); return; }
     for (let y = y0; y <= y1; y++) t.addUpdateRange((y * n + x0) * 4, (x1 - x0 + 1) * 4);
   };
   if (want('color')) mark(s.color);
@@ -302,8 +373,10 @@ export function bleedAll(s: TexSet) {
   const full = ax0 === 0 && ay0 === 0 && ax1 === n - 1 && ay1 === n - 1;
   for (const t of [s.color, s.orm, s.normal, s.height]) {
     t.needsUpdate = true;
-    t.clearUpdateRanges();
-    if (!full) for (let y = ay0; y <= ay1; y++) t.addUpdateRange((y * n + ax0) * 4, (ax1 - ax0 + 1) * 4);
+    // A whole texture uploads as one image; otherwise add the padded box to whatever ranges are still pending (a
+    // banded pass that has not been drawn yet), never clearing them.
+    if (full) { t.clearUpdateRanges(); continue; }
+    for (let y = ay0; y <= ay1; y++) t.addUpdateRange((y * n + ax0) * 4, (ax1 - ax0 + 1) * 4);
   }
   s.dirty = undefined;
   s.ver++;
@@ -685,7 +758,7 @@ export function inside(poly: [number, number][], x: number, y: number) {
 }
 /** The selection replaced by, grown by or cut by mask `m` (null m: deselect). Takes an undo step. */
 export function select(s: TexSet, m: Uint8Array | null, op: SelOp) {
-  keep(s);
+  keepSelection(s);
   const old = s.sel;
   let next = m;
   if (m && op === 'add' && old) { next = new Uint8Array(m.length); for (let i = 0; i < m.length; i++) next[i] = Math.max(old[i], m[i]); }
@@ -698,7 +771,7 @@ export function select(s: TexSet, m: Uint8Array | null, op: SelOp) {
   shade(s);
 }
 export function invertSelection(s: TexSet) {
-  keep(s);
+  keepSelection(s);
   s.sel = s.sel ? s.sel.map((x) => 255 - x) : new Uint8Array(s.size * s.size);
   shade(s);
 }

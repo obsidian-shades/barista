@@ -179,13 +179,19 @@ screen shape, only what's seen, `depthOf`; in the texture view: UV polygon; a cl
 (both take Face = the file's polygon / Island / Part, options bar), Brush B, Eraser E, Eyedropper I (and Alt+click with
 Brush / Bucket). Shift adds, Alt takes away; Ctrl+click picks the part (opens it in the Parts tree). Ctrl+A select all,
 Ctrl+D deselect, Ctrl+Shift+I invert, Alt+Backspace fill selection (no selection: the layer), Delete clear, Ctrl+J duplicate,
-Ctrl+Shift+N new layer, Ctrl+[ ] move layer, [ ] brush size, Ctrl+Z (20 steps across sets, copy-on-write layers). A dab on
+Ctrl+Shift+N new layer, Ctrl+[ ] move layer, [ ] brush size, Ctrl+Z / Ctrl+Shift+Z (20 steps across sets, copy-on-write
+layers; a step undone is kept for redo, a slider's step is taken by its first change, not its pointerdown, and a
+selection step shares the layers — an island pick is document-wide, so it must not copy every part's buffers). A dab on
 the model is a world-space sphere (triangles near it rasterised in UV), in the texture view a texel circle (size % of the
 texture); each texel takes a dab once (strongest weight) so triangle edges never show, and paint bleeds 1.5 px only across
 UV borders (`bordersOf`), so a face fill stops exactly at its edges inside an island. Panel: Parts tree (collapsible,
 `paintOpen`; channels under each, click one to see it in the texture view), Layers as Photoshop's (opacity on top, rows
 with eye + thumbnail, drag to reorder, double-click renames; Fill / Duplicate / New / Delete along the bottom), pinned
-to the bottom of the dock; File › Export › Textures writes one PNG per channel. Painted texels don't follow a re-unwrap;
+to the bottom of the dock; the Blend row edits the blend of the channel being viewed (`paintChannel`), as Substance's
+stack does: each channel keeps its own mode (`PaintLayer.blend` per channel; `DEFAULT_BLEND` normal for colour / rough /
+metal, height **adds** around mid grey, normals always the whiteout combine, so its select is disabled). The brush starts
+on Base Color alone (`paint.on`), so a colour stroke leaves the material's roughness and metallic under it; tick Rough /
+Metal in the options bar to paint those too. File › Export › Textures writes one PNG per channel. Painted texels don't follow a re-unwrap;
 One atlas parts each still get their own set.
 Color panel on top of the dock (`panels/ColorWheel.tsx`, Affinity's): hue ring (clockwise from red at the right) round
 an HSV triangle (tip the hue, white, black), swatch, eyedropper, H S L, hex, Flow; the dock scrolls (`.paintdock`).
@@ -209,16 +215,28 @@ from the bake (`generate`: band from the edge distance, AO, value noise for grun
 selection at creation as `clip`); their settings sit above the layer list and make the layer again live.
 Materials/Decals: `src/materials.ts` loads the 4,981-material purchased pack (`public/materials-pack`) as the
 shelf; the 50-set `public/materials` core is only a fallback when the pack is missing. Clicking a shelf tile adds a
-tri-planar fill layer. Browse is nine visible **Material** chips (Metal, Wood, Stone & Masonry, Tile & Ceramic,
-Concrete & Ground, Fabric & Leather, Polymer & Carbon, Organic & Food, Other) plus search, paging and **All parts**;
-the precise source category stays in the tile tooltip and search text. The core/pack switch, role filter and
-smart-finish rows were removed; `smartmaterials.ts` remains in the codebase but is not exposed. `src/decals.ts` +
+tri-planar fill layer. The shelf's **Blend over paint** (store `paint.fillBlend`, `setFillBlend`) is the Base Color blend
+new fills come in with: Normal covers what is below (a new base), Multiply / Overlay tint it; it also switches the active
+fill right away and sticks, and picking a Base Color blend on any layer (`setLayerBlend`) sets it, so layering textures
+over a colour does not mean adding, then walking back to the Layers panel. A fill over an empty set still comes in Normal.
+Browse is nine visible **Material** chips (Metal, Wood, Stone & Masonry, Tile & Ceramic,
+Concrete & Ground, Fabric & Leather, Polymer & Carbon, Organic & Food, Other) plus search, infinite scroll and **All parts**;
+tiles (811) have their own **Tiles** tab instead, chips by kind from the name (`TILE_KINDS`: Hex, Roof, Terracotta…);
+search and chips stay sticky over the grid (`.matsticky`); the precise source category stays in the tile tooltip and search text. The core/pack switch, role filter and
+smart-finish rows were removed; `smartmaterials.ts` remains in the codebase but is not exposed. Cerakote and Anodized Metal head the shelf as plain
+materials (`FINISHES` in `materials.ts`: the pack's painted / silver metal PBR maps under the finish's name, no tint).
+The Layers bar's Metal sheen (`addMetalLayer`) adds a layer filling the selection with Metallic 1 / Roughness 0.25 only. `src/decals.ts` +
 `public/decals/` hold 20 original CC0 transparent marks; the Decals tab arms one and the Decal tool D places it. A
 decal is a `PaintLayer.decal` (`bakeDecal` in `paint.ts`): a tangent projector at the clicked point, front-facing and
 depth-limited, baked to BaseColor/Roughness/Metallic so masks, blend modes and export behave like any layer; drag it
 on the model to move, or use Size/Rotate/Ink/Rough/Metal under Layers. A purchased 4,981-material Blender pack is
 installed locally at `public/materials-pack` (git-ignored, excluded from `dist`): `tools/extract-pack.ps1` runs
-`blender-extract.py` over the `.blend` files into `D:\barista-pack-raw`, then `tools/build-pack.py` caches 1K maps
-and writes the pack manifest; `tools/pack-thumbs.py` renders the lit PBR sphere previews, and paging handles the size. `node
-src/paint.check.ts` covers projection, finish overrides and old-footprint clearing. Next: layer masks, blend modes,
-normal / height (and baking from a high poly), packed exports (Unreal ORM, Unity mask map).
+`blender-extract.py` over the `.blend` files into `D:\barista-pack-raw` (marked assets only, with their catalog; the
+full name from the maps' file stem when Blender cut it; DirectX normals where an unmuted "Normal Inverter" group sits on
+the way, flipped to GL at build; the Mapping scale as `scale`, a new fill's tiling; constant Principled inputs as 4 px
+maps; opacity), then `tools/build-pack.py` caches 1K maps
+and writes the pack manifest; `tools/pack-thumbs.py` renders the lit PBR sphere previews, and infinite scroll (an IntersectionObserver sentinel) handles the size. `node
+src/paint.check.ts` covers projection, finish overrides and old-footprint clearing, per-channel blends and their defaults,
+undo/redo, and the height stack; `node src/paintundo.check.ts` drives the store's own undo against a stroke that starts
+before the banded composite finishes. Next: layer masks, groups / passthrough, normal / height (and baking from a high poly),
+packed exports (Unreal ORM, Unity mask map).

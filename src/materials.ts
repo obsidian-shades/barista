@@ -4,12 +4,16 @@
 // exported from Substance Painter or any other baker.
 import type { Channel } from './paint';
 
-export type MapKind = 'basecolor' | 'normal' | 'roughness' | 'metallic' | 'ao' | 'height';
+export type MapKind = 'basecolor' | 'normal' | 'roughness' | 'metallic' | 'ao' | 'height' | 'opacity';
 /** A set of maps on disk (or an imported folder). `maps` are file names relative to `<id>/`. */
 export interface MaterialAsset {
   id: string;
   name: string;
   category: string;
+  /** The pack's own asset catalog (Blender's `catalog_simple_name`). */
+  catalog?: string;
+  /** The UV repeat the author tuned (the .blend's Mapping scale); a new fill's tiling. */
+  scale?: number;
   /** What the set is for, so the shelf can lead with game surfaces: weapon, character, environment, prop. */
   role?: 'weapon' | 'character' | 'environment' | 'prop';
   /** Where it came from: the curated core shelf, a locally installed pack, or a folder picked this session. */
@@ -57,9 +61,34 @@ const GROUP_OF: Record<string, MaterialGroup> = {
   Others: 'other', Randoms: 'other', 'Pack Others': 'other', 'Pack Randoms': 'other', Imported: 'other',
 };
 export const materialGroup = (m: MaterialAsset): MaterialGroup => GROUP_OF[m.category] ?? 'other';
+/** The Tiles tab's kinds, by name: first match wins, the rest are Other. */
+export const TILE_KINDS: [string, RegExp][] = [
+  ['Hex', /hex/i],
+  ['Mosaic', /mosaic/i],
+  ['Roof', /roof/i],
+  ['Floor', /floor/i],
+  ['Wall', /wall/i],
+  ['Paving', /pav|sidewalk|cobble/i],
+  ['Patterned', /pattern|morocc|morrocan|vintage|fan|checker|triang|pyramid|herring|diamond|star/i],
+  ['Subway', /subway/i],
+  ['Terracotta', /terracot|clay/i],
+  ['Marble & Terrazzo', /marble|terr?azz?o|granite/i],
+  ['Stone & Concrete', /stone|concer|concrete|cement|brick|slate/i],
+  ['Metal', /metal/i],
+  ['Wood', /wood|deck|parquet/i],
+  ['Glass', /glass/i],
+  ['Ceramic', /ceramic|porcelain|glaz|shiny/i],
+];
+export const tileKind = (m: MaterialAsset) => TILE_KINDS.find(([, re]) => re.test(m.name))?.[0] ?? 'Other';
 export const groupName = (g: MaterialGroup) => MATERIAL_GROUPS.find(([id]) => id === g)?.[1] ?? 'Other';
 
 const BASE = '/materials';
+/** Weapon finishes the pack has under other names: the same maps, shelved again under the finish's name
+ *  (textures only, no tint). [name, the pack material it is]. */
+const FINISHES: [string, string][] = [
+  ['Cerakote', 'painted metal PBR'],
+  ['Anodized Metal', 'silver metal PBR'],
+];
 let library: MaterialAsset[] | null = null;
 let loading: Promise<MaterialAsset[]> | null = null;
 
@@ -74,6 +103,10 @@ export function loadMaterialLibrary(): Promise<MaterialAsset[]> {
         const pj = await pr.json() as { materials?: MaterialAsset[] };
         if (Array.isArray(pj.materials) && pj.materials.length) {
           library = pj.materials.map((m) => ({ ...m, library: 'pack' as const }));
+          for (const [name, of] of FINISHES) {
+            const m = library.find((x) => x.name === of);
+            if (m) library.unshift({ ...m, id: `finish-${name.toLowerCase().replace(/\W+/g, '-')}`, name, tags: [...m.tags, 'finish', name.toLowerCase()], notes: `${name} finish (the pack's “${of}”)` });
+          }
           return library;
         }
       }

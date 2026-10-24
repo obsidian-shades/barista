@@ -27,8 +27,11 @@ foreach ($file in $files) {
   $category = ($file.BaseName -replace '^\d+\+\s*', '') -replace '\s+Asset Browser$', ''
   if (!$category) { $category = 'Randoms' }
   Write-Host "=== $category  ($([math]::Round($file.Length / 1GB, 2)) GB) ==="
+  # Blender's warnings go to stderr; under Stop, Windows PowerShell would treat them as failures.
+  $ErrorActionPreference = 'Continue'
   & $Blender -b --factory-startup $file.FullName --python $script -- $Raw $category 2>&1 |
     Select-Object -Last 6 | ForEach-Object { Write-Host $_ }
+  $ErrorActionPreference = 'Stop'
   if ($LASTEXITCODE -ne 0) { throw "Blender failed on $($file.Name)" }
 }
 

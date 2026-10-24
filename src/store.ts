@@ -10,7 +10,7 @@ import { health, healthReport, ruleCounts, RULES, setModelSize, type RuleId } fr
 import { clearRecentFiles, forgetRecent, pickWithHandle, recentFiles, remember, reopen } from './recent';
 import { carryNormals, dissolve, dissolveFaces, limitedDissolve, link, outNormals, ownPolygons, topoOfSoup, triangulate, trisToQuads, type Polys } from './polyedit';
 import { bake } from './bake';
-import { CHANNELS, composite, compositeAsync, compositeRectAsync, dab, dabUV, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, keep as keepPaint, maskPolygon, maskTris, newLayer, pngOf, sample, select as selectMask, setOf, undo as undoSet, setUndoRect, bakeFill, bakeDecal, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, pngNormalDX, pngORM, pngShown, pngUnityHDRP, pngUnityURP, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
+import { CHANNELS, composite, dab, dabUV, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, keep as keepPaint, maskPolygon, maskTris, newLayer, pngOf, requestComposite, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, pngNormalDX, pngORM, pngShown, pngUnityHDRP, pngUnityURP, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
 import { gpuBegin, gpuDab, gpuFinish, gpuTake } from './gpupaint';
 import { FILL_CHANNELS, loadMaterialLibrary, materialFromFiles, materialPixels, pickMaterialFolder, type MaterialAsset, type MaterialPixels } from './materials';
 import { decalFromFile, decalPixels, loadDecalLibrary, type DecalAsset } from './decals';
@@ -239,7 +239,7 @@ interface State {
   triangulate: boolean;
   /** Van Gogh's tool and brush: a value per channel and which channels it paints (`on`); size is % of the model (on the
    *  model) or of the texture (in the texture view); Wand and Bucket take a face, an island or the whole part (`by`). */
-  paint: { tool: PaintTool; color: string; rough: number; metal: number; on: Record<Channel, boolean>; size: number; flow: number; hardness: number; tip: BrushTip; by: FillBy; decalAsset: string; decalTint: string; decalSize: number; decalRotation: number };
+  paint: { tool: PaintTool; color: string; rough: number; metal: number; on: Record<Channel, boolean>; size: number; flow: number; hardness: number; tip: BrushTip; by: FillBy; decalAsset: string; decalTint: string; decalSize: number; decalRotation: number; fillBlend: BlendMode };
   /** Parts expanded in Van Gogh's Parts tree. */
   paintOpen: number[];
   /** The channel the UV view shows (picked under the part in Parts). */
@@ -261,7 +261,7 @@ interface State {
   decalsLoading: boolean;
   decalsError: string | null;
   /** Which Van Gogh dock tab is open: layers, materials, decals or maps. Color is permanently above the tabs. */
-  paintTab: 'layers' | 'materials' | 'decals' | 'maps';
+  paintTab: 'layers' | 'materials' | 'tiles' | 'decals' | 'maps';
   /** The engine preset the Maps tab's export button uses. */
   texturePreset: TexturePreset;
 }
@@ -288,7 +288,7 @@ export const useApp = create<State>(() => ({
   scene: { background: '#111111', ...WORK_LIGHT, hdriUrl: null, hdriId: '', hdriName: '', hdriBackground: false, hdriStrength: 1, hdriRotation: 0, hdriBlur: 0, wireframe: false, showEdges: true, showVertices: true, showSeams: true, showGrid: false, showAxes: false,
     lighting: 'studio', matcap: 'clay', bg: 'theme', backface: false, outline: false, specular: true, xray: false, xrayAlpha: 0.5, shadow: false, shadowAmount: 0.4, cavity: false, cavityType: 'both', cavityDistance: 0.2, ridge: 1, valley: 1 }, unfold: 0,
   busy: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 300, 260, 420), viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, moveOnSurface: true,
-  paint: { tool: 'brush', color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: true, metal: true, normal: true, height: true }, size: 3, flow: 0.6, hardness: 0.5, tip: 'round' as BrushTip, by: 'island', decalAsset: 'garuda-mark', decalTint: '#ffffff', decalSize: 14, decalRotation: 0 }, paintChannel: 'material', paintRev: 0, paintPanel: 0, paintLive: 0, paintOpen: [0], paintAO: true,
+  paint: { tool: 'brush', color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: false, metal: false, normal: false, height: false }, size: 3, flow: 0.6, hardness: 0.5, tip: 'round' as BrushTip, by: 'island', decalAsset: 'garuda-mark', decalTint: '#ffffff', decalSize: 14, decalRotation: 0, fillBlend: 'normal' as BlendMode }, paintChannel: 'material', paintRev: 0, paintPanel: 0, paintLive: 0, paintOpen: [0], paintAO: true,
   materials: [], materialsLoading: false, materialsError: null, decals: [], decalsLoading: false, decalsError: null, paintTab: 'layers', texturePreset: 'generic',
 }));
 const set = useApp.setState, get = useApp.getState;
@@ -531,6 +531,7 @@ export const loadShape = (name: string) => task(`Unwrapping ${name}…`, async (
   if (me !== latest) return;
   const parts = [{ name, soup, seams: [], marked: [], solved: [], visible: true, textured: true }];
   setModelSize([soup]);
+  resetPaintHistory();
   set({ source: name, unit: 100, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: [0], layerAnchor: 0, uvScope: 'part', csel: null, fixNote: null });
   if (get().workspace === 'doc') meshOnly(); else await solve();
 });
@@ -541,6 +542,7 @@ export const openFile = (file: File) => task(`Unwrapping ${file.name}…`, async
   if (me !== latest) return;
   const parts = imported.map((p) => ({ ...p, seams: [], marked: [], solved: [], visible: true, textured: true }));
   setModelSize(parts.map((p) => p.soup));
+  resetPaintHistory();
   set({ source: file.name, unit, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: parts.length ? [0] : [], layerAnchor: 0, uvScope: 'part', csel: null, fixNote: null });
   if (get().workspace === 'doc') meshOnly(); else await solve();
 });
@@ -2152,11 +2154,10 @@ const repaintLive = () => {
   const run = () => { liveQueued = 0; set((s) => ({ paintLive: s.paintLive + 1 })); };
   liveQueued = typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame(run) : setTimeout(run, 16);
 };
-/** A full 4K layer recomposite runs in yielding bands; a newer edit cancels the older pass. */
-let compositeGen = 0;
-function scheduleComposite(s: TexSet, only?: Channel[]) {
-  const id = ++compositeGen;
-  void compositeAsync(s, only, () => id !== compositeGen).then((ok) => { if (ok && id === compositeGen) repaint(); });
+/** A full 4K layer recomposite runs in yielding bands; requests merge instead of cancelling, so a pass never
+ *  leaves half its box showing an older layer state (that was Ctrl+Z followed by a stroke). */
+function scheduleComposite(s: TexSet) {
+  void requestComposite(s, undefined, repaint);
 }
 /** The model's bounding box diagonal, which the brush size is a share of. */
 const span = new WeakMap<Output, number>();
@@ -2170,18 +2171,22 @@ function modelSize(r: Output) {
 }
 /** The current model's bounding diagonal (world units), for decal width readouts. */
 export const modelDiagonal = () => { const r = get().result; return r ? modelSize(r) : 1; };
-/** What the brush lays down: each channel it's on for, with its value (0..255). */
+/** What the brush lays down: each channel it's on for, with its value (0..255). The eraser takes the paint off every
+ *  channel the set has, whatever the brush's ticks say: it clears the layer, it doesn't paint a value. */
 function brushOf(r: Output, pressure = 1): Brush {
   const p = get().paint, hex = (k: number) => parseInt(p.color.slice(k, k + 2), 16), values: Brush['values'] = {};
-  if (p.on.color) values.color = [hex(1), hex(3), hex(5)];
-  if (p.on.rough) values.rough = [p.rough * 255];
-  if (p.on.metal) values.metal = [p.metal * 255];
+  const all = p.tool === 'erase';
+  if (all || p.on.color) values.color = [hex(1), hex(3), hex(5)];
+  if (all || p.on.rough) values.rough = [p.rough * 255];
+  if (all || p.on.metal) values.metal = [p.metal * 255];
   const pen = Math.max(0.08, Math.min(1, pressure)), size = 0.3 + 0.7 * pen;
-  return { radius: (p.size / 100) * modelSize(r) * size, flow: p.flow * (0.35 + 0.65 * pen), hardness: p.hardness, erase: p.tool === 'erase', tip: p.tip, values };
+  return { radius: (p.size / 100) * modelSize(r) * size, flow: p.flow * (0.35 + 0.65 * pen), hardness: p.hardness, erase: all, tip: p.tip, values };
 }
 /** The texture sets each paint undo step changed (a selection can change several), newest last. */
 const painted: TexSet[][] = [];
-const step = (...ts: TexSet[]) => { for (const t of ts) keepPaint(t); painted.push(ts); };
+/** The steps Ctrl+Z took back, so Ctrl+Shift+Z can put them again; a new step starts a new history. */
+const paintRedo: TexSet[][] = [];
+const step = (...ts: TexSet[]) => { for (const t of ts) keepPaint(t); painted.push(ts); paintRedo.length = 0; };
 export type PaintMods = { shift: boolean; alt: boolean; ctrl: boolean; pressure?: number; pen?: boolean };
 const pressureOf = (m: PaintMods) => (m.pen ? Math.max(0.08, Math.min(1, m.pressure ?? 0.5)) : 1);
 /** Photoshop's: Shift adds to the selection, Alt takes away, plain replaces it. */
@@ -2200,6 +2205,7 @@ function trisBy(i: number, tri: number) {
 function selectDoc(masks: Map<number, Uint8Array>, op: MaskOp) {
   const ids = op === 'set' ? visibleParts() : [...masks.keys()], ts = ids.map(texSet);
   painted.push(ts);
+  paintRedo.length = 0;
   ids.forEach((i, k) => selectMask(ts[k], masks.get(i) ?? new Uint8Array(ts[k].size * ts[k].size), op));
   repaint();
 }
@@ -2218,6 +2224,7 @@ export function deselectPaint() {
   const ts = visibleParts().map(texSet).filter((t) => t.sel);
   if (!ts.length) return;
   painted.push(ts);
+  paintRedo.length = 0;
   for (const t of ts) selectMask(t, null, 'set');
   repaint();
 }
@@ -2226,6 +2233,7 @@ export function invertPaintSelection() {
   const ts = visibleParts().map(texSet);
   if (!ts.some((t) => t.sel)) return;
   painted.push(ts);
+  paintRedo.length = 0;
   for (const t of ts) invertMask(t);
   repaint();
 }
@@ -2252,14 +2260,13 @@ export function pickPaintPart(i: number) {
 export const togglePaintOpen = (i: number) => set((s) => ({ paintOpen: s.paintOpen.includes(i) ? s.paintOpen.filter((x) => x !== i) : [...s.paintOpen, i] }));
 let last: { part: number; at: number[]; uv: boolean; fill: boolean; decal: boolean; pressure: number; gpu: boolean } | null = null;
 /** A GPU stroke is replaying into the CPU; a new stroke waits for it instead of fighting the same layers. */
-let committing = false, undoQueued = false;
+let committing = false, undoQueued = false, redoQueued = false;
 /** A press on part `i`, triangle `tri`, at world point `at` (on the model) or null (in the texture view), UV (u, v):
  *  every tool's click, on either view. True when a drag should follow (Brush, Eraser). */
 export function paintPress(i: number, tri: number, at: [number, number, number] | null, uv: [number, number], mods: PaintMods) {
   const { result, uvs, paint } = get(), out = result?.parts[i];
   if (!out || !uvs[i] || get().busy) return false;
   if (committing) return false;
-  compositeGen++;
   if (mods.ctrl) { pickPaintPart(i); return false; }
   const s = texSet(i);
   if (paint.tool === 'decal') {
@@ -2292,7 +2299,7 @@ export function paintPress(i: number, tri: number, at: [number, number, number] 
   step(s);
   const layer = s.layers[s.active], pen = pressureOf(mods), b = brushOf(result!, pen);
   const above = s.layers.slice(s.active + 1).some((l) => l.visible && l.opacity > 0);
-  const simple = paint.tool === 'brush' && !s.sel && !above && layer && !layer.fill && !layer.decal && !layer.gen && !layer.mask && (layer.blend ?? 'normal') === 'normal' && !!b.values.color && Object.keys(b.values).every((k) => k === 'color' || k === 'rough' || k === 'metal');
+  const simple = paint.tool === 'brush' && !s.sel && !above && layer && !layer.fill && !layer.decal && !layer.gen && !layer.mask && !layer.blend?.color && !!b.values.color && Object.keys(b.values).every((k) => k === 'color' || k === 'rough' || k === 'metal');
   if (simple && gpuBegin(s, i, at ? 'world' : 'uv', uv, b, layer.opacity, out.positions, uvs[i])) {
     last = { part: i, at: at ?? uv, uv: !at, fill: false, decal: false, pressure: pen, gpu: true };
     gpuDab(at, uv, b, at ? 0 : uvRadius(s, pen) / s.size);
@@ -2372,13 +2379,16 @@ export const paintEnd = () => {
         const d = s.dirty;
         if (d) {
           setUndoRect(s, d);
-          await compositeRectAsync(s, d);
+          await requestComposite(s, d, repaint);
+          // the same mip-padding pass the CPU stroke ends with, so the commit is not a different stroke than a CPU one
+          bleedAll(s);
         }
       } finally {
         committing = false;
         gpuFinish();
         repaint();
         if (undoQueued) { undoQueued = false; undoPaint(); }
+        else if (redoQueued) { redoQueued = false; redoPaint(); }
       }
     })();
     return;
@@ -2391,17 +2401,48 @@ export const paintEnd = () => {
 };
 /** A Brush or Eraser stroke is under way. */
 export const painting = () => !!last;
+/** Ctrl+Z: take back the last paint step (a stroke, a fill, a selection, a layer edit), whichever texture set it
+ *  touched. A step whose sets have no history left (a resize dropped it) is skipped rather than swallowed. */
 export function undoPaint() {
   if (committing) { undoQueued = true; return; }
+  // Ctrl+Z in the middle of a stroke (mouse still down) ends it first: taking its step back underneath a live drag
+  // would leave the drag writing into the restored layer and stamp the next step's box with the wrong rectangle.
+  if (last) paintEnd();
+  // a GPU stroke commits in the background: take the step back once its replay has landed
+  if (committing) { undoQueued = true; return; }
   repaintPanel();
-  for (const s of painted.pop() ?? []) {
-    const u = undoSet(s, true);
-    if (!u) continue;
-    if (u.rect) {
-      const id = ++compositeGen;
-      void compositeRectAsync(s, u.rect, () => id !== compositeGen).then((ok) => { if (ok && id === compositeGen) repaint(); });
-    } else scheduleComposite(s);
+  while (painted.length) {
+    const undoStep = painted.pop()!;
+    const undone = undoStep.flatMap((s) => {
+      const u = undoSet(s, true);
+      if (!u) return [];
+      void requestComposite(s, u.rect, repaint);
+      return [s];
+    });
+    if (!undone.length) continue;
+    paintRedo.push(undone);
+    return;
   }
+}
+/** Ctrl+Shift+Z / Ctrl+Y: put back the step the last undo took away. */
+export function redoPaint() {
+  if (committing) { redoQueued = true; return; }
+  if (last) paintEnd();
+  if (committing) { redoQueued = true; return; }
+  const step = paintRedo.pop();
+  if (!step) return;
+  repaintPanel();
+  painted.push(step);
+  for (const s of step) {
+    const r = redoSet(s, true);
+    if (r) void requestComposite(s, r.rect, repaint);
+  }
+}
+/** A new document (or a resolution change) makes the old steps meaningless: their sets are another model's. */
+export function resetPaintHistory() {
+  painted.length = 0;
+  paintRedo.length = 0;
+  sliderStep = null;
 }
 /** Alt+Backspace (Fill) or Delete (Clear): the active layer of each part with a selection, inside it; with no
  *  selection, the active part's whole layer. */
@@ -2422,18 +2463,27 @@ export function fillPaintSelection(erase = false) {
 function layers(f: (s: TexSet) => void, undoable = true) {
   if (!get().parts[get().activePart]) return;
   const s = texSet(get().activePart);
-  if (undoable) step(s);
+  if (undoable) step(s); else ensureStep(s);
   f(s);
   scheduleComposite(s);
   repaintPanel();
 }
+/** A layer that makes the selection shiny metal (Metallic 1, Roughness 0.25) and leaves colour alone, so islands
+ *  picked with Select Faces (Island) take a sheen over whatever fill is under them; the layer's opacity sets how much.
+ *  No selection: the whole part. Turns the set's PBR channels on if it was Base Color only. */
+export const addMetalLayer = () => layers((s) => {
+  if (!s.channels.includes('metal')) s.channels = [...FILL_CHANNELS];
+  s.layers.splice(s.active + 1, 0, { ...newLayer(0), name: 'Metal sheen' });
+  s.active++;
+  fillAll(s, { radius: 0, flow: 1, hardness: 1, erase: false, values: { rough: [0.25 * 255], metal: [255] } });
+});
 export const addPaintLayer = () => layers((s) => { s.layers.splice(s.active + 1, 0, newLayer(s.layers.length + 1)); s.active++; });
 export const deletePaintLayer = () => layers((s) => { if (s.layers.length > 1) { s.layers.splice(s.active, 1); s.active = Math.min(s.active, s.layers.length - 1); } });
 /** Ctrl+J: a copy of the active layer above it. */
 export const duplicatePaintLayer = () => layers((s) => {
   const l = s.layers[s.active];
   s.layers.splice(s.active + 1, 0, {
-    ...newLayer(0), name: `${l.name} copy`, opacity: l.opacity, blend: l.blend, px: Object.fromEntries(Object.entries(l.px).map(([c, a]) => [c, a!.slice()])),
+    ...newLayer(0), name: `${l.name} copy`, opacity: l.opacity, blend: l.blend ? { ...l.blend } : undefined, px: Object.fromEntries(Object.entries(l.px).map(([c, a]) => [c, a!.slice()])),
     ...(l.fill ? { fill: { ...l.fill, channels: [...l.fill.channels], offset: [...l.fill.offset] as [number, number] } } : {}),
     ...(l.decal ? { decal: { ...l.decal, center: [...l.decal.center] as [number, number, number], normal: [...l.decal.normal] as [number, number, number], up: [...l.decal.up] as [number, number, number], channels: [...l.decal.channels] } } : {}),
     ...(l.mask ? { mask: l.mask.slice() } : {}),
@@ -2450,8 +2500,29 @@ export const movePaintLayerTo = (from: number, to: number) => layers((s) => {
 /** Ctrl+] / Ctrl+[: the active layer up or down one. */
 export const movePaintLayer = (d: 1 | -1) => { const a = texSet(get().activePart).active; movePaintLayerTo(a, a + d); };
 export const editPaintLayer = (j: number, l: Partial<Pick<PaintLayer, 'name' | 'visible' | 'opacity' | 'blend'>>, undoable = true) => layers((s) => { s.layers[j] = { ...s.layers[j], ...l }; }, undoable);
-/** The start of an opacity drag: one undo step for the whole drag. */
-export const beginPaintEdit = () => { if (get().parts[get().activePart]) step(texSet(get().activePart)); };
+/** The active layer's blend for one channel (Substance's stack is per channel). Picking one for Base Color also
+ *  becomes the blend the next material comes in with: layering textures should not mean "add, then walk back to the
+ *  layer panel and switch it" every time. */
+export function setLayerBlend(ch: Channel, mode: BlendMode) {
+  if (!get().parts[get().activePart]) return;
+  const s = texSet(get().activePart), l = s.layers[s.active];
+  if (!l) return;
+  editPaintLayer(s.active, { blend: { ...l.blend, [ch]: mode } });
+  if (ch === 'color') setPaint({ fillBlend: mode });
+}
+/** The shelf's "blend over paint": what the next material comes in with, and — when the layer just added is a fill,
+ *  the one you are looking at — its Base Color blend now, so the fix does not need a trip to the Layers panel. */
+export function setFillBlend(mode: BlendMode) {
+  const i = get().activePart;
+  const l = get().parts[i] ? texSet(i).layers[texSet(i).active] : null;
+  if (l?.fill) setLayerBlend('color', mode); else setPaint({ fillBlend: mode });
+}
+/** A slider drag starts: its undo step is taken by the first change, so a click that changes nothing leaves no
+ *  empty step for Ctrl+Z to chew through. */
+let sliderStep: TexSet | null = null;
+export const beginPaintEdit = () => { sliderStep = get().parts[get().activePart] ? texSet(get().activePart) : null; };
+/** The first edit of a drag: take the step the pointerdown deferred. */
+function ensureStep(s: TexSet) { if (sliderStep === s) { sliderStep = null; step(s); } }
 export const pickPaintLayer = (j: number) => { texSet(get().activePart).active = j; repaint(); };
 /** Part `i` gets Roughness, Metallic, Normal and Height channels (PBR, glTF's metal/rough plus a normal map),
  *  or loses them. */
@@ -2598,7 +2669,7 @@ export function updateDecal(patch: Partial<Decal>, undoable = true) {
   if (get().busy) return;
   const i = get().activePart, s = texSet(i), l = s.layers[s.active];
   if (!l?.decal) return;
-  if (undoable) step(s);
+  if (undoable) step(s); else ensureStep(s);
   const next = { ...l.decal, ...patch };
   l.decal = next;
   if (patch.asset) {
@@ -2629,8 +2700,12 @@ export function assignMaterial(id: string, all = false) {
       const out = st.result.parts[i], uv = st.uvs[i];
       if (!out || !uv) continue;
       const ts = sets[k];
-      const fill: Fill = { asset: id, projection: 'triplanar', tiling: 1, tiles: 4, rotation: 0, offset: [0, 0], normalStrength: 1, tint: '#ffffff', channels: [...FILL_CHANNELS] };
-      const layer: PaintLayer = { ...newLayer(ts.layers.length + 1), name: asset.name, fill, ...(ts.sel ? { mask: ts.sel.slice() } : {}) };
+      // A material dropped over paint already there keeps the Base Color blend the last one was given (Normal covers it,
+      // Multiply tints it): choosing once should not mean switching every texture that follows. The first fill still
+      // comes in Normal, so a material is a material, not a darkening.
+      const over = ts.layers.some((x) => x.visible && (x.fill || x.decal || x.gen || Object.keys(x.px).length > 0));
+      const fill: Fill = { asset: id, projection: 'triplanar', tiling: asset.scale ?? 1, tiles: 4, rotation: 0, offset: [0, 0], normalStrength: 1, tint: '#ffffff', channels: [...FILL_CHANNELS] };
+      const layer: PaintLayer = { ...newLayer(ts.layers.length + 1), name: asset.name, fill, ...(over && st.paint.fillBlend !== 'normal' ? { blend: { color: st.paint.fillBlend } } : {}), ...(ts.sel ? { mask: ts.sel.slice() } : {}) };
       ts.layers.splice(ts.active + 1, 0, layer);
       ts.active++;
       ts.channels = [...FILL_CHANNELS];
@@ -2704,7 +2779,7 @@ export function updateFill(patch: Partial<Fill>, undoable = true) {
   if (get().busy) return;
   const i = get().activePart, ts = texSet(i), current = ts.layers[ts.active];
   if (!current?.fill) return;
-  if (undoable) step(ts);
+  if (undoable) step(ts); else ensureStep(ts);
   const l = ts.layers[ts.active];
   const f = { ...l.fill!, ...patch };
   const asset = materialOf(f.asset);

@@ -46,6 +46,14 @@ For a live dab, `composite` uploads only the dirty rows using three.js
 end of the stroke, `bleedAll` uploads the padded region once. This removes the 4K full-texture
 upload from the per-dab path.
 
+**Ranges accumulate until the draw.** three uploads every pending range on the next render and only
+then clears them, so `composite` must *add* to the list, never clear it per call: while a banded pass
+(undo, layer edit, GPU commit) runs, a `clearUpdateRanges()` in every band discarded all the bands
+before the last one, and the GPU kept an older patchwork while the CPU texture was correct — the
+"texture corrupted itself after painting and Ctrl+Z" look (a stroke landing only in some rows, an
+undo leaving part of itself on screen). `bleedAll` adds its padded box to the pending ranges too,
+and asks for one whole-texture upload only when that box is the whole texture.
+
 ### Mip padding once per stroke
 
 `bleed()` is no longer called by `lay` on every dab. `paintEnd` calls `bleedAll`, which uses the
@@ -69,9 +77,19 @@ Undo used to restore the layer and then run a full **5-channel 4K composite** pl
 one synchronous call. Opacity changes were worse: every slider event recomposited the whole 4K set.
 
 - `keep()` now records the affected `undoRect`; `undo()` restores the layer instantly and
-  `compositeRectAsync` recomposites only that box in 64-row bands.
-- Full layer changes (opacity, blend, order, add/delete) run through `compositeAsync`, also in
-  bands, and a newer edit cancels the older pass.
+  `requestComposite` recomposites only that box in 64-row bands.
+- Full layer changes (opacity, blend, order, add/delete) go through the same queue, also in bands.
+  Requests **merge** into the pass already running instead of cancelling it: a cancelled pass used
+  to leave the part of its box it had not reached showing the older layer state, which is what a
+  Ctrl+Z followed immediately by a stroke (or a second Ctrl+Z) looked like: a texture with a
+  half-undone stroke still on it. A merged request composites the union of the boxes asked for.
+- Undo also keeps the state it took back (`TexSet.future`), so Ctrl+Shift+Z / Ctrl+Y redo a paint
+  step; a new step starts a new history. A slider takes its undo step on its first change, not on
+  pointerdown, so clicking a slider without moving it leaves no empty step.
+- A selection step shares the layer stack instead of copying it: an island pick is document-wide, so at 4K it used to
+  copy every visible part's active layer (hundreds of megabytes) per click, which is also where a mid-step allocation
+  failure could leave the history half pushed.
+- The GPU stroke commit pads like a CPU stroke (`bleedAll` after its one composite), so both paths end the same way.
 - The layer panel gets a cheap `paintPanel` tick so the slider readout updates immediately; the
   3D/texture views update when the recomposite finishes.
 - Measured at 4K, 20 opacity changes: **max main-thread gap 77 ms**, none over 200 ms, panel stays
