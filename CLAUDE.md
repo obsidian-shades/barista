@@ -246,7 +246,11 @@ opacity edits go to the same-named layer on each (`matesOf`, made active so the 
 mesh maps first. Select by **Surface** (`surfaceTris`: flood up to edges bent > angle and < 2× angle from the clicked face), Select ›
 Grow / Shrink (Ctrl+Shift+= / -, `growSelection`, texel space). Decal tool **Mirror** places a twin across the model's middle
 (`mirrorHit`); **Engrave** (`Decal.engrave`) bends the normal along the ink's edge and lowers the height, in the engine too
-(`DecalFrame::at`). Layer runs of 3+ decals fold into one row. View › Reference image… floats a picture over the 3D view
+(`DecalFrame::at`). **Grip textures** (Decals › Grip, `GRIP_SHAPES` in decals.ts): decals with a `Decal.shape` and no image —
+a rounded panel, an optional groove border and a pattern inside (stipple / grooves / checkering / none), sizes in world units
+(shares of the model on the shelf), so stretching a panel never stretches its dots; `bakeShape` writes Normal and Height only,
+the engine's `DecalFrame::shape_at` / `shape_height` the same (test `shape_relief_matches_the_editor` pins them to the editor's
+numbers). The shallow relief a sculpt-and-bake would give, placed and edited like any mark. Layer runs of 3+ decals fold into one row. View › Reference image… floats a picture over the 3D view
 (`views/RefImage.tsx`, not saved). `saveProjectTo(path)` saves without the dialog (scripts). Saves write `<file>.saving` then rename;
 errors name the file and folder; autosaves are per process (`<name>-<pid>.barista`).
 Color panel on top of the dock (`panels/ColorWheel.tsx`, Affinity's): hue ring (clockwise from red at the right) round

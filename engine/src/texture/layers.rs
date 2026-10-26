@@ -2,7 +2,7 @@
 //! on the surface, and what each kind of layer puts there: a fill's material (tri-planar or UV), a decal's ink, a
 //! generator's mask, or the working-resolution pixels upsampled.
 use super::bake::{at, cross, dot, norm, sub, V3};
-use super::{Decal, Fill, Gen};
+use super::{Decal, Fill, Gen, Shape};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -358,6 +358,71 @@ impl DecalFrame {
         if self.engrave > 0.0 && has("height") { out.height = Some((128.0 - 64.0 * self.engrave, a)); }
         out
     }
+}
+
+impl DecalFrame {
+    /// A grip texture's relief at p (paint.ts `bakeShape`): height, and its slope as a tangent-space normal.
+    pub fn shape_at(&self, sh: &Shape, mesh: &Mesh, t: usize, p: V3, channels: &[String]) -> Texel {
+        let mut out = Texel::default();
+        if dot(mesh.nrm[t], self.n) < 0.12 { return out; }
+        let d = sub(p, self.c);
+        if dot(d, self.n).abs() > self.depth { return out; }
+        let (fu, fv) = (if self.flip.0 { -1.0 } else { 1.0 }, if self.flip.1 { -1.0 } else { 1.0 });
+        let (a, b, hw, hh) = (dot(d, self.u) * fu, dot(d, self.v) * fv, self.w / 2.0, self.h / 2.0);
+        let Some(h) = shape_height(sh, a, b, hw, hh) else { return out };
+        let has = |c: &str| channels.iter().any(|x| x == c);
+        if has("normal") {
+            let e = sh.cell.min(if sh.border > 0.0 { sh.border } else { sh.cell }) * 0.1;
+            let at = |a: f32, b: f32| shape_height(sh, a, b, hw, hh).unwrap_or(0.0);
+            let (su, sv) = ((at(a + e, b) - at(a - e, b)) / (2.0 * e) * fu, (at(a, b + e) - at(a, b - e)) / (2.0 * e) * fv);
+            let w = [0, 1, 2].map(|k| su * self.u[k] + sv * self.v[k]);
+            let (tv, bv) = mesh.tan[t];
+            let (gx, gy) = (dot(w, tv), dot(w, bv));
+            let k = 1.0 / (gx * gx + gy * gy + 1.0).sqrt();
+            out.normal = Some(([(-gx * k * 0.5 + 0.5) * 255.0, (-gy * k * 0.5 + 0.5) * 255.0, (k * 0.5 + 0.5) * 255.0], 1.0));
+        }
+        if has("height") { out.height = Some((128.0 + 127.0 * (h / sh.depth.max(sh.amount).max(1e-9)).clamp(-1.0, 1.0), 1.0)); }
+        out
+    }
+}
+
+/// A pattern's relief at (x, y) in cells (paint.ts `patternAt`, f64 like JavaScript so the stipple matches).
+fn pattern_at(p: &str, x: f64, y: f64) -> f64 {
+    match p {
+        "grooves" => { let f = y - y.floor(); if f > 0.25 && f < 0.75 { -(std::f64::consts::PI * (f - 0.25) * 2.0).sin() } else { 0.0 } }
+        "checker" => {
+            let tri = |s: f64| 1.0 - 2.0 * (s - s.floor() - 0.5).abs();
+            let r = std::f64::consts::FRAC_1_SQRT_2;
+            tri((x + y) * r).min(tri((x - y) * r))
+        }
+        "stipple" => {
+            let (i, j) = (x.floor(), y.floor());
+            let mut v: f64 = 0.0;
+            for a in [i - 1.0, i, i + 1.0] {
+                for b in [j - 1.0, j, j + 1.0] {
+                    let (dx, dy, r) = (x - (a + 0.2 + 0.6 * hash(a, b, 1.0)), y - (b + 0.2 + 0.6 * hash(a, b, 2.0)), 0.38 + 0.2 * hash(a, b, 3.0));
+                    let q = 1.0 - (dx * dx + dy * dy) / (r * r);
+                    if q > 0.0 { v = v.max(q * q); }
+                }
+            }
+            v
+        }
+        _ => 0.0,
+    }
+}
+/// The relief at (x, y) world units from a shape's centre, None outside its outline (paint.ts `shapeHeight`).
+pub fn shape_height(sh: &Shape, x: f32, y: f32, hw: f32, hh: f32) -> Option<f32> {
+    let (x, y, hw, hh) = (x as f64, y as f64, hw as f64, hh as f64);
+    let (corner, g, cell) = (sh.corner as f64, sh.border as f64, sh.cell as f64);
+    let r = corner.min(hw).min(hh);
+    let (qx, qy) = (x.abs() - hw + r, y.abs() - hh + r);
+    let sd = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r;
+    if sd > 0.0 { return None; }
+    let mut h = if g > 0.0 && sd > -g { -(sh.depth as f64) * (std::f64::consts::PI * (sd + g) / g).sin() } else { 0.0 };
+    let t = (-(if g > 0.0 { g * 1.6 } else { 0.0 }) - sd) / (cell * 0.5);
+    let fade = if t <= 0.0 { 0.0 } else if t >= 1.0 { 1.0 } else { t * t * (3.0 - 2.0 * t) };
+    if fade > 0.0 && sh.pattern != "none" { h += sh.amount as f64 * fade * pattern_at(&sh.pattern, x / cell, y / cell); }
+    Some(h as f32)
 }
 
 /// Value noise in 3D, 0..1, three octaves (paint.ts `noise`, f64 like JavaScript so the grunge matches).

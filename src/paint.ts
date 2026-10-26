@@ -60,7 +60,15 @@ export interface Decal {
   flipV?: boolean;
   /** Engraved: how deep the mark is cut, 0..1 (the 'normal' and 'height' channels carry it; 0 or absent: ink only). */
   engrave?: number;
+  /** A procedural relief instead of an image (grip textures): written to Normal and Height only. */
+  shape?: Shape;
 }
+/** A grip texture's fill: raised stipple dots, grooves across the panel, diamond checkering, or none (the border alone). */
+export type Pattern = 'stipple' | 'grooves' | 'checker' | 'none';
+/** A relief panel: a rounded rectangle (`corner` radius), a groove `border` wide and `depth` deep round its edge, and
+ *  `pattern` inside, one `cell` per repeat, `amount` high. All world units, so stretching the panel never stretches the
+ *  dots. `shapeHeight` here and the engine's `shape_height` must agree. */
+export interface Shape { pattern: Pattern; corner: number; border: number; depth: number; cell: number; amount: number }
 /** How a layer combines with what is below it, per channel as Substance Painter holds it: the base colour, the
  *  roughness and the metallic each carry their own mode, so a grunge layer can multiply the colour and still lay its
  *  roughness on straight. Normals always compose with the whiteout blend (averaging one flattens the detail). */
@@ -1169,26 +1177,10 @@ function sampleDecal(m: MapPixels, u: number, v: number) {
 export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLike<number>, uvs: ArrayLike<number>, span: number) {
   const d = l.decal;
   if (!d) return;
+  if (d.shape) { bakeShape(s, l, pos, uvs, span); return; }
   ensureShell(s, uvs);
   const n = s.size;
-  const [cx, cy, cz] = d.center;
-  let [nx, ny, nz] = d.normal;
-  const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
-  // Re-orthogonalise the stored up vector against the normal, then make the right vector. Text is upright
-  // when the decal is placed on a vertical face, which is how the reference markings read.
-  let [vx, vy, vz] = d.up;
-  const vd = vx * nx + vy * ny + vz * nz;
-  vx -= nx * vd; vy -= ny * vd; vz -= nz * vd;
-  let vl = Math.hypot(vx, vy, vz);
-  if (vl < 1e-6) { vx = 1; vy = 0; vz = 0; vl = 1; }
-  vx /= vl; vy /= vl; vz /= vl;
-  let ux = vy * nz - vz * ny, uy = vz * nx - vx * nz, uz = vx * ny - vy * nx;
-  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
-  const rad = (d.rotation * Math.PI) / 180, co = Math.cos(rad), si = Math.sin(rad);
-  const uxr = ux * co + vx * si, uyr = uy * co + vy * si, uzr = uz * co + vz * si;
-  const vxr = -ux * si + vx * co, vyr = -uy * si + vy * co, vzr = -uz * si + vz * co;
-  const width = Math.max(d.width, 1e-5), height = width / Math.max(d.aspect, 1e-4);
-  const depth = Math.max(width * 0.55, span * 0.012);
+  const { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth } = frameOf(d, span);
   for (const ch of Object.keys(l.px) as Channel[]) if (!d.channels.includes(ch)) delete l.px[ch];
   const buf: Partial<Record<Channel, Uint8ClampedArray>> = {};
   const eng = Math.max(0, d.engrave ?? 0);
@@ -1211,16 +1203,7 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
     let fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x;
     const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
     if (fx * nx + fy * ny + fz * nz < 0.12) continue; // a mark only lands on surface facing the projector
-    if (eng > 0) {
-      // the triangle's tangent frame as the engine's Mesh has it: T from the UVs, B = N × T
-      const du1 = uvs[t * 6 + 2] - uvs[t * 6], dv1 = uvs[t * 6 + 3] - uvs[t * 6 + 1], du2 = uvs[t * 6 + 4] - uvs[t * 6], dv2 = uvs[t * 6 + 5] - uvs[t * 6 + 1];
-      const det = du1 * dv2 - du2 * dv1;
-      if (Math.abs(det) > 1e-12) {
-        tx = (e1x * dv2 - e2x * dv1) / det; ty = (e1y * dv2 - e2y * dv1) / det; tz = (e1z * dv2 - e2z * dv1) / det;
-        const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
-      } else { tx = 1; ty = 0; tz = 0; }
-      bx = fy * tz - fz * ty; by = fz * tx - fx * tz; bz = fx * ty - fy * tx;
-    }
+    if (eng > 0) [tx, ty, tz, bx, by, bz] = tangentOf(pos, uvs, t, fx, fy, fz);
     raster(n, pos, uvs, t, (x, y, z) => {
       const dx = x - cx, dy = y - cy, dz = z - cz;
       const along = dx * nx + dy * ny + dz * nz;
@@ -1251,6 +1234,125 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
         nm[i * 4] = (ex * 0.5 + 0.5) * 255; nm[i * 4 + 1] = (ey * 0.5 + 0.5) * 255; nm[i * 4 + 2] = (ez * 0.5 + 0.5) * 255; nm[i * 4 + 3] = 255;
       }
       if (ht && sa > 0) { ht[i * 2] = 128 - 64 * eng; ht[i * 2 + 1] = sa * 255; }
+    });
+  }
+  for (const i of touched) weight[i] = 0;
+  touched.length = 0;
+}
+
+/** A decal's projector: centre, facing, right / up turned by the rotation, size and how deep it reaches. */
+function frameOf(d: Decal, span: number) {
+  const [cx, cy, cz] = d.center;
+  let [nx, ny, nz] = d.normal;
+  const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+  // Re-orthogonalise the stored up vector against the normal, then make the right vector. Text is upright
+  // when the decal is placed on a vertical face, which is how the reference markings read.
+  let [vx, vy, vz] = d.up;
+  const vd = vx * nx + vy * ny + vz * nz;
+  vx -= nx * vd; vy -= ny * vd; vz -= nz * vd;
+  let vl = Math.hypot(vx, vy, vz);
+  if (vl < 1e-6) { vx = 1; vy = 0; vz = 0; vl = 1; }
+  vx /= vl; vy /= vl; vz /= vl;
+  let ux = vy * nz - vz * ny, uy = vz * nx - vx * nz, uz = vx * ny - vy * nx;
+  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+  const rad = (d.rotation * Math.PI) / 180, co = Math.cos(rad), si = Math.sin(rad);
+  const uxr = ux * co + vx * si, uyr = uy * co + vy * si, uzr = uz * co + vz * si;
+  const vxr = -ux * si + vx * co, vyr = -uy * si + vy * co, vzr = -uz * si + vz * co;
+  const width = Math.max(d.width, 1e-5), height = width / Math.max(d.aspect, 1e-4);
+  const depth = Math.max(width * 0.55, span * 0.012);
+  return { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth };
+}
+
+/** Triangle t's tangent frame as the engine's Mesh has it: T from the UVs, B = N × T (N the unit face normal). */
+function tangentOf(pos: ArrayLike<number>, uvs: ArrayLike<number>, t: number, fx: number, fy: number, fz: number): [number, number, number, number, number, number] {
+  const o = t * 9;
+  const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+  const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+  const du1 = uvs[t * 6 + 2] - uvs[t * 6], dv1 = uvs[t * 6 + 3] - uvs[t * 6 + 1], du2 = uvs[t * 6 + 4] - uvs[t * 6], dv2 = uvs[t * 6 + 5] - uvs[t * 6 + 1];
+  const det = du1 * dv2 - du2 * dv1;
+  let tx = 1, ty = 0, tz = 0;
+  if (Math.abs(det) > 1e-12) {
+    tx = (e1x * dv2 - e2x * dv1) / det; ty = (e1y * dv2 - e2y * dv1) / det; tz = (e1z * dv2 - e2z * dv1) / det;
+    const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+  }
+  return [tx, ty, tz, fy * tz - fz * ty, fz * tx - fx * tz, fx * ty - fy * tx];
+}
+
+const smooth01 = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+/** A pattern's relief at (x, y) in cells: stipple 0..1 bumps, grooves 0..-1 cuts across, checker 0..1 pyramids. */
+function patternAt(p: Pattern, x: number, y: number) {
+  if (p === 'grooves') { const f = y - Math.floor(y); return f > 0.25 && f < 0.75 ? -Math.sin(Math.PI * (f - 0.25) * 2) : 0; }
+  if (p === 'checker') {
+    const tri = (s: number) => 1 - 2 * Math.abs(s - Math.floor(s) - 0.5);
+    return Math.min(tri((x + y) * Math.SQRT1_2), tri((x - y) * Math.SQRT1_2));
+  }
+  if (p !== 'stipple') return 0;
+  // one jittered dome per cell, the tallest of the 3×3 around wins
+  const i = Math.floor(x), j = Math.floor(y);
+  let v = 0;
+  for (let a = i - 1; a <= i + 1; a++) for (let b = j - 1; b <= j + 1; b++) {
+    const dx = x - (a + 0.2 + 0.6 * hash(a, b, 1)), dy = y - (b + 0.2 + 0.6 * hash(a, b, 2)), r = 0.38 + 0.2 * hash(a, b, 3);
+    const q = 1 - (dx * dx + dy * dy) / (r * r);
+    if (q > 0) v = Math.max(v, q * q);
+  }
+  return v;
+}
+/** The relief at (x, y) world units from a shape's centre (half extents hw × hh), null outside its outline: a groove
+ *  `border` wide round the rounded edge, then the pattern faded in a little inside it. Engine: `shape_height`. */
+export function shapeHeight(sh: Shape, x: number, y: number, hw: number, hh: number): number | null {
+  const r = Math.min(sh.corner, hw, hh);
+  const qx = Math.abs(x) - hw + r, qy = Math.abs(y) - hh + r;
+  const sd = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+  if (sd > 0) return null;
+  const g = sh.border;
+  let h = g > 0 && sd > -g ? -sh.depth * Math.sin((Math.PI * (sd + g)) / g) : 0;
+  const fade = smooth01((-(g > 0 ? g * 1.6 : 0) - sd) / (sh.cell * 0.5));
+  if (fade > 0 && sh.pattern !== 'none') h += sh.amount * fade * patternAt(sh.pattern, x / sh.cell, y / sh.cell);
+  return h;
+}
+
+/** Bake a shape decal: per texel the relief's height and its slope as a tangent-space normal (Normal / Height), on
+ *  front-facing surface inside the projector, like an image decal. */
+export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs: ArrayLike<number>, span: number) {
+  const d = l.decal, sh = d?.shape;
+  if (!d || !sh) return;
+  ensureShell(s, uvs);
+  const n = s.size;
+  const { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth } = frameOf(d, span);
+  for (const ch of Object.keys(l.px) as Channel[]) if (!d.channels.includes(ch)) delete l.px[ch];
+  const nm = d.channels.includes('normal') ? fillBuf(s, l, 'normal') : null, ht = d.channels.includes('height') ? fillBuf(s, l, 'height') : null;
+  nm?.fill(0); ht?.fill(0);
+  const hw = width / 2, hh = height / 2, fu = d.flipH ? -1 : 1, fv = d.flipV ? -1 : 1;
+  const e = Math.min(sh.cell, sh.border > 0 ? sh.border : sh.cell) * 0.1, top = Math.max(sh.depth, sh.amount, 1e-9);
+  const at = (a: number, b: number) => shapeHeight(sh, a, b, hw, hh) ?? 0;
+  let h = 0, gx = 0, gy = 0, tx = 1, ty = 0, tz = 0, bx = 0, by = 1, bz = 0;
+  ready(n);
+  for (let t = 0; t < pos.length / 9; t++) {
+    const o = t * 9;
+    const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+    const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+    let fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x;
+    const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+    if (fx * nx + fy * ny + fz * nz < 0.12) continue;
+    [tx, ty, tz, bx, by, bz] = tangentOf(pos, uvs, t, fx, fy, fz);
+    raster(n, pos, uvs, t, (x, y, z) => {
+      const dx = x - cx, dy = y - cy, dz = z - cz;
+      if (Math.abs(dx * nx + dy * ny + dz * nz) > depth) return 0;
+      const a = (dx * uxr + dy * uyr + dz * uzr) * fu, b = (dx * vxr + dy * vyr + dz * vzr) * fv;
+      const hv = shapeHeight(sh, a, b, hw, hh);
+      if (hv === null) return 0;
+      h = hv;
+      // the slope along the decal's axes, into world, then the triangle's tangent space; the normal leans downhill
+      const su = ((at(a + e, b) - at(a - e, b)) / (2 * e)) * fu, sv = ((at(a, b + e) - at(a, b - e)) / (2 * e)) * fv;
+      const wx = su * uxr + sv * vxr, wy = su * uyr + sv * vyr, wz = su * uzr + sv * vzr;
+      gx = wx * tx + wy * ty + wz * tz; gy = wx * bx + wy * by + wz * bz;
+      return 1;
+    }, undefined, (_x, _y, _z, i) => {
+      if (nm) {
+        const k = 1 / Math.hypot(gx, gy, 1);
+        nm[i * 4] = (-gx * k * 0.5 + 0.5) * 255; nm[i * 4 + 1] = (-gy * k * 0.5 + 0.5) * 255; nm[i * 4 + 2] = (k * 0.5 + 0.5) * 255; nm[i * 4 + 3] = 255;
+      }
+      if (ht) { ht[i * 2] = 128 + 127 * Math.max(-1, Math.min(1, h / top)); ht[i * 2 + 1] = 255; }
     });
   }
   for (const i of touched) weight[i] = 0;

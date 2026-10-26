@@ -12,7 +12,7 @@ import { clearRecentFiles, forgetRecent, pickWithHandle, recentFiles, remember, 
 import { carryNormals, dissolve, dissolveFaces, limitedDissolve, link, outNormals, ownPolygons, topoOfSoup, triangulate, trisToQuads, type Polys } from './polyedit';
 import { bake } from './bake';
 import { resetLight } from './matview';
-import { CHANNELS, composite, dab, dabUV, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, growSelection, keep as keepPaint, SOLID, maskPolygon, maskTris, newLayer, requestComposite, restoreSet, setIfAny, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
+import { CHANNELS, composite, dab, dabUV, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, growSelection, keep as keepPaint, SOLID, maskPolygon, maskTris, newLayer, requestComposite, restoreSet, setIfAny, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, bakeShape, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
 import { gpuBegin, gpuDab, gpuFinish, gpuTake } from './gpupaint';
 import { FILL_CHANNELS, loadMaterialLibrary, mapUrl, materialFromFiles, materialPixels, type MaterialAsset, type MaterialPixels } from './materials';
 import { decalFromFile, decalPixels, decalUrl, loadDecalLibrary, type DecalAsset } from './decals';
@@ -883,7 +883,7 @@ export const exportTextures = () => task('Exporting textures…', async () => {
       const m = l.fill && (s.materials.find((x) => x.id === l.fill!.asset) ?? library.find((x) => x.id === l.fill!.asset));
       if (m) materials[m.id] = Object.fromEntries((['basecolor', 'normal', 'roughness', 'metallic', 'height'] as const).flatMap((k) => { const u = mapUrl(m, k); return u ? [[k, u]] : []; }));
       const d = l.decal && (s.decals.find((x) => x.id === l.decal!.asset) ?? decalShelf.find((x) => x.id === l.decal!.asset));
-      if (d) decals[d.id] = decalUrl(d);
+      if (d && !d.shape) decals[d.id] = decalUrl(d); // a shape has no file: the engine draws it from the layer
     }
   }
   const blobs: [string, Uint8Array][] = [];
@@ -3016,10 +3016,12 @@ export function pickDecal(id: string) {
   const a = decalOf(id);
   if (!a) return;
   set((s) => ({
-    paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? '#ffffff' },
+    paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? '#ffffff', ...(a.shape ? { decalSize: GRIP_SIZE } : {}) },
     paintTab: 'decals', error: null,
   }));
 }
+/** A grip texture's starting width: a pistol grip panel, a share of the model like `decalSize`. */
+const GRIP_SIZE = 18;
 export const importDecal = (file: File) => task('Importing a decal…', async () => {
   const a = await decalFromFile(file);
   set((s) => ({
@@ -3059,11 +3061,13 @@ function insideDecal(d: Decal, at: [number, number, number], span: number) {
 }
 /** Bake one decal layer from its current projector. */
 function rebakeDecal(i: number, layer: PaintLayer) {
-  const a = layer.decal && decalOf(layer.decal.asset);
-  if (!a) return;
   const st = get(), out = st.result?.parts[i], uv = st.uvs[i];
   if (!out || !uv) return;
   const span = modelSize(st.result!);
+  // a shape is its own relief: no image to load
+  if (layer.decal?.shape) { bakeShape(texSet(i), layer, out.positions, uv, span); composite(texSet(i)); repaint(); return; }
+  const a = layer.decal && decalOf(layer.decal.asset);
+  if (!a) return;
   void decalPixels(a).then((px) => {
     const now = get();
     if (!now.result?.parts[i] || now.uvs[i] !== uv || !texSet(i).layers.includes(layer)) return;
@@ -3084,9 +3088,12 @@ function placeDecal(i: number, tri: number, at: [number, number, number]) {
     asset: a.id, center: [...at] as [number, number, number], normal, up: decalUp(normal),
     width: Math.max(span * st.paint.decalSize / 100, span * 0.01), rotation: st.paint.decalRotation,
     aspect: a.width / a.height, tint: st.paint.decalTint, roughness: 0.55, metallic: 0,
-    channels: ['color', 'rough', 'metal'],
+    channels: a.shape ? ['normal', 'height'] : ['color', 'rough', 'metal'],
+    // a grip texture's sizes are shares of the model on the shelf, world units on the model
+    ...(a.shape ? { shape: { ...a.shape, corner: a.shape.corner * span, border: a.shape.border * span, depth: a.shape.depth * span, cell: a.shape.cell * span, amount: a.shape.amount * span } } : {}),
   };
   step(s);
+  if (a.shape && !s.channels.includes('normal')) s.channels = [...FILL_CHANNELS];
   const layer: PaintLayer = { ...newLayer(s.layers.length + 1), name: a.name, decal };
   const at0 = insertAt(s);
   s.layers.splice(at0, 0, layer);
@@ -3132,7 +3139,8 @@ function mirrorHit(r: Output, i: number, at: [number, number, number], normal: [
  *  with the Decal tool would, so its gizmo is ready. */
 export function dropDecal(id: string, i: number, tri: number, at: [number, number, number]) {
   if (get().busy || !decalOf(id)) return;
-  set((s) => ({ paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: decalOf(id)!.tint ?? '#ffffff' } }));
+  const a = decalOf(id)!;
+  set((s) => ({ paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? '#ffffff', ...(a.shape ? { decalSize: GRIP_SIZE } : {}) } }));
   placeDecal(i, tri, at);
 }
 /** Drag an existing decal to a new point. Over triangle `tri` the projector turns to face it (Substance's: the mark

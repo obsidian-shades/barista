@@ -52,7 +52,13 @@ pub struct Decal {
     /// Engraved depth 0..1 (paint.ts `Decal.engrave`): the mark's edge tilts the normal, its ink lowers the height.
     #[serde(default)]
     pub engrave: f32,
+    /// A grip texture (paint.ts `Shape`): no image, a relief drawn by `layers::shape_height` into normal and height.
+    #[serde(default)]
+    pub shape: Option<Shape>,
 }
+/// A relief panel in world units (paint.ts `Shape`): rounded outline, groove border, pattern inside.
+#[derive(Deserialize, Clone)]
+pub struct Shape { pub pattern: String, pub corner: f32, pub border: f32, pub depth: f32, pub cell: f32, pub amount: f32 }
 #[derive(Deserialize, Clone)]
 pub struct Gen {
     pub kind: String,
@@ -149,7 +155,7 @@ fn blended(d: f32, s: f32, mode: &str) -> f32 {
 }
 
 /// How a layer gets its texels at the export size.
-enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a Map, &'a [String]), Gen(&'a Gen) }
+enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a Map, &'a [String]), Shape(DecalFrame, &'a Shape, &'a [String]), Gen(&'a Gen) }
 
 /// One part's maps at size n: composite colour, roughness, metallic, normal, height, AO, and which texels are
 /// painted (for the padding) and on the surface.
@@ -177,6 +183,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
         .iter()
         .map(|l| {
             if let Some(f) = &l.fill { if let Some(m) = assets.materials.get(&f.asset) { return Src::Fill(f, m); } }
+            if let Some(d) = &l.decal { if let Some(sh) = &d.shape { return Src::Shape(DecalFrame::new(d, span), sh, &d.channels); } }
             if let Some(d) = &l.decal { if let Some(img) = assets.decals.get(&d.asset) { return Src::Decal(DecalFrame::new(d, span), img, &d.channels); } }
             if let Some(g) = &l.gen { if occ.is_some() && edges.is_some() { return Src::Gen(g); } }
             Src::Pixels
@@ -212,6 +219,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
                         let mut te = match &srcs[j] {
                             Src::Fill(f, m) => fill_at(f, m, mesh, t, p, x, y, n, span),
                             Src::Decal(fr, img, ch) => fr.at(img, mesh, t, p, ch),
+                            Src::Shape(fr, sh, ch) => fr.shape_at(sh, mesh, t, p, ch),
                             Src::Gen(g) => {
                                 if convex.is_nan() { convex = edges.unwrap().dist(0, p); concave = edges.unwrap().dist(1, p); }
                                 let clip = buf.get("clip").map(|m| up.sample(m, 1, true, u, v, &mut tmp) * tmp[0] / 255.0).unwrap_or(1.0);
@@ -488,6 +496,25 @@ fn run(req: &ExportReq, dir: &Path, fbx: Option<&[u8]>) -> Result<Vec<String>, S
 mod tests {
     use super::*;
     use crate::project::save;
+
+    /// The engine draws a grip texture as the editor does: paint.ts `shapeHeight` at the same points (from Node).
+    #[test]
+    fn shape_relief_matches_the_editor() {
+        let sh = |p: &str| Shape { pattern: p.into(), corner: 0.2, border: 0.06, depth: 0.03, cell: 0.05, amount: 0.012 };
+        let pts = [(0.3079, 0.2233), (-0.1728, 0.5644), (0.0044, 0.3288), (0.2237, 0.6699), (0.1085, -0.0205), (0.47, 0.2)];
+        let want = [
+            ("stipple", [0.003171373, 0.005149145, 0.006135595, 0.004268161, 0.01070719, -0.03]),
+            ("grooves", [-0.011727217, -0.002837988, -0.010657637, -0.009618804, -0.010131935, -0.03]),
+            ("checker", [0.004714192, 0.010213977, 0.00690817, 0.007445302, 0.004215948, -0.03]),
+        ];
+        for (p, w) in want {
+            for (&(x, y), w) in pts.iter().zip(w) {
+                let h = layers::shape_height(&sh(p), x, y, 0.5, 1.0).unwrap();
+                assert!((h - w).abs() < 2e-5, "{p} at ({x}, {y}): engine {h}, editor {w}");
+            }
+            assert!(layers::shape_height(&sh(p), 0.6, 0.0, 0.5, 1.0).is_none(), "{p}: nothing outside the outline");
+        }
+    }
 
     /// A unit cube (12 triangles, each face its own UV cell in a 3×2 grid), painted red at 64² by hand, plus edge
     /// wear, rendered at 256².

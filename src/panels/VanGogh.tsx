@@ -4,7 +4,7 @@
 // tool's settings; the panel the parts (collapsible, with their channels: Substance's texture sets) and the active
 // part's Layers, as Photoshop's panel lays them out.
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { CHANNELS, SOLID, blendOf, thumbOf, type BlendMode, type BrushTip, type Channel, type Decal, type Fill, type Gen, type GenKind } from '../paint';
+import { CHANNELS, SOLID, blendOf, thumbOf, type BlendMode, type BrushTip, type Channel, type Decal, type Fill, type Pattern, type Shape, type Gen, type GenKind } from '../paint';
 import { MATERIAL_GROUPS, TILE_KINDS, materialGroup, thumbUrl, tileKind } from '../materials';
 import { decalUrl } from '../decals';
 import { decalDragOver, decalDrop, shelfDragOver, shelfDrop } from '../views/Viewport3D';
@@ -315,6 +315,45 @@ function DecalSettings({ d }: { d: Decal }) {
         <input type="range" min={-180} max={180} step={1} value={d.rotation} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ rotation: +e.target.value }, false)} />
         <span className="num readout">{Math.round(d.rotation)}°</span>
       </label>
+      {d.shape ? <ShapeSettings d={d} span={span} /> : <InkSettings d={d} />}
+      <DecalTurns d={d} />
+      <div className="hint">With the Decal tool active, drag the mark on the model to move it over the surface; its corners scale it, the knob above rotates it (Shift: 15° steps). A click elsewhere adds another.</div>
+    </div>
+  );
+}
+
+/** A grip texture's relief, as shares of the model (as the decal's Size is): pattern, outline and groove border. */
+const SHAPE_SLIDERS: [keyof Omit<Shape, 'pattern'>, string, string, number][] = [
+  ['cell', 'Cell', 'Size of one stipple dot, groove or diamond', 3],
+  ['amount', 'Height', 'How far the pattern stands up (grooves: how deep they cut)', 1],
+  ['border', 'Border', 'Width of the groove round the edge (0: none)', 2],
+  ['depth', 'Depth', 'How deep the border groove cuts', 1],
+  ['corner', 'Corner', 'Radius of the outline\'s corners', 10],
+];
+function ShapeSettings({ d, span }: { d: Decal; span: number }) {
+  const sh = d.shape!;
+  return (
+    <>
+      <label title="What fills the panel">Pattern
+        <select value={sh.pattern} onChange={(e) => updateDecal({ shape: { ...sh, pattern: e.target.value as Pattern } })}>
+          <option value="stipple">Stipple</option><option value="grooves">Grooves</option><option value="checker">Checkering</option><option value="none">None (border only)</option>
+        </select>
+      </label>
+      {SHAPE_SLIDERS.map(([key, name, tip, max]) => (
+        <label key={key} title={tip}>{name}
+          <input type="range" min={0} max={max} step={0.02} value={(sh[key] / span) * 100} onPointerDown={beginPaintEdit}
+            onChange={(e) => updateDecal({ shape: { ...sh, [key]: Math.max(key === 'cell' ? 1e-4 : 0, (span * +e.target.value) / 100) } }, false)} />
+          <span className="num readout">{((sh[key] / span) * 100).toFixed(2)}%</span>
+        </label>
+      ))}
+    </>
+  );
+}
+
+/** An image decal's ink: tint, roughness, metallic and engraving. */
+function InkSettings({ d }: { d: Decal }) {
+  return (
+    <>
       <label title="Tint the mark's ink">Ink
         <input type="color" className="cswatch" value={d.tint} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ tint: e.target.value }, false)} />
       </label>
@@ -334,9 +373,7 @@ function DecalSettings({ d }: { d: Decal }) {
         }} />
         <span className="num readout">{(d.engrave ?? 0) > 0 ? `${Math.round((d.engrave ?? 0) * 100)}%` : 'off'}</span>
       </label>
-      <DecalTurns d={d} />
-      <div className="hint">With the Decal tool active, drag the mark on the model to move it over the surface; its corners scale it, the knob above rotates it (Shift: 15° steps). A click elsewhere adds another.</div>
-    </div>
+    </>
   );
 }
 

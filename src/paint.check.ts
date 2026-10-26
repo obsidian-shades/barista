@@ -1,7 +1,7 @@
 // node src/paint.check.ts: a unit square split at x = 0.5 into two islands far apart in UV. A dab on the seam paints
 // both; a dab paints a flat face evenly (no lines where its triangles meet); layers stack; erase and undo work.
 import assert from 'node:assert';
-import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Brush, type Decal, type Fill, type GenKind, type PaintLayer } from './paint.ts';
+import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, bakeShape, shapeHeight, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Brush, type Decal, type Fill, type GenKind, type PaintLayer, type Shape } from './paint.ts';
 import type { MaterialPixels } from './materials.ts';
 
 // left half [0,.5] → uv (0..0.25, 0..0.5); right half [.5,1] → uv (0.5..0.75, 0..0.5): the seam is 0.25 apart in UV
@@ -254,4 +254,29 @@ const c1 = count();
 growSelection(gs, -4, uvs);
 assert.ok(c1 > c0 && count() < c0 && count() > 0, `grow then shrink: ${c0} → ${c1} → ${count()}`);
 assert.ok(gs.sel!.every((x, i) => !x || gs.shell![i]), 'a grown selection stays on the surface');
+
+// grip textures: a relief panel with a groove border, written to Normal and Height only
+{
+  const sh: Shape = { pattern: 'stipple', corner: 0.05, border: 0.04, depth: 0.02, cell: 0.03, amount: 0.01 };
+  assert.equal(shapeHeight(sh, 0.3, 0, 0.25, 0.4), null, 'nothing outside the outline');
+  assert.ok(Math.abs(shapeHeight(sh, 0.23, 0, 0.25, 0.4)! + 0.02) < 1e-3, 'the border groove cuts its full depth mid-way');
+  let lo = Infinity, hi = -Infinity;
+  for (let k = 0; k < 400; k++) { const h = shapeHeight(sh, -0.15 + (k % 20) * 0.015, -0.3 + Math.floor(k / 20) * 0.03, 0.25, 0.4)!; lo = Math.min(lo, h); hi = Math.max(hi, h); }
+  assert.ok(lo >= 0 && hi > 0.006 && hi <= 0.01 + 1e-9, `stipple stands up to its height inside: ${lo}..${hi}`);
+  assert.ok(shapeHeight({ ...sh, pattern: 'grooves' }, 0, 0.03 * 10.5, 0.25, 0.4)! < -0.009, 'grooves cut across the panel');
+  // baked on the test quad (z = 0 plane, facing +Z): normals lean, height dips at the groove, colour untouched
+  const ss = setOf(new Float32Array(pos), 64), l: PaintLayer = { ...newLayer(9), decal: { asset: 'shape-test', center: [0.5, 0.5, 0], normal: [0, 0, 1], up: [0, 1, 0], width: 0.8, rotation: 0, aspect: 1, tint: '#ffffff', roughness: 0.5, metallic: 0, channels: ['normal', 'height'], shape: sh } };
+  ss.channels = ['color', 'rough', 'metal', 'normal', 'height'];
+  bakeShape(ss, l, pos, uvs, 1);
+  assert.ok(!l.px.color && l.px.normal && l.px.height, 'a shape writes Normal and Height, not colour');
+  const nm = l.px.normal!, ht = l.px.height!;
+  let tilted = 0, cut = 0, covered = 0;
+  for (let i = 0; i < 64 * 64; i++) {
+    if (!nm[i * 4 + 3]) continue;
+    covered++;
+    if (Math.abs(nm[i * 4] - 128) > 20 || Math.abs(nm[i * 4 + 1] - 128) > 20) tilted++;
+    if (ht[i * 2] < 70) cut++;
+  }
+  assert.ok(covered > 500 && tilted > 50 && cut > 20, `relief baked: ${covered} texels, ${tilted} tilted, ${cut} in the groove`);
+}
 console.log('paint ok');
