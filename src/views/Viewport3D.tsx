@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import type { Output } from '../api';
 import { islandColor, stretchColor, uvMapCanvas } from '../colors';
 import { Morph } from '../morph';
-import { inside } from '../paint';
+import { inside, RECT_OUTLINE } from '../paint';
 import { env as paintEnv, look as paintLook, PAINT_HDRI, setEnv, turnLight } from '../matview';
 import { health, healthColor } from '../health';
 import { poles } from '../polygeo';
@@ -1151,6 +1151,38 @@ function DecalGizmo() {
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
   };
+  // a grip texture's outline: drag a corner over the decal's plane, a + on an edge adds a corner there, Alt+click removes one
+  const sh = d.shape, fu = d.flipH ? -1 : 1, fv = d.flipV ? -1 : 1, pts = sh ? sh.outline ?? RECT_OUTLINE : null;
+  const local = (p: [number, number]): [number, number, number] => [p[0] * fu * w / 2, p[1] * fv * h / 2, 0];
+  const corner = (k0: number, insert: boolean) => (e: ThreeEvent<PointerEvent>) => {
+    if (e.button !== 0 || !sh || !pts) return;
+    e.stopPropagation();
+    let o = pts.map((p) => [p[0], p[1]] as [number, number]), k = k0;
+    if (!insert && e.nativeEvent.altKey) { if (o.length > 3) { o.splice(k, 1); updateDecal({ shape: { ...sh, outline: o } }); } return; }
+    beginPaintEdit();
+    if (insert) { const a = o[k], b = o[(k + 1) % o.length]; k++; o.splice(k, 0, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); updateDecal({ shape: { ...sh, outline: o } }, false); }
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, c), ray = new THREE.Raycaster(), hit = new THREE.Vector3();
+    const move = (m: PointerEvent) => {
+      const box = gl.domElement.getBoundingClientRect();
+      ray.setFromCamera(new THREE.Vector2(((m.clientX - box.left) / box.width) * 2 - 1, -((m.clientY - box.top) / box.height) * 2 + 1), camera);
+      if (!ray.ray.intersectPlane(plane, hit)) return;
+      hit.sub(c);
+      o = o.map((p) => [p[0], p[1]] as [number, number]);
+      o[k] = [(hit.dot(ur) / (w / 2)) * fu, (hit.dot(vr) / (h / 2)) * fv];
+      updateDecal({ shape: { ...sh, outline: o } }, false);
+      invalidate();
+    };
+    const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+  };
+  const dot = (at: [number, number, number], key: string, size: number, color: string, opacity: number, down: (e: ThreeEvent<PointerEvent>) => void) => (
+    <mesh key={key} position={at} renderOrder={13} onPointerDown={down}
+      onPointerOver={() => { gl.domElement.style.cursor = 'move'; }} onPointerOut={() => { gl.domElement.style.cursor = ''; }}>
+      <circleGeometry args={[size, 16]} />
+      <meshBasicMaterial color={color} depthTest={false} transparent opacity={opacity} side={THREE.DoubleSide} />
+    </mesh>
+  );
   const handle = (at: [number, number, number], mode: 'scale' | 'rotate', key: string) => (
     <mesh key={key} position={at} renderOrder={12} onPointerDown={drag(mode)}
       onPointerOver={() => { gl.domElement.style.cursor = mode === 'scale' ? 'nwse-resize' : 'grab'; }} onPointerOut={() => { gl.domElement.style.cursor = ''; }}>
@@ -1164,6 +1196,9 @@ function DecalGizmo() {
       <Line points={[[0, h / 2, 0], top]} color={SEL} lineWidth={1.5} depthTest={false} renderOrder={11} />
       {rect.slice(0, 4).map((p, k) => handle(p, 'scale', `s${k}`))}
       {handle(top, 'rotate', 'r')}
+      {pts && <Line points={[...pts, pts[0]].map(local)} color={SEL} lineWidth={2} depthTest={false} renderOrder={12} />}
+      {pts?.map((p, k) => dot(local(p), `c${k}`, knob * 0.75, SEL, 1, corner(k, false)))}
+      {pts?.map((p, k) => { const q = pts[(k + 1) % pts.length]; return dot(local([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]), `m${k}`, knob * 0.5, '#ffffff', 0.6, corner(k, true)); })}
     </group>
   );
 }

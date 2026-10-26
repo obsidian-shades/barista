@@ -62,13 +62,23 @@ export interface Decal {
   engrave?: number;
   /** A procedural relief instead of an image (grip textures): written to Normal and Height only. */
   shape?: Shape;
+  /** Bend round the model: the relief follows the surface's own coordinates out from `center` (`expMap`) instead of a
+   *  flat projection, so it carries over bevels and curves without stretching. */
+  wrap?: boolean;
 }
 /** A grip texture's fill: raised stipple dots, grooves across the panel, diamond checkering, or none (the border alone). */
 export type Pattern = 'stipple' | 'grooves' | 'checker' | 'none';
 /** A relief panel: a rounded rectangle (`corner` radius), a groove `border` wide and `depth` deep round its edge, and
  *  `pattern` inside, one `cell` per repeat, `amount` high. All world units, so stretching the panel never stretches the
  *  dots. `shapeHeight` here and the engine's `shape_height` must agree. */
-export interface Shape { pattern: Pattern; corner: number; border: number; depth: number; cell: number; amount: number }
+export interface Shape {
+  pattern: Pattern; corner: number; border: number; depth: number; cell: number; amount: number;
+  /** A free outline instead of the rectangle: corners in the panel's frame as shares of its half width / height (the
+   *  rectangle is [-1,-1] [1,-1] [1,1] [-1,1]), each rounded by `corner`. */
+  outline?: [number, number][];
+}
+/** The rectangle a shape is until its outline is edited. */
+export const RECT_OUTLINE: [number, number][] = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
 /** How a layer combines with what is below it, per channel as Substance Painter holds it: the base colour, the
  *  roughness and the metallic each carry their own mode, so a grunge layer can multiply the colour and still lay its
  *  roughness on straight. Normals always compose with the whiteout blend (averaging one flattens the detail). */
@@ -1297,12 +1307,57 @@ function patternAt(p: Pattern, x: number, y: number) {
   }
   return v;
 }
+/** The outline scaled to the panel (half extents hw × hh) with every corner rounded by r: a short arc in place of
+ *  each corner, its tangent points kept within half of either edge (engine: `filleted`). Flat x, y pairs. */
+function filleted(pts: [number, number][], hw: number, hh: number, r: number): number[] {
+  const p = pts.map(([x, y]) => [x * hw, y * hh]), n = p.length, out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const [px, py] = p[i], [ax, ay] = p[(i + n - 1) % n], [bx, by] = p[(i + 1) % n];
+    const la = Math.hypot(ax - px, ay - py), lb = Math.hypot(bx - px, by - py);
+    if (r <= 0 || la < 1e-12 || lb < 1e-12) { out.push(px, py); continue; }
+    const dax = (ax - px) / la, day = (ay - py) / la, dbx = (bx - px) / lb, dby = (by - py) / lb;
+    const th = Math.acos(Math.max(-1, Math.min(1, dax * dbx + day * dby)));
+    if (th > Math.PI - 1e-3 || th < 1e-3) { out.push(px, py); continue; }
+    const tn = Math.tan(th / 2), t = Math.min(r / tn, Math.min(la, lb) * 0.5), rr = t * tn;
+    const mx = dax + dbx, my = day + dby, k = rr / Math.sin(th / 2) / Math.hypot(mx, my);
+    const cx = px + mx * k, cy = py + my * k;
+    const a0 = Math.atan2(py + day * t - cy, px + dax * t - cx), a1 = Math.atan2(py + dby * t - cy, px + dbx * t - cx);
+    let da = a1 - a0;
+    if (da > Math.PI) da -= 2 * Math.PI; else if (da < -Math.PI) da += 2 * Math.PI;
+    for (let j = 0; j <= 6; j++) out.push(cx + rr * Math.cos(a0 + (da * j) / 6), cy + rr * Math.sin(a0 + (da * j) / 6));
+  }
+  return out;
+}
+/** Signed distance to a closed polygon (flat x, y pairs): negative inside (even-odd). Engine: `poly_sd`. */
+function polySd(poly: number[], x: number, y: number) {
+  let d = Infinity, inside = false;
+  for (let i = 0, j = poly.length - 2; i < poly.length; j = i, i += 2) {
+    const ax = poly[j], ay = poly[j + 1], ex = poly[i] - ax, ey = poly[i + 1] - ay;
+    const t = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey || 1)));
+    d = Math.min(d, Math.hypot(x - ax - ex * t, y - ay - ey * t));
+    if ((ay > y) !== (poly[i + 1] > y) && x < ax + ((y - ay) * ex) / ey) inside = !inside;
+  }
+  return inside ? -d : d;
+}
+// a bake asks for the same panel's polygon on every texel: keep the last one per shape
+const polyCache = new WeakMap<Shape, { hw: number; hh: number; poly: number[] }>();
+function outlinePoly(sh: Shape, hw: number, hh: number) {
+  const c = polyCache.get(sh);
+  if (c && c.hw === hw && c.hh === hh) return c.poly;
+  const poly = filleted(sh.outline!, hw, hh, sh.corner);
+  polyCache.set(sh, { hw, hh, poly });
+  return poly;
+}
 /** The relief at (x, y) world units from a shape's centre (half extents hw × hh), null outside its outline: a groove
  *  `border` wide round the rounded edge, then the pattern faded in a little inside it. Engine: `shape_height`. */
 export function shapeHeight(sh: Shape, x: number, y: number, hw: number, hh: number): number | null {
-  const r = Math.min(sh.corner, hw, hh);
-  const qx = Math.abs(x) - hw + r, qy = Math.abs(y) - hh + r;
-  const sd = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+  let sd: number;
+  if (sh.outline) sd = polySd(outlinePoly(sh, hw, hh), x, y);
+  else {
+    const r = Math.min(sh.corner, hw, hh);
+    const qx = Math.abs(x) - hw + r, qy = Math.abs(y) - hh + r;
+    sd = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+  }
   if (sd > 0) return null;
   const g = sh.border;
   let h = g > 0 && sd > -g ? -sh.depth * Math.sin((Math.PI * (sd + g)) / g) : 0;
@@ -1310,9 +1365,113 @@ export function shapeHeight(sh: Shape, x: number, y: number, hw: number, hh: num
   if (fade > 0 && sh.pattern !== 'none') h += sh.amount * fade * patternAt(sh.pattern, x / sh.cell, y / sh.cell);
   return h;
 }
+/** How far a shape reaches from its centre (world units): its outline's farthest corner. */
+export function reachOf(sh: Shape, hw: number, hh: number) {
+  return Math.max(...(sh.outline ?? RECT_OUTLINE).map(([x, y]) => Math.hypot(x * hw, y * hh)));
+}
 
-/** Bake a shape decal: per texel the relief's height and its slope as a tangent-space normal (Normal / Height), on
- *  front-facing surface inside the projector, like an image decal. */
+type V = [number, number, number];
+/** The least rotation taking unit a onto unit b, applied to x. */
+function turn(a: V, b: V, x: V): V {
+  const k: V = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]], co = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  if (co < -0.9999) return [x[0], x[1], x[2]];
+  const kd = (k[0] * x[0] + k[1] * x[1] + k[2] * x[2]) / (1 + co);
+  return [x[0] * co + (k[1] * x[2] - k[2] * x[1]) + k[0] * kd, x[1] * co + (k[2] * x[0] - k[0] * x[2]) + k[1] * kd, x[2] * co + (k[0] * x[1] - k[1] * x[0]) + k[2] * kd];
+}
+/** The surface's own coordinates round a decal's centre, for wrapping (a discrete exponential map, Schmidt, Grimm &
+ *  Wyvill 2006): the soup welded into vertices, the triangle nearest the centre seeded by flat projection, then
+ *  Dijkstra outward, each vertex placed from the one that reached it: the step turned into that vertex's tangent
+ *  plane (its frame carried from the centre by the least rotation between normals), its length kept. Per soup corner
+ *  (u, v) along the frame's right / up; NaN where the walk stopped (past `reach`). Engine: `exp_map`, same steps. */
+export function expMap(pos: ArrayLike<number>, c: V, nrm: V, uax: V, vax: V, reach: number): Float64Array {
+  const corners = pos.length / 3, id = new Int32Array(corners), key = new Map<string, number>(), vp: number[] = [];
+  for (let k = 0; k < corners; k++) {
+    const s = `${Math.round(pos[k * 3] * 1e5)},${Math.round(pos[k * 3 + 1] * 1e5)},${Math.round(pos[k * 3 + 2] * 1e5)}`;
+    let v = key.get(s);
+    if (v === undefined) { v = vp.length / 3; key.set(s, v); vp.push(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2]); }
+    id[k] = v;
+  }
+  const nv = vp.length / 3, vn = new Float64Array(nv * 3), nb: number[][] = Array.from({ length: nv }, () => []);
+  const P = (v: number): V => [vp[v * 3], vp[v * 3 + 1], vp[v * 3 + 2]], N = (v: number): V => [vn[v * 3], vn[v * 3 + 1], vn[v * 3 + 2]];
+  for (let t = 0; t < corners / 3; t++) {
+    const a = id[t * 3], b = id[t * 3 + 1], d = id[t * 3 + 2], pa = P(a), pb = P(b), pd = P(d);
+    const e1 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]], e2 = [pd[0] - pa[0], pd[1] - pa[1], pd[2] - pa[2]];
+    const f = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]]; // area-weighted
+    for (const v of [a, b, d]) for (let k = 0; k < 3; k++) vn[v * 3 + k] += f[k];
+    for (const [p, q] of [[a, b], [b, d], [d, a]]) { if (!nb[p].includes(q)) nb[p].push(q); if (!nb[q].includes(p)) nb[q].push(p); }
+  }
+  for (let v = 0; v < nv; v++) { const l = Math.hypot(vn[v * 3], vn[v * 3 + 1], vn[v * 3 + 2]) || 1; for (let k = 0; k < 3; k++) vn[v * 3 + k] /= l; }
+  for (const l of nb) l.sort((x, y) => x - y);
+  // seed: the triangle whose corners are nearest the centre in sum
+  let best = -1, bestD = Infinity;
+  for (let t = 0; t < corners / 3; t++) {
+    let dd = 0;
+    for (let k = 0; k < 3; k++) { const q = P(id[t * 3 + k]); dd += Math.hypot(q[0] - c[0], q[1] - c[1], q[2] - c[2]); }
+    if (dd < bestD) { bestD = dd; best = t; }
+  }
+  const out = new Float64Array(corners * 2).fill(NaN);
+  if (best < 0) return out;
+  const uv = new Float64Array(nv * 2), dist = new Float64Array(nv).fill(Infinity), done = new Uint8Array(nv);
+  const fu: V[] = new Array(nv), fv: V[] = new Array(nv);
+  // a binary heap of [dist when pushed, vertex], least first (the engine's BinaryHeap order)
+  const heap: [number, number][] = [], less = (a: [number, number], b: [number, number]) => a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
+  const push = (v: number) => {
+    const x: [number, number] = [dist[v], v];
+    let i = heap.push(x) - 1;
+    while (i > 0) { const p = (i - 1) >> 1; if (!less(x, heap[p])) break; heap[i] = heap[p]; i = p; }
+    heap[i] = x;
+  };
+  const pop = () => {
+    const top = heap[0], last = heap.pop()!;
+    if (heap.length) {
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1, r = l + 1;
+        let m = last, at = i;
+        if (l < heap.length && less(heap[l], m)) { m = heap[l]; at = l; }
+        if (r < heap.length && less(heap[r], m)) { m = heap[r]; at = r; }
+        if (at === i) break;
+        heap[i] = m; i = at;
+      }
+      heap[i] = last;
+    }
+    return top[1];
+  };
+  for (let k = 0; k < 3; k++) {
+    const v = id[best * 3 + k];
+    if (dist[v] !== Infinity) continue;
+    const p = P(v), d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+    uv[v * 2] = d[0] * uax[0] + d[1] * uax[1] + d[2] * uax[2]; uv[v * 2 + 1] = d[0] * vax[0] + d[1] * vax[1] + d[2] * vax[2];
+    dist[v] = Math.hypot(uv[v * 2], uv[v * 2 + 1]);
+    fu[v] = turn(nrm, N(v), uax); fv[v] = turn(nrm, N(v), vax);
+    push(v);
+  }
+  while (heap.length) {
+    const p = pop();
+    if (done[p]) continue;
+    done[p] = 1;
+    if (dist[p] > reach) continue;
+    const pp = P(p), np = N(p);
+    for (const q of nb[p]) {
+      if (done[q]) continue;
+      const pq = P(q), e = [pq[0] - pp[0], pq[1] - pp[1], pq[2] - pp[2]], len = Math.hypot(e[0], e[1], e[2]);
+      if (dist[p] + len >= dist[q]) continue;
+      // the step in p's tangent plane, its length kept
+      const en = e[0] * np[0] + e[1] * np[1] + e[2] * np[2], s = [e[0] - np[0] * en, e[1] - np[1] * en, e[2] - np[2] * en], sl = Math.hypot(s[0], s[1], s[2]);
+      const k = sl > 1e-12 ? len / sl : 0;
+      dist[q] = dist[p] + len;
+      uv[q * 2] = uv[p * 2] + (s[0] * fu[p][0] + s[1] * fu[p][1] + s[2] * fu[p][2]) * k;
+      uv[q * 2 + 1] = uv[p * 2 + 1] + (s[0] * fv[p][0] + s[1] * fv[p][1] + s[2] * fv[p][2]) * k;
+      fu[q] = turn(np, N(q), fu[p]); fv[q] = turn(np, N(q), fv[p]);
+      push(q);
+    }
+  }
+  for (let k = 0; k < corners; k++) if (done[id[k]]) { out[k * 2] = uv[id[k] * 2]; out[k * 2 + 1] = uv[id[k] * 2 + 1]; }
+  return out;
+}
+
+/** Bake a shape decal: per texel the relief's height and its slope as a tangent-space normal (Normal / Height). Flat:
+ *  front-facing surface inside the projector, like an image decal. Wrapped: wherever `expMap` reached. */
 export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs: ArrayLike<number>, span: number) {
   const d = l.decal, sh = d?.shape;
   if (!d || !sh) return;
@@ -1325,6 +1484,9 @@ export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs:
   const hw = width / 2, hh = height / 2, fu = d.flipH ? -1 : 1, fv = d.flipV ? -1 : 1;
   const e = Math.min(sh.cell, sh.border > 0 ? sh.border : sh.cell) * 0.1, top = Math.max(sh.depth, sh.amount, 1e-9);
   const at = (a: number, b: number) => shapeHeight(sh, a, b, hw, hh) ?? 0;
+  const map = d.wrap ? expMap(pos, [cx, cy, cz], [nx, ny, nz], [uxr, uyr, uzr], [vxr, vyr, vzr], reachOf(sh, hw, hh) + sh.cell) : null;
+  // the decal's axes at the texel: the frame's when flat, the map's own directions on a wrapped triangle
+  let Ux = uxr, Uy = uyr, Uz = uzr, Vx = vxr, Vy = vyr, Vz = vzr;
   let h = 0, gx = 0, gy = 0, tx = 1, ty = 0, tz = 0, bx = 0, by = 1, bz = 0;
   ready(n);
   for (let t = 0; t < pos.length / 9; t++) {
@@ -1333,18 +1495,38 @@ export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs:
     const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
     let fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x;
     const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
-    if (fx * nx + fy * ny + fz * nz < 0.12) continue;
+    let m0u = 0, m0v = 0, m1u = 0, m1v = 0, m2u = 0, m2v = 0;
+    if (map) {
+      m0u = map[t * 6]; m0v = map[t * 6 + 1]; m1u = map[t * 6 + 2]; m1v = map[t * 6 + 3]; m2u = map[t * 6 + 4]; m2v = map[t * 6 + 5];
+      if (Number.isNaN(m0u) || Number.isNaN(m1u) || Number.isNaN(m2u)) continue;
+      // the map's directions on this triangle: dP/du, dP/dv
+      const du1 = m1u - m0u, dv1 = m1v - m0v, du2 = m2u - m0u, dv2 = m2v - m0v, det = du1 * dv2 - du2 * dv1;
+      if (Math.abs(det) < 1e-14) continue;
+      Ux = (e1x * dv2 - e2x * dv1) / det; Uy = (e1y * dv2 - e2y * dv1) / det; Uz = (e1z * dv2 - e2z * dv1) / det;
+      Vx = (e2x * du1 - e1x * du2) / det; Vy = (e2y * du1 - e1y * du2) / det; Vz = (e2z * du1 - e1z * du2) / det;
+      const ul = Math.hypot(Ux, Uy, Uz) || 1, vl = Math.hypot(Vx, Vy, Vz) || 1;
+      Ux /= ul; Uy /= ul; Uz /= ul; Vx /= vl; Vy /= vl; Vz /= vl;
+    } else if (fx * nx + fy * ny + fz * nz < 0.12) continue;
     [tx, ty, tz, bx, by, bz] = tangentOf(pos, uvs, t, fx, fy, fz);
     raster(n, pos, uvs, t, (x, y, z) => {
       const dx = x - cx, dy = y - cy, dz = z - cz;
-      if (Math.abs(dx * nx + dy * ny + dz * nz) > depth) return 0;
-      const a = (dx * uxr + dy * uyr + dz * uzr) * fu, b = (dx * vxr + dy * vyr + dz * vzr) * fv;
+      let a: number, b: number;
+      if (map) {
+        // the point's barycentric weights on the triangle, then the map there
+        const px = x - pos[o], py = y - pos[o + 1], pz = z - pos[o + 2];
+        const w1 = ((py * e2z - pz * e2y) * fx + (pz * e2x - px * e2z) * fy + (px * e2y - py * e2x) * fz) / fl;
+        const w2 = ((e1y * pz - e1z * py) * fx + (e1z * px - e1x * pz) * fy + (e1x * py - e1y * px) * fz) / fl, w0 = 1 - w1 - w2;
+        a = (w0 * m0u + w1 * m1u + w2 * m2u) * fu; b = (w0 * m0v + w1 * m1v + w2 * m2v) * fv;
+      } else {
+        if (Math.abs(dx * nx + dy * ny + dz * nz) > depth) return 0;
+        a = (dx * uxr + dy * uyr + dz * uzr) * fu; b = (dx * vxr + dy * vyr + dz * vzr) * fv;
+      }
       const hv = shapeHeight(sh, a, b, hw, hh);
       if (hv === null) return 0;
       h = hv;
       // the slope along the decal's axes, into world, then the triangle's tangent space; the normal leans downhill
       const su = ((at(a + e, b) - at(a - e, b)) / (2 * e)) * fu, sv = ((at(a, b + e) - at(a, b - e)) / (2 * e)) * fv;
-      const wx = su * uxr + sv * vxr, wy = su * uyr + sv * vyr, wz = su * uzr + sv * vzr;
+      const wx = su * Ux + sv * Vx, wy = su * Uy + sv * Vy, wz = su * Uz + sv * Vz;
       gx = wx * tx + wy * ty + wz * tz; gy = wx * bx + wy * by + wz * bz;
       return 1;
     }, undefined, (_x, _y, _z, i) => {

@@ -55,10 +55,18 @@ pub struct Decal {
     /// A grip texture (paint.ts `Shape`): no image, a relief drawn by `layers::shape_height` into normal and height.
     #[serde(default)]
     pub shape: Option<Shape>,
+    /// Bent round the model (paint.ts `Decal.wrap`): the shape follows `layers::exp_map` instead of a flat projection.
+    #[serde(default)]
+    pub wrap: bool,
 }
 /// A relief panel in world units (paint.ts `Shape`): rounded outline, groove border, pattern inside.
 #[derive(Deserialize, Clone)]
-pub struct Shape { pub pattern: String, pub corner: f32, pub border: f32, pub depth: f32, pub cell: f32, pub amount: f32 }
+pub struct Shape {
+    pub pattern: String, pub corner: f32, pub border: f32, pub depth: f32, pub cell: f32, pub amount: f32,
+    /// Free outline: corners as shares of the panel's half width / height (None: the rectangle).
+    #[serde(default)]
+    pub outline: Option<Vec<[f32; 2]>>,
+}
 #[derive(Deserialize, Clone)]
 pub struct Gen {
     pub kind: String,
@@ -155,7 +163,7 @@ fn blended(d: f32, s: f32, mode: &str) -> f32 {
 }
 
 /// How a layer gets its texels at the export size.
-enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a Map, &'a [String]), Shape(DecalFrame, &'a Shape, &'a [String]), Gen(&'a Gen) }
+enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a Map, &'a [String]), Shape(layers::ShapeSrc<'a>), Gen(&'a Gen) }
 
 /// One part's maps at size n: composite colour, roughness, metallic, normal, height, AO, and which texels are
 /// painted (for the padding) and on the surface.
@@ -183,7 +191,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
         .iter()
         .map(|l| {
             if let Some(f) = &l.fill { if let Some(m) = assets.materials.get(&f.asset) { return Src::Fill(f, m); } }
-            if let Some(d) = &l.decal { if let Some(sh) = &d.shape { return Src::Shape(DecalFrame::new(d, span), sh, &d.channels); } }
+            if let Some(d) = &l.decal { if let Some(sh) = &d.shape { return Src::Shape(layers::ShapeSrc::new(d, sh, span, mesh)); } }
             if let Some(d) = &l.decal { if let Some(img) = assets.decals.get(&d.asset) { return Src::Decal(DecalFrame::new(d, span), img, &d.channels); } }
             if let Some(g) = &l.gen { if occ.is_some() && edges.is_some() { return Src::Gen(g); } }
             Src::Pixels
@@ -219,7 +227,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
                         let mut te = match &srcs[j] {
                             Src::Fill(f, m) => fill_at(f, m, mesh, t, p, x, y, n, span),
                             Src::Decal(fr, img, ch) => fr.at(img, mesh, t, p, ch),
-                            Src::Shape(fr, sh, ch) => fr.shape_at(sh, mesh, t, p, ch),
+                            Src::Shape(sh) => sh.at(mesh, t, p),
                             Src::Gen(g) => {
                                 if convex.is_nan() { convex = edges.unwrap().dist(0, p); concave = edges.unwrap().dist(1, p); }
                                 let clip = buf.get("clip").map(|m| up.sample(m, 1, true, u, v, &mut tmp) * tmp[0] / 255.0).unwrap_or(1.0);
@@ -500,7 +508,7 @@ mod tests {
     /// The engine draws a grip texture as the editor does: paint.ts `shapeHeight` at the same points (from Node).
     #[test]
     fn shape_relief_matches_the_editor() {
-        let sh = |p: &str| Shape { pattern: p.into(), corner: 0.2, border: 0.06, depth: 0.03, cell: 0.05, amount: 0.012 };
+        let sh = |p: &str| Shape { pattern: p.into(), corner: 0.2, border: 0.06, depth: 0.03, cell: 0.05, amount: 0.012, outline: None };
         let pts = [(0.3079, 0.2233), (-0.1728, 0.5644), (0.0044, 0.3288), (0.2237, 0.6699), (0.1085, -0.0205), (0.47, 0.2)];
         let want = [
             ("stipple", [0.003171373, 0.005149145, 0.006135595, 0.004268161, 0.01070719, -0.03]),
@@ -514,6 +522,24 @@ mod tests {
             }
             assert!(layers::shape_height(&sh(p), 0.6, 0.0, 0.5, 1.0).is_none(), "{p}: nothing outside the outline");
         }
+        // a free outline with rounded corners
+        let sh = Shape { pattern: "stipple".into(), corner: 0.08, border: 0.05, depth: 0.02, cell: 0.04, amount: 0.01, outline: Some(vec![[-1.0, -1.0], [0.8, -0.9], [1.0, 0.4], [0.0, 1.0], [-0.6, 0.3]]) };
+        let pts = [(0.0, 0.0), (0.1, -0.2), (-0.3, 0.1), (0.35, 0.2), (0.42, -0.4), (-0.45, -0.45), (0.2, 0.6), (0.6, 0.6)];
+        let want = [Some(0.0), Some(0.0), Some(-0.019924021), Some(0.001377607), Some(-0.006470219), None, None, None];
+        for (&(x, y), w) in pts.iter().zip(want) {
+            let h = layers::shape_height(&sh, x, y, 0.5, 0.7);
+            assert!(match (h, w) { (Some(h), Some(w)) => (h - w).abs() < 2e-5, (None, None) => true, _ => false }, "outline at ({x}, {y}): engine {h:?}, editor {w:?}");
+        }
+    }
+
+    /// Wrapping unfolds the surface (paint.ts `expMap`): a strip bent 90° over an edge, its far face's corners one unit
+    /// past the fold, exactly as the editor places them.
+    #[test]
+    fn wrap_map_unfolds_a_fold() {
+        let fold = [0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 0., 0., 1., 1., 0., 0., 1., 0., 1., 0., 0., 1., 0., -1., 1., 1., -1., 1., 0., 0., 1., 1., -1., 1., 1., 0.];
+        let m = layers::exp_map(&fold, [0.5, 0.5, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 5.0);
+        let want = [-0.5, -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 1.5, -0.5, 1.5, 0.5, 0.5, -0.5, 1.5, 0.5, 0.5, 0.5];
+        for (k, (a, b)) in m.iter().zip(want).enumerate() { assert!((a - b).abs() < 1e-9, "corner {}: engine {a}, editor {b}", k / 2); }
     }
 
     /// A unit cube (12 triangles, each face its own UV cell in a 3×2 grid), painted red at 64² by hand, plus edge

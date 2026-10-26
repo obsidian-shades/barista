@@ -1,7 +1,7 @@
 // node src/paint.check.ts: a unit square split at x = 0.5 into two islands far apart in UV. A dab on the seam paints
 // both; a dab paints a flat face evenly (no lines where its triangles meet); layers stack; erase and undo work.
 import assert from 'node:assert';
-import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, bakeShape, shapeHeight, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Brush, type Decal, type Fill, type GenKind, type PaintLayer, type Shape } from './paint.ts';
+import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, bakeShape, shapeHeight, expMap, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Brush, type Decal, type Fill, type GenKind, type PaintLayer, type Shape } from './paint.ts';
 import type { MaterialPixels } from './materials.ts';
 
 // left half [0,.5] → uv (0..0.25, 0..0.5); right half [.5,1] → uv (0.5..0.75, 0..0.5): the seam is 0.25 apart in UV
@@ -278,5 +278,29 @@ assert.ok(gs.sel!.every((x, i) => !x || gs.shell![i]), 'a grown selection stays 
     if (ht[i * 2] < 70) cut++;
   }
   assert.ok(covered > 500 && tilted > 50 && cut > 20, `relief baked: ${covered} texels, ${tilted} tilted, ${cut} in the groove`);
+
+  // a free outline: inside its box is not inside it, and a rounded corner trims the tip
+  const tri: Shape = { pattern: 'none', corner: 0, border: 0.05, depth: 0.02, cell: 0.03, amount: 0, outline: [[-1, -1], [1, -1], [0, 1]] };
+  assert.equal(shapeHeight(tri, 0.4, 0.4, 0.5, 0.5), null, 'outside a triangle outline, though inside its box');
+  assert.notEqual(shapeHeight(tri, 0, -0.1, 0.5, 0.5), null, 'inside the triangle');
+  assert.notEqual(shapeHeight(tri, 0.48, -0.49, 0.5, 0.5), null, 'a sharp corner reaches its tip');
+  assert.equal(shapeHeight({ ...tri, corner: 0.1 }, 0.48, -0.49, 0.5, 0.5), null, 'a rounded corner trims it');
+
+  // wrapping: a strip bent 90° over an edge unfolds (the far face's corners one unit past the fold) and the relief
+  // carries onto the face a flat projector cannot reach
+  const fold = [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, -1, 1, 1, -1, 1, 0, 0, 1, 1, -1, 1, 1, 0];
+  const m = expMap(fold, [0.5, 0.5, 0], [0, 0, 1], [1, 0, 0], [0, 1, 0], 5);
+  assert.ok(Math.abs(m[14] - 1.5) < 1e-9 && Math.abs(m[15] + 0.5) < 1e-9, `the far corner lands past the fold: ${m[14]}, ${m[15]}`);
+  const fuv = fold.flatMap((_, i) => (i % 3 ? [] : i < 18 ? [fold[i] * 0.45, fold[i + 1] * 0.9] : [0.55 - fold[i + 2] * 0.4, fold[i + 1] * 0.9]));
+  const wrapped = (wrap: boolean) => {
+    const ws = setOf(new Float32Array(fold), 64), wl: PaintLayer = { ...newLayer(10), decal: { asset: 'shape-test', center: [0.5, 0.5, 0], normal: [0, 0, 1], up: [0, 1, 0], width: 2.2, rotation: 0, aspect: 2.2, tint: '#ffffff', roughness: 0.5, metallic: 0, channels: ['normal', 'height'], shape: { ...sh, border: 0 }, wrap } };
+    ws.channels = ['color', 'rough', 'metal', 'normal', 'height'];
+    bakeShape(ws, wl, fold, fuv, 1);
+    let far = 0;
+    for (let y = 0; y < 64; y++) for (let x = 36; x < 64; x++) if (wl.px.height![(y * 64 + x) * 2 + 1]) far++;
+    return far;
+  };
+  assert.equal(wrapped(false), 0, 'flat, the relief stops at the fold');
+  assert.ok(wrapped(true) > 100, `wrapped, it carries over the fold: ${wrapped(true)} texels`);
 }
 console.log('paint ok');

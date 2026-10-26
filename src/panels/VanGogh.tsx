@@ -4,7 +4,7 @@
 // tool's settings; the panel the parts (collapsible, with their channels: Substance's texture sets) and the active
 // part's Layers, as Photoshop's panel lays them out.
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { CHANNELS, SOLID, blendOf, thumbOf, type BlendMode, type BrushTip, type Channel, type Decal, type Fill, type Pattern, type Shape, type Gen, type GenKind } from '../paint';
+import { CHANNELS, SOLID, blendOf, thumbOf, type BlendMode, type BrushTip, type Channel, type Decal, type Fill, type Pattern, type Gen, type GenKind } from '../paint';
 import { MATERIAL_GROUPS, TILE_KINDS, materialGroup, thumbUrl, tileKind } from '../materials';
 import { decalUrl } from '../decals';
 import { decalDragOver, decalDrop, shelfDragOver, shelfDrop } from '../views/Viewport3D';
@@ -323,7 +323,7 @@ function DecalSettings({ d }: { d: Decal }) {
 }
 
 /** A grip texture's relief, as shares of the model (as the decal's Size is): pattern, outline and groove border. */
-const SHAPE_SLIDERS: [keyof Omit<Shape, 'pattern'>, string, string, number][] = [
+const SHAPE_SLIDERS: ['cell' | 'amount' | 'border' | 'depth' | 'corner', string, string, number][] = [
   ['cell', 'Cell', 'Size of one stipple dot, groove or diamond', 3],
   ['amount', 'Height', 'How far the pattern stands up (grooves: how deep they cut)', 1],
   ['border', 'Border', 'Width of the groove round the edge (0: none)', 2],
@@ -346,6 +346,12 @@ function ShapeSettings({ d, span }: { d: Decal; span: number }) {
           <span className="num readout">{((sh[key] / span) * 100).toFixed(2)}%</span>
         </label>
       ))}
+      <label title="Bend round the model: the panel follows the surface over bevels and curves instead of projecting flat">Wrap
+        <input type="checkbox" checked={!!d.wrap} onChange={(e) => updateDecal({ wrap: e.target.checked })} />
+        <span className="hint">{d.wrap ? 'follows the surface' : 'flat projection'}</span>
+      </label>
+      <div className="hint">Outline: drag a corner on the model, click an edge's + to add one, Alt+click a corner to remove it.
+        {sh.outline && <> <button onClick={() => updateDecal({ shape: { ...sh, outline: undefined } })}>Reset outline</button></>}</div>
     </>
   );
 }

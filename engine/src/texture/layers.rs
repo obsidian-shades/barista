@@ -360,30 +360,212 @@ impl DecalFrame {
     }
 }
 
-impl DecalFrame {
-    /// A grip texture's relief at p (paint.ts `bakeShape`): height, and its slope as a tangent-space normal.
-    pub fn shape_at(&self, sh: &Shape, mesh: &Mesh, t: usize, p: V3, channels: &[String]) -> Texel {
+/// A grip texture as one layer draws it (paint.ts `bakeShape`): the projector, the outline's rounded polygon and, when
+/// wrapped, the surface's own coordinates per corner (`exp_map`), all worked out once per part.
+pub struct ShapeSrc<'a> { fr: DecalFrame, sh: &'a Shape, poly: Option<Vec<f64>>, map: Option<Vec<f64>>, ch: &'a [String] }
+
+impl<'a> ShapeSrc<'a> {
+    pub fn new(d: &'a Decal, sh: &'a Shape, span: f32, mesh: &Mesh) -> ShapeSrc<'a> {
+        let fr = DecalFrame::new(d, span);
+        let (hw, hh) = (fr.w as f64 / 2.0, fr.h as f64 / 2.0);
+        let poly = sh.outline.as_ref().map(|o| filleted(o, hw, hh, sh.corner as f64));
+        let map = d.wrap.then(|| {
+            let f = |v: V3| [v[0] as f64, v[1] as f64, v[2] as f64];
+            exp_map(mesh.pos, f(fr.c), f(fr.n), f(fr.u), f(fr.v), reach_of(sh, hw, hh) + sh.cell as f64)
+        });
+        ShapeSrc { fr, sh, poly, map, ch: &d.channels }
+    }
+
+    /// The relief at p on triangle t: height, and its slope as a tangent-space normal.
+    pub fn at(&self, mesh: &Mesh, t: usize, p: V3) -> Texel {
         let mut out = Texel::default();
-        if dot(mesh.nrm[t], self.n) < 0.12 { return out; }
-        let d = sub(p, self.c);
-        if dot(d, self.n).abs() > self.depth { return out; }
-        let (fu, fv) = (if self.flip.0 { -1.0 } else { 1.0 }, if self.flip.1 { -1.0 } else { 1.0 });
-        let (a, b, hw, hh) = (dot(d, self.u) * fu, dot(d, self.v) * fv, self.w / 2.0, self.h / 2.0);
-        let Some(h) = shape_height(sh, a, b, hw, hh) else { return out };
-        let has = |c: &str| channels.iter().any(|x| x == c);
+        let fr = &self.fr;
+        let (fu, fv) = (if fr.flip.0 { -1.0 } else { 1.0 }, if fr.flip.1 { -1.0 } else { 1.0 });
+        let (hw, hh) = (fr.w as f64 / 2.0, fr.h as f64 / 2.0);
+        let d = sub(p, fr.c);
+        // where on the panel, and the panel's axes there
+        let (a, b, ua, va) = if let Some(m) = &self.map {
+            let c = |k: usize| (m[t * 6 + k * 2], m[t * 6 + k * 2 + 1]);
+            let ((u0, v0), (u1, v1), (u2, v2)) = (c(0), c(1), c(2));
+            if u0.is_nan() || u1.is_nan() || u2.is_nan() { return out; }
+            let pos = mesh.pos;
+            let q = |k: usize| [0, 1, 2].map(|j| pos[t * 9 + k * 3 + j] as f64);
+            let (q0, q1, q2) = (q(0), q(1), q(2));
+            let e1 = [q1[0] - q0[0], q1[1] - q0[1], q1[2] - q0[2]];
+            let e2 = [q2[0] - q0[0], q2[1] - q0[1], q2[2] - q0[2]];
+            let (du1, dv1, du2, dv2) = (u1 - u0, v1 - v0, u2 - u0, v2 - v0);
+            let det = du1 * dv2 - du2 * dv1;
+            if det.abs() < 1e-14 { return out; }
+            let unit = |x: [f64; 3]| { let l = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt().max(1e-300); [x[0] / l, x[1] / l, x[2] / l] };
+            let ua = unit([0, 1, 2].map(|j| (e1[j] * dv2 - e2[j] * dv1) / det));
+            let va = unit([0, 1, 2].map(|j| (e2[j] * du1 - e1[j] * du2) / det));
+            // barycentric weights of p (as paint.ts: against the unit face normal and the doubled area)
+            let f = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let fl = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt().max(1e-300);
+            let fnn = [f[0] / fl, f[1] / fl, f[2] / fl];
+            let pp = [p[0] as f64 - q0[0], p[1] as f64 - q0[1], p[2] as f64 - q0[2]];
+            let w1 = ((pp[1] * e2[2] - pp[2] * e2[1]) * fnn[0] + (pp[2] * e2[0] - pp[0] * e2[2]) * fnn[1] + (pp[0] * e2[1] - pp[1] * e2[0]) * fnn[2]) / fl;
+            let w2 = ((e1[1] * pp[2] - e1[2] * pp[1]) * fnn[0] + (e1[2] * pp[0] - e1[0] * pp[2]) * fnn[1] + (e1[0] * pp[1] - e1[1] * pp[0]) * fnn[2]) / fl;
+            let w0 = 1.0 - w1 - w2;
+            ((w0 * u0 + w1 * u1 + w2 * u2) * fu, (w0 * v0 + w1 * v1 + w2 * v2) * fv, ua.map(|x| x as f32), va.map(|x| x as f32))
+        } else {
+            if dot(mesh.nrm[t], fr.n) < 0.12 || dot(d, fr.n).abs() > fr.depth { return out; }
+            (dot(d, fr.u) as f64 * fu, dot(d, fr.v) as f64 * fv, fr.u, fr.v)
+        };
+        let sh = self.sh;
+        let at = |a: f64, b: f64| relief(sh, self.poly.as_deref(), a, b, hw, hh);
+        let Some(h) = at(a, b) else { return out };
+        let has = |c: &str| self.ch.iter().any(|x| x == c);
         if has("normal") {
-            let e = sh.cell.min(if sh.border > 0.0 { sh.border } else { sh.cell }) * 0.1;
-            let at = |a: f32, b: f32| shape_height(sh, a, b, hw, hh).unwrap_or(0.0);
-            let (su, sv) = ((at(a + e, b) - at(a - e, b)) / (2.0 * e) * fu, (at(a, b + e) - at(a, b - e)) / (2.0 * e) * fv);
-            let w = [0, 1, 2].map(|k| su * self.u[k] + sv * self.v[k]);
+            let e = (sh.cell.min(if sh.border > 0.0 { sh.border } else { sh.cell }) * 0.1) as f64;
+            let z = |a: f64, b: f64| at(a, b).unwrap_or(0.0);
+            let (su, sv) = ((z(a + e, b) - z(a - e, b)) / (2.0 * e) * fu, (z(a, b + e) - z(a, b - e)) / (2.0 * e) * fv);
+            let w = [0, 1, 2].map(|k| (su * ua[k] as f64 + sv * va[k] as f64) as f32);
             let (tv, bv) = mesh.tan[t];
             let (gx, gy) = (dot(w, tv), dot(w, bv));
             let k = 1.0 / (gx * gx + gy * gy + 1.0).sqrt();
             out.normal = Some(([(-gx * k * 0.5 + 0.5) * 255.0, (-gy * k * 0.5 + 0.5) * 255.0, (k * 0.5 + 0.5) * 255.0], 1.0));
         }
-        if has("height") { out.height = Some((128.0 + 127.0 * (h / sh.depth.max(sh.amount).max(1e-9)).clamp(-1.0, 1.0), 1.0)); }
+        if has("height") { out.height = Some((128.0 + 127.0 * (h / sh.depth.max(sh.amount).max(1e-9) as f64).clamp(-1.0, 1.0) as f32, 1.0)); }
         out
     }
+}
+
+/// The outline scaled to the panel with every corner rounded by r (paint.ts `filleted`): flat x, y pairs.
+fn filleted(pts: &[[f32; 2]], hw: f64, hh: f64, r: f64) -> Vec<f64> {
+    let p: Vec<[f64; 2]> = pts.iter().map(|q| [q[0] as f64 * hw, q[1] as f64 * hh]).collect();
+    let n = p.len();
+    let mut out = vec![];
+    for i in 0..n {
+        let ([px, py], [ax, ay], [bx, by]) = (p[i], p[(i + n - 1) % n], p[(i + 1) % n]);
+        let (la, lb) = ((ax - px).hypot(ay - py), (bx - px).hypot(by - py));
+        if r <= 0.0 || la < 1e-12 || lb < 1e-12 { out.extend([px, py]); continue; }
+        let (dax, day, dbx, dby) = ((ax - px) / la, (ay - py) / la, (bx - px) / lb, (by - py) / lb);
+        let th = (dax * dbx + day * dby).clamp(-1.0, 1.0).acos();
+        if th > std::f64::consts::PI - 1e-3 || th < 1e-3 { out.extend([px, py]); continue; }
+        let tn = (th / 2.0).tan();
+        let t = (r / tn).min(la.min(lb) * 0.5);
+        let rr = t * tn;
+        let (mx, my) = (dax + dbx, day + dby);
+        let k = rr / (th / 2.0).sin() / mx.hypot(my);
+        let (cx, cy) = (px + mx * k, py + my * k);
+        let a0 = (py + day * t - cy).atan2(px + dax * t - cx);
+        let a1 = (py + dby * t - cy).atan2(px + dbx * t - cx);
+        let mut da = a1 - a0;
+        if da > std::f64::consts::PI { da -= 2.0 * std::f64::consts::PI } else if da < -std::f64::consts::PI { da += 2.0 * std::f64::consts::PI }
+        for j in 0..=6 { let a = a0 + da * j as f64 / 6.0; out.extend([cx + rr * a.cos(), cy + rr * a.sin()]); }
+    }
+    out
+}
+/// Signed distance to a closed polygon, negative inside (paint.ts `polySd`).
+fn poly_sd(poly: &[f64], x: f64, y: f64) -> f64 {
+    let (mut d, mut inside) = (f64::INFINITY, false);
+    let n = poly.len();
+    let mut j = n - 2;
+    for i in (0..n).step_by(2) {
+        let (ax, ay) = (poly[j], poly[j + 1]);
+        let (ex, ey) = (poly[i] - ax, poly[i + 1] - ay);
+        let l2 = ex * ex + ey * ey;
+        let t = (((x - ax) * ex + (y - ay) * ey) / if l2 != 0.0 { l2 } else { 1.0 }).clamp(0.0, 1.0);
+        d = d.min((x - ax - ex * t).hypot(y - ay - ey * t));
+        if (ay > y) != (poly[i + 1] > y) && x < ax + (y - ay) * ex / ey { inside = !inside; }
+        j = i;
+    }
+    if inside { -d } else { d }
+}
+/// How far a shape reaches from its centre: its outline's farthest corner (paint.ts `reachOf`).
+fn reach_of(sh: &Shape, hw: f64, hh: f64) -> f64 {
+    let rect = [[-1.0f32, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+    sh.outline.as_deref().unwrap_or(&rect).iter().map(|q| (q[0] as f64 * hw).hypot(q[1] as f64 * hh)).fold(0.0, f64::max)
+}
+
+type D3 = [f64; 3];
+/// The least rotation taking unit a onto unit b, applied to x (paint.ts `turn`).
+fn turn(a: D3, b: D3, x: D3) -> D3 {
+    let k = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let co = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    if co < -0.9999 { return x; }
+    let kd = (k[0] * x[0] + k[1] * x[1] + k[2] * x[2]) / (1.0 + co);
+    [x[0] * co + (k[1] * x[2] - k[2] * x[1]) + k[0] * kd, x[1] * co + (k[2] * x[0] - k[0] * x[2]) + k[1] * kd, x[2] * co + (k[0] * x[1] - k[1] * x[0]) + k[2] * kd]
+}
+/// The surface's own coordinates round a decal's centre (paint.ts `expMap`, a discrete exponential map): per soup
+/// corner (u, v) along the frame's right / up, NaN where the walk stopped. Same weld, seed, order and steps.
+pub fn exp_map(pos: &[f32], c: D3, nrm: D3, uax: D3, vax: D3, reach: f64) -> Vec<f64> {
+    use std::cmp::Reverse;
+    use std::collections::{BinaryHeap, HashMap};
+    let corners = pos.len() / 3;
+    let mut id = vec![0usize; corners];
+    let mut key: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    let mut vp: Vec<D3> = vec![];
+    let r5 = |x: f32| (x as f64 * 1e5 + 0.5).floor() as i64; // Math.round
+    for k in 0..corners {
+        let kk = (r5(pos[k * 3]), r5(pos[k * 3 + 1]), r5(pos[k * 3 + 2]));
+        id[k] = *key.entry(kk).or_insert_with(|| { vp.push([pos[k * 3] as f64, pos[k * 3 + 1] as f64, pos[k * 3 + 2] as f64]); vp.len() - 1 });
+    }
+    let nv = vp.len();
+    let mut vn = vec![[0.0f64; 3]; nv];
+    let mut nb: Vec<Vec<usize>> = vec![vec![]; nv];
+    for t in 0..corners / 3 {
+        let (a, b, d) = (id[t * 3], id[t * 3 + 1], id[t * 3 + 2]);
+        let (pa, pb, pd) = (vp[a], vp[b], vp[d]);
+        let e1 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let e2 = [pd[0] - pa[0], pd[1] - pa[1], pd[2] - pa[2]];
+        let f = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        for v in [a, b, d] { for k in 0..3 { vn[v][k] += f[k]; } }
+        for (p, q) in [(a, b), (b, d), (d, a)] {
+            if !nb[p].contains(&q) { nb[p].push(q); }
+            if !nb[q].contains(&p) { nb[q].push(p); }
+        }
+    }
+    for n in vn.iter_mut() { let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt(); let l = if l > 0.0 { l } else { 1.0 }; for x in n.iter_mut() { *x /= l; } }
+    for l in nb.iter_mut() { l.sort_unstable(); }
+    let dist3 = |a: D3, b: D3| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    let mut out = vec![f64::NAN; corners * 2];
+    let (mut best, mut best_d) = (usize::MAX, f64::INFINITY);
+    for t in 0..corners / 3 {
+        let dd: f64 = (0..3).map(|k| dist3(vp[id[t * 3 + k]], c)).sum();
+        if dd < best_d { best_d = dd; best = t; }
+    }
+    if best == usize::MAX { return out; }
+    let mut uv = vec![[0.0f64; 2]; nv];
+    let mut dist = vec![f64::INFINITY; nv];
+    let mut done = vec![false; nv];
+    let (mut fu, mut fv) = (vec![[0.0f64; 3]; nv], vec![[0.0f64; 3]; nv]);
+    // (dist, vertex) min-heap; f64 bits order as the values do for non-negative distances
+    let mut heap: BinaryHeap<Reverse<(u64, usize)>> = BinaryHeap::new();
+    for k in 0..3 {
+        let v = id[best * 3 + k];
+        if dist[v] != f64::INFINITY { continue; }
+        let d = [vp[v][0] - c[0], vp[v][1] - c[1], vp[v][2] - c[2]];
+        uv[v] = [d[0] * uax[0] + d[1] * uax[1] + d[2] * uax[2], d[0] * vax[0] + d[1] * vax[1] + d[2] * vax[2]];
+        dist[v] = uv[v][0].hypot(uv[v][1]);
+        fu[v] = turn(nrm, vn[v], uax);
+        fv[v] = turn(nrm, vn[v], vax);
+        heap.push(Reverse((dist[v].to_bits(), v)));
+    }
+    while let Some(Reverse((_, p))) = heap.pop() {
+        if done[p] { continue; }
+        done[p] = true;
+        if dist[p] > reach { continue; }
+        let (pp, np) = (vp[p], vn[p]);
+        for &q in &nb[p] {
+            if done[q] { continue; }
+            let e = [vp[q][0] - pp[0], vp[q][1] - pp[1], vp[q][2] - pp[2]];
+            let len = (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();
+            if dist[p] + len >= dist[q] { continue; }
+            let en = e[0] * np[0] + e[1] * np[1] + e[2] * np[2];
+            let s = [e[0] - np[0] * en, e[1] - np[1] * en, e[2] - np[2] * en];
+            let sl = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
+            let k = if sl > 1e-12 { len / sl } else { 0.0 };
+            dist[q] = dist[p] + len;
+            uv[q] = [uv[p][0] + (s[0] * fu[p][0] + s[1] * fu[p][1] + s[2] * fu[p][2]) * k, uv[p][1] + (s[0] * fv[p][0] + s[1] * fv[p][1] + s[2] * fv[p][2]) * k];
+            fu[q] = turn(np, vn[q], fu[p]);
+            fv[q] = turn(np, vn[q], fv[p]);
+            heap.push(Reverse((dist[q].to_bits(), q)));
+        }
+    }
+    for k in 0..corners { if done[id[k]] { out[k * 2] = uv[id[k]][0]; out[k * 2 + 1] = uv[id[k]][1]; } }
+    out
 }
 
 /// A pattern's relief at (x, y) in cells (paint.ts `patternAt`, f64 like JavaScript so the stipple matches).
@@ -412,17 +594,27 @@ fn pattern_at(p: &str, x: f64, y: f64) -> f64 {
 }
 /// The relief at (x, y) world units from a shape's centre, None outside its outline (paint.ts `shapeHeight`).
 pub fn shape_height(sh: &Shape, x: f32, y: f32, hw: f32, hh: f32) -> Option<f32> {
-    let (x, y, hw, hh) = (x as f64, y as f64, hw as f64, hh as f64);
+    let (hw, hh) = (hw as f64, hh as f64);
+    let poly = sh.outline.as_ref().map(|o| filleted(o, hw, hh, sh.corner as f64));
+    relief(sh, poly.as_deref(), x as f64, y as f64, hw, hh).map(|h| h as f32)
+}
+/// `shape_height` with the outline's rounded polygon already made (once per layer, not per texel).
+fn relief(sh: &Shape, poly: Option<&[f64]>, x: f64, y: f64, hw: f64, hh: f64) -> Option<f64> {
     let (corner, g, cell) = (sh.corner as f64, sh.border as f64, sh.cell as f64);
-    let r = corner.min(hw).min(hh);
-    let (qx, qy) = (x.abs() - hw + r, y.abs() - hh + r);
-    let sd = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r;
+    let sd = match poly {
+        Some(p) => poly_sd(p, x, y),
+        None => {
+            let r = corner.min(hw).min(hh);
+            let (qx, qy) = (x.abs() - hw + r, y.abs() - hh + r);
+            qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
+        }
+    };
     if sd > 0.0 { return None; }
     let mut h = if g > 0.0 && sd > -g { -(sh.depth as f64) * (std::f64::consts::PI * (sd + g) / g).sin() } else { 0.0 };
     let t = (-(if g > 0.0 { g * 1.6 } else { 0.0 }) - sd) / (cell * 0.5);
     let fade = if t <= 0.0 { 0.0 } else if t >= 1.0 { 1.0 } else { t * t * (3.0 - 2.0 * t) };
     if fade > 0.0 && sh.pattern != "none" { h += sh.amount as f64 * fade * pattern_at(&sh.pattern, x / cell, y / cell); }
-    Some(h as f32)
+    Some(h)
 }
 
 /// Value noise in 3D, 0..1, three octaves (paint.ts `noise`, f64 like JavaScript so the grunge matches).

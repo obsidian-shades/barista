@@ -3016,12 +3016,10 @@ export function pickDecal(id: string) {
   const a = decalOf(id);
   if (!a) return;
   set((s) => ({
-    paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? '#ffffff', ...(a.shape ? { decalSize: GRIP_SIZE } : {}) },
+    paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? '#ffffff', ...(a.size ? { decalSize: a.size } : {}) },
     paintTab: 'decals', error: null,
   }));
 }
-/** A grip texture's starting width: a pistol grip panel, a share of the model like `decalSize`. */
-const GRIP_SIZE = 18;
 export const importDecal = (file: File) => task('Importing a decal…', async () => {
   const a = await decalFromFile(file);
   set((s) => ({
@@ -3140,7 +3138,7 @@ function mirrorHit(r: Output, i: number, at: [number, number, number], normal: [
 export function dropDecal(id: string, i: number, tri: number, at: [number, number, number]) {
   if (get().busy || !decalOf(id)) return;
   const a = decalOf(id)!;
-  set((s) => ({ paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? '#ffffff', ...(a.shape ? { decalSize: GRIP_SIZE } : {}) } }));
+  set((s) => ({ paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? '#ffffff', ...(a.size ? { decalSize: a.size } : {}) } }));
   placeDecal(i, tri, at);
 }
 /** Drag an existing decal to a new point. Over triangle `tri` the projector turns to face it (Substance's: the mark

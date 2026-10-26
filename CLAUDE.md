@@ -250,7 +250,15 @@ Grow / Shrink (Ctrl+Shift+= / -, `growSelection`, texel space). Decal tool **Mir
 a rounded panel, an optional groove border and a pattern inside (stipple / grooves / checkering / none), sizes in world units
 (shares of the model on the shelf), so stretching a panel never stretches its dots; `bakeShape` writes Normal and Height only,
 the engine's `DecalFrame::shape_at` / `shape_height` the same (test `shape_relief_matches_the_editor` pins them to the editor's
-numbers). The shallow relief a sculpt-and-bake would give, placed and edited like any mark. Layer runs of 3+ decals fold into one row. View › Reference image… floats a picture over the 3D view
+numbers). The shallow relief a sculpt-and-bake would give, placed and edited like any mark. Each starts 30% of the
+model tall (`DecalAsset.size`). **Outline** (`Shape.outline`, corners as shares of the half width / height, None = the
+rectangle): the Decal gizmo shows a handle per corner (drag over the decal's plane), a + per edge (adds a corner) and
+Alt+click removes one; every corner is rounded by `corner` into a short arc (`filleted`, then `polySd`). **Wrap**
+(`Decal.wrap`): instead of the flat projector the shape follows `expMap` — a discrete exponential map (Schmidt, Grimm &
+Wyvill 2006): the soup welded, the triangle nearest the centre seeded flat, Dijkstra outward with each step turned into the
+reaching vertex's tangent plane and its frame carried by the least rotation between normals — so a strip bends over a
+bevel or round a back strap without stretching; the engine's `exp_map` does the same steps (test `wrap_map_unfolds_a_fold`:
+a 90° fold unfolds exactly). Edits go to the active decal; a Mirror twin is its own layer. Layer runs of 3+ decals fold into one row. View › Reference image… floats a picture over the 3D view
 (`views/RefImage.tsx`, not saved). `saveProjectTo(path)` saves without the dialog (scripts). Saves write `<file>.saving` then rename;
 errors name the file and folder; autosaves are per process (`<name>-<pid>.barista`).
 Color panel on top of the dock (`panels/ColorWheel.tsx`, Affinity's): hue ring (clockwise from red at the right) round

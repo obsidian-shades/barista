@@ -19,12 +19,16 @@ export interface DecalAsset {
   source: string;
   /** A grip texture: no image, a relief drawn from these settings (sizes as shares of the model, made world units when placed). */
   shape?: Shape;
+  /** Where placing it starts: its width as a % of the model (the Decal tool's Size). */
+  size?: number;
 }
 
 /** Grip textures: relief panels the Decal tool places like any mark, written to Normal and Height. Sizes are shares
  *  of the model (a pistol grip panel is about a fifth of the gun's length). */
 const grip = (id: string, name: string, w: number, h: number, shape: Shape, notes: string): DecalAsset =>
-  ({ id: `shape-${id}`, name, category: 'Grip', tags: ['grip', 'relief', 'normal', shape.pattern], notes, file: '', width: w, height: h, license: 'CC0', source: 'Barista', shape });
+  ({ id: `shape-${id}`, name, category: 'Grip', tags: ['grip', 'relief', 'normal', shape.pattern], notes, file: '', width: w, height: h, license: 'CC0', source: 'Barista', shape, size: (GRIP_TALL * w) / h });
+/** Every grip texture starts this tall (% of the model): a pistol's grip panel, whatever its width. */
+const GRIP_TALL = 30;
 export const GRIP_SHAPES: DecalAsset[] = [
   grip('stipple-panel', 'Stipple panel', 60, 100, { pattern: 'stipple', corner: 0.025, border: 0.006, depth: 0.003, cell: 0.0045, amount: 0.0012 }, 'Raised stipple inside a groove border: a polymer pistol\'s side panel.'),
   grip('stipple-strip', 'Stipple strip', 22, 100, { pattern: 'stipple', corner: 0.012, border: 0.005, depth: 0.003, cell: 0.0045, amount: 0.0012 }, 'A narrow stippled band with its own border, for back straps and bevels.'),
