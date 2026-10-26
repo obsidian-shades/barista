@@ -14,7 +14,7 @@ pub struct Mesh<'a> {
     pub pos: &'a [f32],
     pub uv: &'a [f32],
     pub nrm: Vec<V3>,
-    tan: Vec<(V3, V3)>,
+    pub tan: Vec<(V3, V3)>,
     border: Vec<u8>,
 }
 
@@ -149,8 +149,22 @@ impl Up<'_> {
             for c in 0..k { acc[c] += w * a * buf[i * stride + c] as f32; }
         }
         if wsum <= 0.0 {
-            // a sliver thinner than a working texel: take the nearest texel as it is
-            let i = (v * n as f32).clamp(0.0, n as f32 - 1.0) as usize * n + (u * n as f32).clamp(0.0, n as f32 - 1.0) as usize;
+            // No surface texel round (u, v): a sliver thinner than a working texel, or a texel this size owns past a
+            // seam (half an export texel is several working texels below the working size). The raw texel there is
+            // off the surface, unpainted, and came out as a bare line along the island; take the nearest surface texel.
+            let (cx, cy) = ((u * n as f32).clamp(0.0, n as f32 - 1.0) as isize, (v * n as f32).clamp(0.0, n as f32 - 1.0) as isize);
+            let mut i = cy as usize * n + cx as usize;
+            'ring: for r in 1..=8isize {
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        if dx.abs() != r && dy.abs() != r { continue; }
+                        let (xi, yi) = (cx + dx, cy + dy);
+                        if xi < 0 || yi < 0 || xi >= n as isize || yi >= n as isize || self.on[yi as usize * n + xi as usize] == NONE { continue; }
+                        i = yi as usize * n + xi as usize;
+                        break 'ring;
+                    }
+                }
+            }
             let a = if plain { 1.0 } else { buf[i * stride + k] as f32 / 255.0 };
             for c in 0..k { out[c] = buf[i * stride + c] as f32; }
             return a;
@@ -214,6 +228,8 @@ pub fn fill_at(f: &Fill, m: &Material, mesh: &Mesh, t: usize, p: V3, x: usize, y
     let metal_v = |u: f32, v: f32| f.metallic.map(|r| r * 255.0).unwrap_or_else(|| m.metallic.as_ref().map(|r| sample_map(r, u, v)[0]).unwrap_or(0.0));
     let height_v = |u: f32, v: f32| m.height.as_ref().map(|r| sample_map(r, u, v)[0]).unwrap_or(128.0);
     let tinted = |q: [f32; 4]| [0, 1, 2].map(|c| (q[c] * tint[c] / 255.0).min(255.0));
+    // a solid fill (`SOLID` in paint.ts) has no maps: its colour is the tint itself; a material missing its colour map is unpainted grey
+    let plain = if f.asset == "solid" { 255.0 } else { 188.0 };
     let mut out = Texel::default();
     if f.projection == "uv" {
         let rad = f.rotation.to_radians();
@@ -221,7 +237,7 @@ pub fn fill_at(f: &Fill, m: &Material, mesh: &Mesh, t: usize, p: V3, x: usize, y
         let u = ((x as f32 + 0.5) / n as f32 - 0.5) * f.tiling;
         let v = ((y as f32 + 0.5) / n as f32 - 0.5) * f.tiling;
         let (su, sv) = (u * co - v * si + 0.5 + f.offset[0], u * si + v * co + 0.5 + f.offset[1]);
-        if has("color") { out.color = Some((m.basecolor.as_ref().map(|c| tinted(sample_map(c, su, sv))).unwrap_or([188.0; 3]), 1.0)); }
+        if has("color") { out.color = Some((m.basecolor.as_ref().map(|c| tinted(sample_map(c, su, sv))).unwrap_or_else(|| tinted([plain; 4])), 1.0)); }
         if has("rough") { out.rough = Some((rough_v(su, sv), 1.0)); }
         if has("metal") { out.metal = Some((metal_v(su, sv), 1.0)); }
         if has("height") { out.height = Some((height_v(su, sv), 1.0)); }
@@ -252,7 +268,7 @@ pub fn fill_at(f: &Fill, m: &Material, mesh: &Mesh, t: usize, p: V3, x: usize, y
     if has("color") {
         let c = match &m.basecolor {
             Some(cm) => { let mut acc = [0.0; 3]; for k in 0..3 { let q = sample_map(cm, uvs[k].0, uvs[k].1); for c in 0..3 { acc[c] += q[c] * w[k]; } } tinted([acc[0] / ws, acc[1] / ws, acc[2] / ws, 0.0]) }
-            None => tinted([188.0, 188.0, 188.0, 0.0]),
+            None => tinted([plain; 4]),
         };
         out.color = Some((c, 1.0));
     }
@@ -286,7 +302,7 @@ pub fn fill_at(f: &Fill, m: &Material, mesh: &Mesh, t: usize, p: V3, x: usize, y
 }
 
 /// A decal's projector frame (`bakeDecal`): right / up turned by the rotation, size and depth.
-pub struct DecalFrame { c: V3, n: V3, u: V3, v: V3, w: f32, h: f32, depth: f32, tint: [f32; 3], rough: f32, metal: f32 }
+pub struct DecalFrame { c: V3, n: V3, u: V3, v: V3, w: f32, h: f32, depth: f32, tint: [f32; 3], rough: f32, metal: f32, flip: (bool, bool), engrave: f32 }
 
 impl DecalFrame {
     pub fn new(d: &Decal, span: f32) -> DecalFrame {
@@ -301,7 +317,7 @@ impl DecalFrame {
         let ur = [0, 1, 2].map(|k| u[k] * co + v[k] * si);
         let vr = [0, 1, 2].map(|k| -u[k] * si + v[k] * co);
         let w = d.width.max(1e-5);
-        DecalFrame { c: d.center, n, u: ur, v: vr, w, h: w / d.aspect.max(1e-4), depth: (w * 0.55).max(span * 0.012), tint: hex(&d.tint), rough: d.roughness * 255.0, metal: d.metallic * 255.0 }
+        DecalFrame { c: d.center, n, u: ur, v: vr, w, h: w / d.aspect.max(1e-4), depth: (w * 0.55).max(span * 0.012), tint: hex(&d.tint), rough: d.roughness * 255.0, metal: d.metallic * 255.0, flip: (d.flip_h, d.flip_v), engrave: d.engrave.max(0.0) }
     }
 
     /// The ink at point p on triangle t, front-facing and inside the projector only.
@@ -312,14 +328,34 @@ impl DecalFrame {
         if dot(d, self.n).abs() > self.depth { return out; }
         let (u, v) = (dot(d, self.u) / self.w + 0.5, dot(d, self.v) / self.h + 0.5);
         if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) { return out; }
-        let q = sample_decal(img, u, v);
+        let fu = |u: f32| if self.flip.0 { 1.0 - u } else { u };
+        let fv = |v: f32| if self.flip.1 { 1.0 - v } else { v };
+        let q = sample_decal(img, fu(u), fv(v));
         let a = q[3] / 255.0;
-        if a <= 0.0 { return out; }
         let has = |c: &str| channels.iter().any(|x| x == c);
         if !has("color") { return out; }
+        // engraving (paint.ts bakeDecal): the ink's gradient tilts the normal in the triangle's tangent frame
+        if self.engrave > 0.0 && has("normal") {
+            let ink = |u: f32, v: f32| sample_decal(img, fu(u), fv(v))[3] / 255.0;
+            let (hu, hv) = (1.5 / img.w as f32, 1.5 / img.h as f32);
+            let (gu, gv) = (ink(u + hu, v) - ink(u - hu, v), ink(u, v + hv) - ink(u, v - hv));
+            if gu.abs() + gv.abs() > 1e-3 {
+                let s = self.engrave * 3.0;
+                let wv = [0, 1, 2].map(|k| (gu * self.u[k] + gv * self.v[k]) * s);
+                let (tv, bv) = mesh.tan[t];
+                let (gx, gy) = (dot(wv, tv), dot(wv, bv));
+                let l2 = (gx * gx + gy * gy).min(0.95);
+                let k = if gx * gx + gy * gy > 0.0 { (l2 / (gx * gx + gy * gy)).sqrt() } else { 0.0 };
+                let (ex, ey) = (gx * k, gy * k);
+                let ez = (1.0 - ex * ex - ey * ey).max(0.0).sqrt();
+                out.normal = Some(([(ex * 0.5 + 0.5) * 255.0, (ey * 0.5 + 0.5) * 255.0, (ez * 0.5 + 0.5) * 255.0], 1.0));
+            }
+        }
+        if a <= 0.0 { return out; }
         out.color = Some(([0, 1, 2].map(|c| (q[c] * self.tint[c] / 255.0).min(255.0)), a));
         if has("rough") { out.rough = Some((self.rough, a)); }
         if has("metal") { out.metal = Some((self.metal, a)); }
+        if self.engrave > 0.0 && has("height") { out.height = Some((128.0 - 64.0 * self.engrave, a)); }
         out
     }
 }

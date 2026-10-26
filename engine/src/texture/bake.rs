@@ -116,9 +116,9 @@ fn raster_depth(buf: &mut [f32], v: &[[f32; 3]]) {
     }
 }
 
-/// Points sampled along the part's sharp (> 20°) edges, convex and concave apart, in a grid of `reach` cells; a query
-/// is the distance to the nearest over that edge's strength (Infinity past `reach`).
-pub struct Edges { grids: [HashMap<(i32, i32, i32), Vec<[f32; 4]>>; 2], reach: f32 }
+/// The part's sharp (> 20°) edges, convex and concave apart, as whole segments in a grid of `reach` cells; a query is
+/// the distance to the nearest segment over its strength (Infinity past `reach`).
+pub struct Edges { grids: [HashMap<(i32, i32, i32), Vec<[f32; 7]>>; 2], reach: f32 }
 
 impl Edges {
     pub fn new(pos: &[f32], reach: f32) -> Edges {
@@ -149,10 +149,16 @@ impl Edges {
             let s = (angle / std::f32::consts::FRAC_PI_2).min(1.0);
             let len = dot(sub(*v1, *v0), sub(*v1, *v0)).sqrt();
             let steps = ((len / (reach / 8.0)).ceil() as usize).max(1);
+            // the segment, in every cell it crosses: its distance is exact between those samples, so a band
+            // narrower than reach/8 stays a continuous line instead of beads (Edge Wear's 0.4% width was dots)
+            let seg = [v0[0], v0[1], v0[2], v1[0], v1[1], v1[2], s];
+            let mut seen: Vec<(i32, i32, i32)> = Vec::new();
             for k in 0..=steps {
                 let f = k as f32 / steps as f32;
-                let p = [v0[0] + (v1[0] - v0[0]) * f, v0[1] + (v1[1] - v0[1]) * f, v0[2] + (v1[2] - v0[2]) * f];
-                g.entry(cell(p)).or_insert_with(Vec::new).push([p[0], p[1], p[2], s]);
+                let c = cell([v0[0] + (v1[0] - v0[0]) * f, v0[1] + (v1[1] - v0[1]) * f, v0[2] + (v1[2] - v0[2]) * f]);
+                if seen.contains(&c) { continue; }
+                seen.push(c);
+                g.entry(c).or_insert_with(Vec::new).push(seg);
             }
         }
         Edges { grids, reach }
@@ -168,13 +174,33 @@ impl Edges {
                 for dz in -1..=1 {
                     if let Some(list) = self.grids[which].get(&(cx + dx, cy + dy, cz + dz)) {
                         for q in list {
-                            let d = sub([q[0], q[1], q[2]], p);
-                            best = best.min(dot(d, d).sqrt() / q[3]);
+                            let ab = [q[3] - q[0], q[4] - q[1], q[5] - q[2]];
+                            let ap = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                            let ee = dot(ab, ab);
+                            let t = if ee > 1e-20 { (dot(ap, ab) / ee).clamp(0.0, 1.0) } else { 0.0 };
+                            let d = [ap[0] - ab[0] * t, ap[1] - ab[1] * t, ap[2] - ab[2] * t];
+                            best = best.min(dot(d, d).sqrt() / q[6]);
                         }
                     }
                 }
             }
         }
         if best <= r { best } else { f32::INFINITY }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two quads folded 90° along the x axis. A texel 0.5 out from both flanks is 0.707 from the crease; the old
+    /// sampled-points distance (samples only at the ends, reach/8 = 1.25 apart) made it 0.866 — the beads behind
+    /// dotted Edge Wear.
+    #[test]
+    fn an_edge_distance_is_measured_to_the_segment() {
+        let pos = [0., 0., 0., 1., 0., 0., 1., -1., 0., 0., 0., 0., 1., 0., 0., 1., 0., 1.];
+        let e = Edges::new(&pos, 10.0);
+        let d = e.dist(0, [0.5, 0.5, 0.5]).min(e.dist(1, [0.5, 0.5, 0.5]));
+        assert!((d - 0.5f32.hypot(0.5)).abs() < 1e-4, "distance {d}");
     }
 }

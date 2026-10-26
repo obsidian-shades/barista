@@ -1,4 +1,4 @@
-﻿//! Benchmark on a real model: `cargo run --release --example gun [soup] [out_dir] [part]`. Prints per-part stats;
+//! Benchmark on a real model: `cargo run --release --example gun [soup] [out_dir] [part]`. Prints per-part stats;
 //! with `out_dir`, writes per part a PNG: three checker-textured 3D views (islands tinted) beside its UV layout.
 use barista::{unwrap, Params, PartIn, PartOut};
 
@@ -95,6 +95,9 @@ fn main() {
         }
         let part_area: f64 = a3.iter().sum();
         let dens: Vec<f64> = (0..ids.len()).filter(|&i| a3[i] >= 0.002 * part_area).map(|i| (uva[i] / a3[i]).sqrt()).collect();
+        // small nets (under 1% of the part's surface): how many, and how much of the square their boxes take
+        let small: Vec<usize> = (0..ids.len()).filter(|&i| a3[i] < 0.01 * part_area).collect();
+        let small_box: f32 = small.iter().map(|&i| { let b = boxes[i]; (b[2] - b[0]).max(0.) * (b[3] - b[1]).max(0.) }).sum();
         let (dlo, dhi) = dens.iter().fold((f64::MAX, 0f64), |(lo, hi), &d| (lo.min(d), hi.max(d)));
         // Where the seams fall. A seam is *open* when the two islands' copies of the edge don't meet in UV (the
         // texture jumps there — every seam on a packed atlas is), and *mid-panel* when it runs further than 5% of
@@ -167,14 +170,17 @@ fn main() {
                 }
             }
         }
-        println!("{}: {:5} tris  {:3} islands  stretch {:5.2}%  hot {:5.2}%  eff {:4.1}%  box {:4.1}%  dens {:5.2}x  open {:4.1}%  mid {:4.1}%  turn {:4.1}%  max {:5.2}", parts[k].name, p.island.len(), ids.len(), se / sa.max(1e-30) * 100.,
+        println!("{}: {:5} tris  {:3} islands  stretch {:5.2}%  hot {:5.2}%  eff {:4.1}%  box {:4.1}%  dens {:5.2}x  open {:4.1}%  mid {:4.1}%  turn {:4.1}%  max {:5.2}  small {:3} ({:4.1}% sq)", parts[k].name, p.island.len(), ids.len(), se / sa.max(1e-30) * 100.,
             hot / sa.max(1e-30) * 100., barista::pack::efficiency(&p.uvs) * 100., barista::pack::efficiency(&p.uvs) / boxed.max(1e-9) as f64 * 100.,
             if dlo > 0. { dhi / dlo } else { 0. }, if seam > 0. { open / seam * 100. } else { 0. }, if seam > 0. { open_mid / seam * 100. } else { 0. }, if seam > 0. { turned / seam * 100. } else { 0. },
-            p.stretch.iter().fold(0f32, |a, &b| a.max(b)));
+            p.stretch.iter().fold(0f32, |a, &b| a.max(b)), small.len(), small_box * 100.);
     }
     let s = &out.stats;
     println!("TOTAL {} islands, {} tris, flips {}, stretch {:.2}% (max {:.2}), good {:.1}%, overlap {:.3}%, eff {:.1}%, {:.0} ms",
         s.islands, s.tris, s.flips, s.mean_stretch * 100., s.max_stretch, s.good_area * 100., s.overlap * 100., s.efficiency * 100., s.ms);
+    let q = &s.seams;
+    println!("SEAMS {:.2} length/√A, {:.0}% hidden, {} spurs ({:.3}), {:.1}% steps, {:.2}% inside a face",
+        q.length, q.hidden * 100., q.spurs, q.spur_length, q.steps * 100., q.inside * 100.);
     let Some(dir) = a.get(2) else { return };
     for (k, p) in out.parts.iter().enumerate() {
         let mut img = Img::new(2400, 1200);

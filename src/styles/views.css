@@ -81,3 +81,10 @@ canvas.painting { cursor: crosshair; }
 .tip .tipname { display: flex; align-items: baseline; gap: 10px; font-weight: 600; color: var(--fg); }
 .tip .tipname kbd { padding: 0; margin: 0 0 0 auto; color: var(--muted); font-size: 10px; }
 .tip .tiptext { margin-top: 2px; color: var(--muted); white-space: pre-wrap; }
+/* View › Reference image: a floating card over the 3D view, dragged by its bar, sized from the corner */
+.refimage { position: absolute; z-index: 5; background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-s); box-shadow: var(--shadow-pop); overflow: hidden; }
+.refimage img { display: block; width: 100%; height: auto; pointer-events: none; }
+.refbar { display: flex; align-items: center; gap: 6px; height: var(--ctl-sm); padding: 0 4px 0 8px; background: var(--chrome); cursor: move; font-size: var(--fs-xs); color: var(--muted); }
+.refbar input[type="range"] { flex: 1; min-width: 40px; }
+.refbar button { width: 18px; height: 18px; color: var(--icon); }
+.refsize { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, var(--hair-hi) 50%); }

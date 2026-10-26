@@ -761,12 +761,88 @@ pub(crate) fn path_keys(l: &Local, prev: &[u32], mut w: u32, keys: &mut Vec<u64>
     }
 }
 
-/// Shortest edge path from any `from` vertex to any `to` vertex, as welded edge keys to cut.
+/// What a bend costs against a straight run, in mean edge lengths at a right angle (`TURN × (1 − cos θ)`). A seam is
+/// a line an artist follows, not a staircase: a path that steps one edge over at every vertex is longer *and*
+/// jagged, and both are paid here. High enough to prefer a few edges of straight detour, low enough that a real
+/// detour to hidden surface still wins.
+const TURN: f64 = 2.5;
+
+/// What turning costs at `u`, coming from `p` and leaving for `w`.
+///
+/// Free when the loop runs straight through: the two edges lie on opposite sides of every polygon they touch (they
+/// share no face), and the surface doesn't double back there. That is the edge alt-click follows — the collinear
+/// one, not the one that shares a face with the incoming edge — so a seam keeps to a loop across a bent quad.
+fn bend(m: &Mesh, l: &Local, p: u32, u: u32, w: u32, mean: f64) -> f64 {
+    let (a, b) = (sub(m.pt(l.orig[p as usize]), m.pt(l.orig[u as usize])), sub(m.pt(l.orig[w as usize]), m.pt(l.orig[u as usize])));
+    let (la, lb) = (norm(a), norm(b));
+    if !(la > 0. && lb > 0.) { return 0.; }
+    let c = dot(a, b) / (la * lb);
+    if c < 0. {
+        let polys = |x: u32, y: u32| -> Set<u64> {
+            m.edges[&ek(l.orig[x as usize], l.orig[y as usize])].iter().map(|&t| m.poly[t as usize] as u64).collect()
+        };
+        if polys(p, u).is_disjoint(&polys(u, w)) { return 0.; }
+    }
+    TURN * mean * (1. - c).clamp(0., 2.)
+}
+
+/// The cheapest edge path from any `from` vertex to any `to` vertex, charged for its bends as well as its length
+/// (`seam_cost`), as local vertices. The search runs over directed edges, not vertices, so it knows which way it
+/// arrived and can price the turn; a vertex-only shortest path turns for free and cuts across a quad grid in steps.
+fn turn_path(m: &Mesh, l: &Local, from: &[u32], to: &Set<u32>) -> Vec<u32> {
+    let n = l.nv;
+    let (mut nbr, mut eid, mut ea, mut eb) = (vec![Vec::new(); n], Map::<u64, u32>::default(), Vec::new(), Vec::new());
+    for tri in &l.t {
+        for k in 0..3 {
+            let (a, b) = (tri[k], tri[(k + 1) % 3]);
+            let key = ek(a, b);
+            if eid.contains_key(&key) { continue; }
+            eid.insert(key, ea.len() as u32);
+            ea.push(a);
+            eb.push(b);
+            nbr[a as usize].push(b);
+            nbr[b as usize].push(a);
+        }
+    }
+    let ne = ea.len();
+    if ne == 0 { return Vec::new(); }
+    let mean = (0..ne).map(|e| dist(m.pt(l.orig[ea[e] as usize]), m.pt(l.orig[eb[e] as usize]))).sum::<f64>() / ne as f64;
+    // state 2e = ea[e]→eb[e], 2e+1 = the other way
+    let state = |e: u32, a: u32| if ea[e as usize] == a { 2 * e } else { 2 * e + 1 };
+    let ends = |s: u32| if s % 2 == 0 { (ea[(s / 2) as usize], eb[(s / 2) as usize]) } else { (eb[(s / 2) as usize], ea[(s / 2) as usize]) };
+    let (mut dist, mut prev, mut h) = (vec![f64::INFINITY; 2 * ne], vec![u32::MAX; 2 * ne], BinaryHeap::new());
+    for &s in from {
+        for &w in &nbr[s as usize] {
+            let st = state(eid[&ek(s, w)], s);
+            let c = seam_cost(m, l.orig[s as usize], l.orig[w as usize]);
+            if c < dist[st as usize] { dist[st as usize] = c; h.push(Item(c, st)); }
+        }
+    }
+    let mut end = None;
+    while let Some(Item(d, st)) = h.pop() {
+        if d > dist[st as usize] { continue; }
+        let (u, v) = ends(st);
+        if to.contains(&v) { end = Some(st); break; }
+        for &w in &nbr[v as usize] {
+            if w == u { continue; }
+            let next = state(eid[&ek(v, w)], v);
+            let c = d + bend(m, l, u, v, w, mean) + seam_cost(m, l.orig[v as usize], l.orig[w as usize]);
+            if c < dist[next as usize] { dist[next as usize] = c; prev[next as usize] = st; h.push(Item(c, next)); }
+        }
+    }
+    let Some(mut st) = end else { return Vec::new() };
+    let mut seq = vec![st];
+    while prev[st as usize] != u32::MAX { st = prev[st as usize]; seq.push(st); }
+    seq.reverse();
+    let mut path = vec![ends(seq[0]).0];
+    for s in seq { path.push(ends(s).1); }
+    path
+}
+
+/// Shortest seam path from any `from` vertex to any `to` vertex, as welded edge keys to cut.
 pub fn cut_path(m: &Mesh, l: &Local, from: &[u32], to: &Set<u32>) -> Vec<u64> {
-    let (_, prev, end) = dijkstra(&seam_adj(m, l), from, |v| to.contains(&v));
-    let mut keys = Vec::new();
-    path_keys(l, &prev, end.unwrap_or(u32::MAX), &mut keys);
-    keys
+    let path = turn_path(m, l, from, to);
+    path.windows(2).map(|w| ek(l.orig[w[0] as usize], l.orig[w[1] as usize])).collect()
 }
 
 /// A closed sphere-like chart opens along the path between its two farthest points.
@@ -775,9 +851,16 @@ fn far_cut(m: &Mesh, l: &Local) -> Vec<u64> {
     let far = |d: &[f64]| (0..d.len()).max_by(|&x, &y| d[x].total_cmp(&d[y])).unwrap() as u32;
     let a = far(&dijkstra(&adj, &[0], |_| false).0);
     let (d, prev, _) = dijkstra(&adj, &[a], |_| false);
-    let mut keys = Vec::new();
-    path_keys(l, &prev, far(&d), &mut keys);
-    keys
+    let b = far(&d);
+    let mut to = Set::default();
+    to.insert(b);
+    let path = turn_path(m, l, &[a], &to);
+    if path.len() < 2 {
+        let mut keys = Vec::new();
+        path_keys(l, &prev, b, &mut keys);
+        return keys;
+    }
+    path.windows(2).map(|w| ek(l.orig[w[0] as usize], l.orig[w[1] as usize])).collect()
 }
 
 /// Tree-cotree (Erickson & Whittlesey's greedy homotopy generators): the shortest loops that cut a closed

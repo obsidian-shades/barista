@@ -2,15 +2,30 @@
 // Field names mirror engine/src/lib.rs: change both together.
 import { invoke, isTauri } from '@tauri-apps/api/core';
 export interface Params { sharp: number; tol: number; seam_weight: number; join: boolean; atlas: number; one_atlas: boolean }
-export interface Stats { islands: number; tris: number; flips: number; mean_stretch: number; max_stretch: number; good_area: number; overlap: number; efficiency: number; ms: number }
+/** The seams themselves (engine/src/judge.rs), measured on the cuts before nets are joined. Scale-free: `length` is
+ *  Σ seam length / √(Σ area); the others are shares of that length. */
+export interface Seams {
+  length: number;
+  /** Share of the seam length on surface hidden inside the model. */
+  hidden: number;
+  /** Dead-end runs shorter than 6% of √area: they open nothing. */
+  spurs: number;
+  spur_length: number;
+  /** Share of the seam length in staircase turns. */
+  steps: number;
+  /** Share inside one polygon (should be 0: the export would split the face). */
+  inside: number;
+}
+export interface Stats { islands: number; tris: number; flips: number; mean_stretch: number; max_stretch: number; good_area: number; overlap: number; efficiency: number; seams: Seams; ms: number }
 /** Per corner: positions (xyz), uvs (uv). Per triangle: stretch (−1 = flipped), island (numbered across all parts),
  *  source (its triangle in the part's input soup). */
 export interface PartOut { positions: number[]; uvs: number[]; stretch: number[]; island: number[]; source: number[] }
 export interface Output { parts: PartOut[]; stats: Stats }
 /** An island as the editor holds it, for the hand-edit solvers (engine/src/edit.rs): xyz and uv per corner. */
 export interface IslandIn { positions: number[]; uvs: number[] }
-/** Seams: two xyz endpoints (6 numbers) per edge. `poly`: per soup triangle its polygon (no seam runs inside one). */
-export interface PartIn { name: string; soup: Float32Array; seams: number[]; poly?: Int32Array }
+/** Seams: two xyz endpoints (6 numbers) per edge. `poly`: per soup triangle its polygon (no seam runs inside one).
+ *  `symmetry`: a point on a mirror plane and its normal (6 numbers, world units), drawn by hand; empty = auto-detect. */
+export interface PartIn { name: string; soup: Float32Array; seams: number[]; poly?: Int32Array; symmetry?: number[] }
 /** A part after a seam change (engine/src/edit.rs): its output as the editor holds it, every seam now, the edges
  *  toggled since its UVs were made, and the pinned corners. */
 export interface ReseamIn {
@@ -40,7 +55,10 @@ async function post(path: string, init?: RequestInit): Promise<Response> {
   let r: Response;
   try {
     r = await fetch(`/api/${path}`, init);
-  } catch {
+  } catch (e) {
+    // a request the browser itself couldn't send (out of memory for a big body) is not the engine being down
+    const up = await fetch('/api/shapes').then((x) => x.ok, () => false);
+    if (up) throw new Error(`The editor couldn't send ${path} to the engine (${e instanceof Error ? e.message : String(e)}); reload the page to free memory and try again.`);
     throw new ServerDown('Engine not reachable: run `pnpm server`');
   }
   // the Vite proxy answers 5xx with an empty body when the engine isn't running
@@ -57,14 +75,14 @@ export interface OpenProject { path?: string; recover?: boolean }
 /** Full-resolution texture export (engine/src/texture): a Pack in; the folder and files out, null when cancelled. */
 export const textureApi = {
   export: (pack: Uint8Array<ArrayBuffer>): Promise<{ dir: string; files: string[] } | null> => isTauri() ? tauriCall('texture_export', pack)
-    : post('texture-export', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Blob([pack]) }).then((r) => r.json()),
+    : post('texture-export', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: pack }).then((r) => r.json()),
   /** What the running export is on ('' when idle). */
   status: (): Promise<string> => isTauri() ? tauriCall('texture_status', {}) : post('texture-status').then((r) => r.text()),
 };
 export const projectApi = {
   /** Writes a Pack (project.ts); the path written, or null when the dialog was cancelled. */
   save: (pack: Uint8Array<ArrayBuffer>): Promise<string | null> => isTauri() ? tauriCall('project_save', pack)
-    : post('project-save', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Blob([pack]) }).then((r) => r.json()),
+    : post('project-save', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: pack }).then((r) => r.json()),
   /** The project as a Pack whose JSON is { path, doc } (or { cancelled }). */
   open: async (req: OpenProject): Promise<Uint8Array> => new Uint8Array(isTauri() ? await tauriCall<ArrayBuffer>('project_open', { body: req })
     : await (await post('project-open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req) })).arrayBuffer()),

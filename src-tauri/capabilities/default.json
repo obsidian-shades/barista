@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The editor window: core APIs (window, events, paths). The engine's own commands are allowed without listing them.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-destroy"]
 }

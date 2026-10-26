@@ -18,6 +18,36 @@ import { gpuPreviewCanvas } from '../gpupaint';
 import { IslandBar } from '../shell/IslandBar';
 import { SEL } from './Viewport3D';
 
+/** Part UVs `a` as a white-on-clear mask, n² (top row v = 1), kept per UV array: what a shared atlas shows of each
+ *  part's set. Built once; a clip path of every triangle per frame was the texture view's lag in an atlas. */
+const masks = new WeakMap<ArrayLike<number>, Map<number, HTMLCanvasElement>>();
+function islandMask(a: ArrayLike<number>, n: number) {
+  const sizes = masks.get(a) ?? new Map<number, HTMLCanvasElement>(), hit = sizes.get(n);
+  if (hit) return hit;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = n;
+  const m = cv.getContext('2d')!;
+  m.fillStyle = m.strokeStyle = '#fff'; m.lineWidth = 1; m.lineJoin = 'round';
+  m.beginPath();
+  for (let o = 0; o < a.length; o += 6) { m.moveTo(a[o] * n, (1 - a[o + 1]) * n); m.lineTo(a[o + 2] * n, (1 - a[o + 3]) * n); m.lineTo(a[o + 4] * n, (1 - a[o + 5]) * n); m.closePath(); }
+  m.fill(); m.stroke(); // the stroke closes the hairlines antialiasing leaves between neighbouring triangles
+  masks.set(a, sizes.set(n, cv));
+  return cv;
+}
+/** One scratch canvas: a part's texture (and selection shade) cut to its islands. */
+const scratch = document.createElement('canvas');
+function masked(src: CanvasImageSource, shade: CanvasImageSource | null, a: ArrayLike<number>, n: number) {
+  if (scratch.width !== n) scratch.width = scratch.height = n;
+  const c = scratch.getContext('2d')!;
+  c.globalCompositeOperation = 'copy'; c.drawImage(src, 0, 0, n, n);
+  c.globalCompositeOperation = 'source-over'; if (shade) c.drawImage(shade, 0, 0, n, n);
+  c.globalCompositeOperation = 'destination-in'; c.drawImage(islandMask(a, n), 0, 0);
+  c.globalCompositeOperation = 'source-over';
+  return scratch;
+}
+/** The texture view's UV wire in Van Gogh, drawn once per layout and view (it was redrawn after every stroke). */
+const wire = { key: '', cv: document.createElement('canvas') };
+
 type Drag =
   | { kind: 'pan' | 'zoom' | 'box'; x: number; y: number; x0: number; y0: number; op: SelOp }
   | { kind: 'move'; x: number; y: number; x0: number; y0: number; moved: boolean; part: number; id: number }
@@ -30,7 +60,7 @@ export function UVView() {
   const xform = useApp((s) => s.xform), pins = useApp((s) => s.pins);
   const csel = useApp((s) => liveSel(s)), selectMode = useApp((s) => s.selectMode), viewReq = useApp((s) => s.viewReq);
   // Van Gogh: the picked channel's texture under the UVs, and no UV editing (it would move the paint)
-  const paint = useApp((s) => s.workspace === 'paint'), channel = useApp((s) => s.paintChannel), paintRev = useApp((s) => s.paintRev), paintLive = useApp((s) => s.paintLive);
+  const paint = useApp((s) => s.workspace === 'paint'), channel = useApp((s) => s.paintChannel), paintRev = useApp((s) => s.paintRev), paintLive = useApp((s) => s.paintLive), lightRev = useApp((s) => s.lightRev);
   const parts = useApp((s) => s.parts), activePart = useApp((s) => s.activePart), oneAtlas = useApp((s) => s.params.one_atlas), uvScope = useApp((s) => s.uvScope);
   const box = useRef<HTMLDivElement>(null), cv = useRef<HTMLCanvasElement>(null);
   // The checker is a canvas generated at the paint resolution: do not rebuild it on every live stroke tick.
@@ -60,6 +90,9 @@ export function UVView() {
   useEffect(() => {
     const draw = () => {
       const el = box.current!, c = cv.current!, dpr = devicePixelRatio, w = el.clientWidth, h = el.clientHeight, v = view.current;
+      // laid out at 0 × 0 (a workspace switch mid-layout): drawImage of the empty wire canvas threw and took the app down;
+      // the ResizeObserver draws once it has a size
+      if (!w || !h) return;
       const tiles = uvTiles(), W = tiles.cols * TILE - (TILE - 1), H = tiles.rows * TILE - (TILE - 1), layout = `${tiles.cols}x${tiles.rows}`;
       if (layout !== v.layout) { v.layout = layout; v.fitted = false; }
       if (!v.fitted || !v.size) {
@@ -77,9 +110,11 @@ export function UVView() {
       const liveView = paint && painting() && paintLive > 0;
       // one square per tile (just one unless the whole model is shown part by part), named when there are several
       const squares: [[number, number], number][] = tiles.at.flatMap((o, pi) => (o ? [[o, pi] as [[number, number], number]] : []));
-      for (const [[u0, v0], pi] of squares.length ? squares : [[[0, 0], -1] as [[number, number], number]]) {
-        x.fillStyle = '#15171a';
-        x.fillRect(X(u0), Y(v0 + 1), S, S);
+      const list = squares.length ? squares : [[[0, 0], -1] as [[number, number], number]];
+      list.forEach(([[u0, v0], pi], k) => {
+        // a shared atlas puts every part in one square: its ground (and checker) once, or each part wiped the last
+        const first = list.findIndex(([o]) => o[0] === u0 && o[1] === v0) === k;
+        if (first) { x.fillStyle = '#15171a'; x.fillRect(X(u0), Y(v0 + 1), S, S); }
         if (paint && parts[pi]) {
           const ts = texSet(pi);
           // While a stroke is live, show the painted channel straight from its DataTexture; the lit material
@@ -89,10 +124,17 @@ export function UVView() {
           const shown = channel === 'material' ? 'color' : (channel === 'ao' || channel === 'curv' ? !!ts.bake : ts.channels.includes(channel)) ? channel : 'color';
           const preview = Math.min(ts.size, live ? 512 : 1024);
           const gpu = live || ts.preview ? gpuPreviewCanvas(pi) : null;
-          x.drawImage(gpu ?? mat ?? canvasOf(ts, shown, preview), X(u0), Y(v0 + 1), S, S);
-          if (ts.sel) x.drawImage(canvasOf(ts, 'shade', preview), X(u0), Y(v0 + 1), S, S);
+          // a shared atlas: every part has its own set over the same square, so each shows only on its own triangles
+          // (unclipped, the last part's set covered the whole atlas)
+          const shared = squares.some(([o, pj]) => pj !== pi && o[0] === u0 && o[1] === v0), a = useApp.getState().uvs[pi];
+          const src = gpu ?? mat ?? canvasOf(ts, shown, preview), shade = ts.sel ? canvasOf(ts, 'shade', preview) : null;
+          if (shared && a) x.drawImage(masked(src, shade, a, preview), X(u0), Y(v0 + 1), S, S);
+          else {
+            x.drawImage(src, X(u0), Y(v0 + 1), S, S);
+            if (shade) x.drawImage(shade, X(u0), Y(v0 + 1), S, S);
+          }
         }
-        else if (mode === 'checker' && parts[pi]?.textured !== false) { x.globalAlpha = 0.75; x.drawImage(checker, X(u0), Y(v0 + 1), S, S); x.globalAlpha = 1; }
+        else if (first && mode === 'checker' && parts[pi]?.textured !== false) { x.globalAlpha = 0.75; x.drawImage(checker, X(u0), Y(v0 + 1), S, S); x.globalAlpha = 1; }
         x.strokeStyle = '#383d43';
         x.strokeRect(X(u0) + 0.5, Y(v0 + 1) + 0.5, S, S);
         if (tiles.cols * tiles.rows > 1 && parts[pi]) {
@@ -100,8 +142,29 @@ export function UVView() {
           x.font = '11px sans-serif';
           x.fillText(parts[pi].name, X(u0) + 2, Y(v0 + 1) - 4);
         }
-      }
+      });
       const { uvs } = useApp.getState();
+      if (paint && result && !liveView) {
+        const key = `${uvRev}|${v.size}|${v.ox}|${v.oy}|${w}|${h}|${dpr}|${tiles.at.map((o) => (o ? o.join(',') : '-')).join(' ')}|${loading ? 'l' : ''}`;
+        if (wire.key !== key) {
+          wire.key = key;
+          wire.cv.width = c.width; wire.cv.height = c.height;
+          const g = wire.cv.getContext('2d')!;
+          g.setTransform(dpr, 0, 0, dpr, 0, 0);
+          g.lineWidth = 0.5; g.strokeStyle = 'rgba(80,150,255,.55)';
+          result.parts.forEach((p, pi) => {
+            const at = tiles.at[pi], a = uvs[pi];
+            if (!at || !a || (loading && !loading.done[pi])) return;
+            // ponytail: stroked 64 triangles a path (one huge path rasterises far slower); WebGL if parts grow past ~100k
+            for (let t0 = 0; t0 < p.island.length; t0 += 64) {
+              g.beginPath();
+              for (let t = t0; t < Math.min(t0 + 64, p.island.length); t++) { const o = t * 6; g.moveTo(X(a[o] + at[0]), Y(a[o + 1] + at[1])); g.lineTo(X(a[o + 2] + at[0]), Y(a[o + 3] + at[1])); g.lineTo(X(a[o + 4] + at[0]), Y(a[o + 5] + at[1])); g.closePath(); }
+              g.stroke();
+            }
+          });
+        }
+        x.drawImage(wire.cv, 0, 0, w, h);
+      }
       if (result && !liveView) {
         x.lineWidth = 0.5;
         result.parts.forEach((p, pi) => {
@@ -119,8 +182,8 @@ export function UVView() {
             x.fill();
           }
           // ponytail: wire stroked 64 triangles a path (one huge path rasterises far slower); WebGL if parts grow past ~100k
-          x.strokeStyle = paint ? 'rgba(80,150,255,.55)' : fill === 'checker' ? 'rgba(255,255,255,.4)' : 'rgba(0,0,0,.28)';
-          for (let t0 = 0; t0 < p.island.length; t0 += 64) {
+          x.strokeStyle = fill === 'checker' ? 'rgba(255,255,255,.4)' : 'rgba(0,0,0,.28)';
+          for (let t0 = paint ? p.island.length : 0; t0 < p.island.length; t0 += 64) { // Van Gogh's wire is the cached one above
             x.beginPath();
             for (let t = t0; t < Math.min(t0 + 64, p.island.length); t++) tri(t);
             x.stroke();
@@ -172,7 +235,7 @@ export function UVView() {
     const ro = new ResizeObserver(draw);
     ro.observe(box.current!);
     return () => ro.disconnect();
-  }, [result, mode, uvRev, csel, selectMode, parts, activePart, oneAtlas, uvScope, loading, pins, textureResolution, uvMap, paint, channel, paintRev, paintLive]);
+  }, [result, mode, uvRev, csel, selectMode, parts, activePart, oneAtlas, uvScope, loading, pins, textureResolution, uvMap, paint, channel, paintRev, paintLive, lightRev]);
 
   // a transform in progress follows the mouse anywhere; left click keeps it, right click puts it back
   const transforming = !!xform;
@@ -283,7 +346,10 @@ export function UVView() {
   };
   /** The part whose square holds UV point (u, v) as the view lays them out, and the point in that square. */
   const squareAt = (u: number, v: number) => {
-    const at = uvTiles().at, i = at.findIndex((o) => o && u >= o[0] && u <= o[0] + 1 && v >= o[1] && v <= o[1] + 1);
+    // the part whose triangle is under the point first: in a shared atlas every part's square is the same one
+    const s = useApp.getState(), at = uvTiles().at, hit = s.result ? pickTri(s.result, s.uvs, at, u, v) : null;
+    const inside = (o: [number, number] | null) => !!o && u >= o[0] && u <= o[0] + 1 && v >= o[1] && v <= o[1] + 1;
+    const i = hit && inside(at[hit.part]) ? hit.part : inside(at[s.activePart]) ? s.activePart : at.findIndex(inside);
     return i < 0 ? null : { part: i, uv: [u - at[i]![0], v - at[i]![1]] as [number, number] };
   };
   // Van Gogh: every tool works here as on the model; Marquee and Lasso draw in UV space, a click deselects

@@ -80,7 +80,6 @@ export const TILE_KINDS: [string, RegExp][] = [
   ['Ceramic', /ceramic|porcelain|glaz|shiny/i],
 ];
 export const tileKind = (m: MaterialAsset) => TILE_KINDS.find(([, re]) => re.test(m.name))?.[0] ?? 'Other';
-export const groupName = (g: MaterialGroup) => MATERIAL_GROUPS.find(([id]) => id === g)?.[1] ?? 'Other';
 
 const BASE = '/materials';
 /** Weapon finishes the pack has under other names: the same maps, shelved again under the finish's name
@@ -247,12 +246,3 @@ export async function materialFromFiles(name: string, files: File[]): Promise<Ma
   };
 }
 
-/** Chromium/WebView2: pick a folder and read its maps. Null when the browser has no directory picker. */
-export async function pickMaterialFolder(): Promise<MaterialAsset | null> {
-  const pick = (window as unknown as { showDirectoryPicker?: (o: { mode: string }) => Promise<any> }).showDirectoryPicker;
-  if (!pick) return null;
-  const dir = await pick({ mode: 'read' });
-  const files: File[] = [];
-  for await (const h of dir.values()) if (h.kind === 'file') files.push(await h.getFile());
-  return materialFromFiles(dir.name, files);
-}

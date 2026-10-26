@@ -89,12 +89,15 @@ impl Mesh {
             for k in 0..3 { edges.entry(ek(tri[k], tri[(k + 1) % 3])).or_default().push(t as u32); }
         }
         orient(&p, &mut f, &edges);
-        let (n, a) = f.iter().map(|t| {
+        let (n, a): (Vec<V3>, Vec<f64>) = f.iter().map(|t| {
             let c = cross(sub(p[t[1] as usize], p[t[0] as usize]), sub(p[t[2] as usize], p[t[0] as usize]));
             let l = norm(c);
             ([c[0] / l, c[1] / l, c[2] / l], l / 2.)
         }).unzip();
-        Ok(Mesh { p, f, poly: src.clone(), src, n, a, edges, center, radius, cells, hidden: Default::default() })
+        // a soup (OBJ, glTF) has no polygons: read the quads back out of the triangle pairs before anything charts,
+        // so a seam can't run down a quad's diagonal, which the modeller never drew
+        let poly = recover_quads(&p, &f, &edges, &n);
+        Ok(Mesh { p, f, poly, src, n, a, edges, center, radius, cells, hidden: Default::default() })
     }
 
     pub fn pt(&self, v: u32) -> V3 { self.p[v as usize] }
@@ -177,9 +180,85 @@ fn orient(p: &[V3], f: &mut [[u32; 3]], edges: &Map<u64, Vec<u32>>) {
     }
 }
 
+/// Dihedral (degrees) under which two triangles across an edge count as the two halves of one quad.
+const QUAD_FLAT: f64 = 20.;
+/// A quad's shared edge must be this much of its other diagonal at least: a pair across a short edge is a triangle
+/// fan, not a quad.
+const QUAD_DIAGONAL: f64 = 0.625;
+
+/// The quads a triangle soup was cut from, as a polygon id per triangle (`Mesh::poly`).
+///
+/// A boxed model exported as OBJ or glTF arrives with every quad split by a diagonal the modeller never drew. Charting
+/// by facing gets away with it most of the time, but a seam path or a split can run down that diagonal, and the export
+/// then has to write the quad as two triangles — a texel seam on a face that should carry one. The diagonal is easy to
+/// tell from a real edge: its two triangles lie flat against each other and their four corners make a proper convex
+/// quad, and it is the longer way across. Those are dissolved best first, each triangle used once.
+fn recover_quads(p: &[V3], f: &[[u32; 3]], edges: &Map<u64, Vec<u32>>, n: &[V3]) -> Vec<u32> {
+    let mut poly: Vec<u32> = (0..f.len() as u32).collect();
+    if f.len() < 2 { return poly; }
+    let mut cand: Vec<(f64, u32, u32)> = Vec::new();
+    for (&key, ts) in edges {
+        if ts.len() != 2 { continue; }
+        let (s, t) = (ts[0], ts[1]);
+        let (a, b) = ((key >> 32) as u32, (key & 0xffff_ffff) as u32);
+        let other = |tri: u32| f[tri as usize].iter().copied().find(|&v| v != a && v != b);
+        let (Some(c), Some(d)) = (other(s), other(t)) else { continue };
+        let ang = dot(n[s as usize], n[t as usize]).clamp(-1., 1.).acos().to_degrees();
+        if ang > QUAD_FLAT { continue; }
+        // the four corners in winding order, the shared edge as the diagonal, must make a convex quad
+        let q = [c, a, d, b];
+        let nn = [0, 1, 2].map(|k| n[s as usize][k] + n[t as usize][k]);
+        let l = norm(nn);
+        if !(l > 0.) { continue; }
+        let nn = nn.map(|x| x / l);
+        let (mut side, mut ok) = (0., true);
+        for k in 0..4 {
+            let (x, y, z) = (p[q[k] as usize], p[q[(k + 1) % 4] as usize], p[q[(k + 2) % 4] as usize]);
+            let s = dot(cross(sub(y, x), sub(z, y)), nn);
+            if s.abs() < 1e-12 { ok = false; break; }
+            if side == 0. { side = s.signum(); } else if s.signum() != side { ok = false; break; }
+        }
+        if !ok { continue; }
+        let diag = dist(p[a as usize], p[b as usize]);
+        let across = dist(p[c as usize], p[d as usize]);
+        if diag < 1e-12 || across > diag / QUAD_DIAGONAL { continue; }
+        // flattest first, then the pair whose shared edge is the longer way across
+        cand.push((ang + 20. * (across / diag - 1.).max(0.), s, t));
+    }
+    cand.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)).then(x.2.cmp(&y.2)));
+    let mut used = vec![false; f.len()];
+    let mut next = f.len() as u32;
+    for (_, s, t) in cand {
+        if used[s as usize] || used[t as usize] { continue; }
+        used[s as usize] = true;
+        used[t as usize] = true;
+        poly[s as usize] = next;
+        poly[t as usize] = next;
+        next += 1;
+    }
+    poly
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two halves of a flat quad are one polygon, so its diagonal is `inside` (never a seam); a bent pair is two.
+    #[test]
+    fn a_flat_quad_is_read_back_from_its_triangles() {
+        let quad = [0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let m = Mesh::from_soup(&quad).unwrap();
+        assert_eq!(m.f.len(), 2);
+        assert_eq!(m.poly[0], m.poly[1]);
+        let shared = *m.edges.iter().find(|(_, ts)| ts.len() == 2).map(|(k, _)| k).unwrap();
+        assert!(m.inside(shared), "the quad's diagonal is not inside its polygon");
+
+        // the same diagonal with one far corner lifted out of the plane: a fold, not a quad
+        let bent = [0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 0., 0., 1., 1., 0., 0., 1., 0.5];
+        let m = Mesh::from_soup(&bent).unwrap();
+        assert_eq!(m.f.len(), 2);
+        assert_ne!(m.poly[0], m.poly[1]);
+    }
 
     /// Two outward cubes touching along one edge (4 triangles on each of its pieces) stay outward, both of them.
     #[test]

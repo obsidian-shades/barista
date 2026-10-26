@@ -5,7 +5,7 @@
 import { useEnvironment } from '@react-three/drei';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { MATCAPS, matcapCanvas } from '../shading';
-import { HDRI_PRESETS, rememberColor, setDocColor, setSceneHdri, setSceneHdriPreset, updateScene, useApp, type Scene } from '../store';
+import { HDRI_PRESETS, rememberColor, resetScene, setDocColor, setSceneHdri, setSceneHdriPreset, updateScene, useApp, type Scene } from '../store';
 
 /** Viewport backdrops: the app canvas, a few studio sweeps, and black. */
 const BACKDROPS = ['#1d1f22', '#2a2d31', '#3c4654', '#d8d4ce', '#eceae6', '#e6dfd4', '#111111'];
@@ -56,7 +56,12 @@ export function SceneSettings() {
   const [open, setOpen] = useState(false);
   const pop = useRef<HTMLDivElement>(null), btn = useRef<HTMLButtonElement>(null), file = useRef<HTMLInputElement>(null);
   const titleId = useId();
-  const map = !!scene.hdriUrl;
+  // Van Gogh's Studio lights with its own plate when none is picked, so World is there too
+  const paintWs = useApp((s) => s.workspace === 'paint');
+  const map = !!scene.hdriUrl || (paintWs && scene.lighting === 'studio');
+  // Van Gogh's material view (no plate) lights by its own plate and sun: the workspace lamps are off there, so their
+  // sliders would only wash out UV Magician and Poly Doc, where they do apply
+  const lamps = !(paintWs && !scene.hdriUrl);
 
   useEffect(() => { if (open) for (const p of Object.values(HDRI_PRESETS)) useEnvironment.preload({ files: p.url }); }, [open]);
   useLayoutEffect(() => { if (open && pop.current && btn.current) place(pop.current, btn.current); }, [open, map]);
@@ -114,8 +119,8 @@ export function SceneSettings() {
               <Slider label="Strength" title="How strongly the environment lights the model." min={0} max={3} step={0.05} value={scene.hdriStrength} text={scene.hdriStrength.toFixed(2)} disabled={!map} onChange={(hdriStrength) => updateScene({ hdriStrength })} />
               <Slider label="Rotation" title="Turns the environment so its bright light sits on the front-left." min={-180} max={180} step={1} value={Math.round(scene.hdriRotation * 180 / Math.PI)} text={`${Math.round(scene.hdriRotation * 180 / Math.PI)}°`} disabled={!map} onChange={(deg) => updateScene({ hdriRotation: deg * Math.PI / 180 })} />
               <Slider label="Blur" title="Softens the backdrop. Higher hides a low-resolution plate and reads as a studio sweep." min={0} max={100} step={1} value={Math.round(scene.hdriBlur * 100)} text={`${Math.round(scene.hdriBlur * 100)}%`} disabled={!map} onChange={(pct) => updateScene({ hdriBlur: pct / 100 })} />
-              <Slider label="Ambient" title="Fill from the sky and the ground. With an environment map this stays low, so the map does the lighting." min={0} max={10} step={0.05} value={scene.ambient} text={scene.ambient.toFixed(2)} onChange={(ambient) => updateScene({ ambient })} />
-              <Slider label="Key" title="The lamp on the front-left. With an environment map it shapes the subject; the map supplies the room." min={0} max={10} step={0.05} value={scene.key} text={scene.key.toFixed(2)} onChange={(key) => updateScene({ key })} />
+              <Slider label="Ambient" title="Fill from the sky and the ground. With an environment map this stays low, so the map does the lighting." min={0} max={10} step={0.05} value={scene.ambient} text={scene.ambient.toFixed(2)} disabled={!lamps} onChange={(ambient) => updateScene({ ambient })} />
+              <Slider label="Key" title="The lamp on the front-left. With an environment map it shapes the subject; the map supplies the room." min={0} max={10} step={0.05} value={scene.key} text={scene.key.toFixed(2)} disabled={!lamps} onChange={(key) => updateScene({ key })} />
               <Slider label="Exposure" title="Camera exposure. Lower it when the highlights clip." min={0} max={5} step={0.05} value={scene.exposure} text={scene.exposure.toFixed(2)} onChange={(exposure) => updateScene({ exposure })} />
             </div>
             <button type="button" className="wide" onClick={() => file.current?.click()}>Load HDRI…</button>
@@ -174,6 +179,7 @@ export function SceneSettings() {
             {flag(scene, 'showGrid', 'Grid')}
             {flag(scene, 'showAxes', 'Axes')}
           </div>
+          <button type="button" className="wide" title="Lighting, lamps, map, background, options and overlays back to their defaults" onClick={resetScene}>Reset scene and lights</button>
         </div>
       </div>
     </>

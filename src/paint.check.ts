@@ -1,7 +1,7 @@
 // node src/paint.check.ts: a unit square split at x = 0.5 into two islands far apart in UV. A dab on the seam paints
 // both; a dab paints a flat face evenly (no lines where its triangles meet); layers stack; erase and undo work.
 import assert from 'node:assert';
-import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, blendOf, DEFAULT_BLEND, type Brush, type Decal, type Fill, type GenKind, type PaintLayer } from './paint.ts';
+import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Brush, type Decal, type Fill, type GenKind, type PaintLayer } from './paint.ts';
 import type { MaterialPixels } from './materials.ts';
 
 // left half [0,.5] → uv (0..0.25, 0..0.5); right half [.5,1] → uv (0.5..0.75, 0..0.5): the seam is 0.25 apart in UV
@@ -235,4 +235,23 @@ fillTris(ss, pos, uvs, [0], red);
 const painted0 = ss.layers[0].px.color;
 select(ss, maskTris(ss, pos, uvs, [1]), 'set');
 assert.equal(ss.past[ss.past.length - 1].layers[0].px.color, painted0, 'a selection step does not copy the layer buffers');
+// A solid fill has no maps: its colour is the tint, its roughness / metallic the values it carries.
+const so = setOf(new Float32Array(pos), 32);
+so.channels = ['color', 'rough', 'metal'];
+const solidL: PaintLayer = { ...newLayer(2), fill: { asset: SOLID, projection: 'triplanar', tiling: 1, tiles: 4, rotation: 0, offset: [0, 0], normalStrength: 1, tint: '#e06a22', roughness: 0.4, metallic: 0.85, channels: ['color', 'rough', 'metal'] } };
+so.layers.push(solidL); so.active = 1;
+bakeFill(so, solidL, {}, pos, uvs, 1);
+composite(so);
+const sc = (so.color.image.data as Uint8ClampedArray), mid = (8 * 32 + 4) * 4;
+assert.deepEqual(Array.from(sc.subarray(mid, mid + 3)), [0xe0, 0x6a, 0x22], 'a solid fill is its tint');
+assert.equal((so.orm.image.data as Uint8ClampedArray)[mid + 2], Math.round(0.85 * 255), 'and its metallic');
+// Grow / shrink move the selection's border by texels, inside the surface.
+const gs = setOf(new Float32Array(pos), 32);
+select(gs, maskTris(gs, pos, uvs, [0]), 'set');
+const count = () => gs.sel!.reduce((n, x) => n + (x ? 1 : 0), 0), c0 = count();
+growSelection(gs, 2, uvs);
+const c1 = count();
+growSelection(gs, -4, uvs);
+assert.ok(c1 > c0 && count() < c0 && count() > 0, `grow then shrink: ${c0} → ${c1} → ${count()}`);
+assert.ok(gs.sel!.every((x, i) => !x || gs.shell![i]), 'a grown selection stays on the surface');
 console.log('paint ok');

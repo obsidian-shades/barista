@@ -17,13 +17,7 @@ export function islandsOf(r: Output): IslandRef[] {
   return out;
 }
 
-/** The island under (u, v), or −1. `at`: each part's offset in the view (see uvTiles), null if not shown. */
-export function pickUV(r: Output, uvs: Float32Array[], at: ([number, number] | null)[], U: number, V: number): number {
-  const hit = pickTri(r, uvs, at, U, V);
-  return hit ? r.parts[hit.part].island[hit.tri] : -1;
-}
-
-/** The triangle under (u, v): its part and index, or null. */
+/** The triangle under (u, v): its part and index, or null. `at`: each part's offset in the view (see uvTiles), null if not shown. */
 export function pickTri(r: Output, uvs: Float32Array[], at: ([number, number] | null)[], U: number, V: number): { part: number; tri: number } | null {
   for (let pi = 0; pi < r.parts.length; pi++) {
     const o0 = at[pi];

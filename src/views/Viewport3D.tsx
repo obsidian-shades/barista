@@ -3,7 +3,7 @@
 // pans, wheel zooms, numpad views, Home / numpad . frame. Click picks a vertex, edge, face or island
 // (the select mode), Shift toggles, Ctrl takes away, Alt+click an edge loop, left drag box-selects (through the
 // model's hidden side). Right click: the selection menu (Cut, Stitch, Unwrap…).
-import { Bounds, ContactShadows, Environment, Line, OrbitControls, Outlines, useEnvironment } from '@react-three/drei';
+import { Bounds, ContactShadows, Environment, Line, OrbitControls, Outlines, TransformControls, useEnvironment } from '@react-three/drei';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { useCallback, Component, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as THREE from 'three';
@@ -11,12 +11,13 @@ import type { Output } from '../api';
 import { islandColor, stretchColor, uvMapCanvas } from '../colors';
 import { Morph } from '../morph';
 import { inside } from '../paint';
-import { env as paintEnv, look as paintLook, PAINT_HDRI, setEnv } from '../matview';
+import { env as paintEnv, look as paintLook, PAINT_HDRI, setEnv, turnLight } from '../matview';
 import { health, healthColor } from '../health';
 import { poles } from '../polygeo';
 import { matcapTexture, studioShader, studioUniforms, THEME_BG } from '../shading';
 import { outNormals, ownPolygons, topoOfSoup } from '../polyedit';
-import { brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, texSet, type PaintMods, clearSelection, contextMenu, kindOf, liveSel, openRecent, pickFile, pointer, sceneGrade, selectElems, selectLoop, setSceneHdri, useApp, view3d, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
+import { RefImage } from './RefImage';
+import { activeDecal, assignMaterial, dropDecal, beginPaintEdit, modelDiagonal, moveSymPlane, paintHoverAt, shelfDrag, updateDecal, brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, texSet, type PaintMods, clearSelection, contextMenu, kindOf, liveSel, openRecent, pickFile, pointer, sceneGrade, selectElems, selectLoop, setSceneHdri, useApp, view3d, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
 import { setPaintRenderer } from '../gpupaint';
 import { topoOf, polygonsOf, trisOf } from '../topo';
 import { polyContextMenu } from '../shell/PolyTools';
@@ -41,12 +42,13 @@ function layoutOf(result: Output | null) {
 
 /** The solid colour owns the background until an environment plate takes it. Keeping both writers
  *  made the plate flicker back to the flat colour on every slider move. */
-function Backdrop({ color }: { color: string }) {
+function Backdrop({ color, off }: { color: string; off?: boolean }) {
   const { scene, gl } = useThree();
   useLayoutEffect(() => {
+    if (off) return; // something else (Van Gogh's World plate) is the background
     scene.background = new THREE.Color(color);
     gl.setClearColor(color, 1);
-  }, [scene, gl, color]);
+  }, [scene, gl, color, off]);
   return null;
 }
 
@@ -111,11 +113,12 @@ function StudioEnvironment({ scene }: { scene: Scene }) {
 }
 /** Substance's default viewport (its material view): the model lit by a sunny environment alone (no lamps, no tone
  *  curve) with its sun casting a shadow, so every plane reads light or dark by where it faces. Van Gogh, Studio, no plate. */
-function PaintStudio({ layout }: { layout: { x: number; y: number; z: number; span: number } }) {
+function PaintStudio({ layout, world }: { layout: { x: number; y: number; z: number; span: number }; world: boolean }) {
   const tex = useEnvironment({ files: PAINT_HDRI });
   const { scene, invalidate } = useThree();
   const sun = useMemo(() => new THREE.DirectionalLight('#ffffff'), []);
   useApp((st) => st.paintRev); // `relight()` bumps it
+  useApp((st) => st.lightRev); // Shift+right-drag
   useEffect(() => {
     setEnv(tex);
     scene.environment = tex;
@@ -137,7 +140,21 @@ function PaintStudio({ layout }: { layout: { x: number; y: number; z: number; sp
   Object.assign(sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: r * 0.5, far: r * 6 });
   sun.shadow.camera.updateProjectionMatrix();
   sun.shadow.bias = -0.0004; sun.shadow.normalBias = r * 0.002;
-  return <><primitive object={sun} /><primitive object={sun.target} /></>;
+  // Background › World: the plate itself behind the model, blurred and a little dimmer so the subject separates
+  if (world) {
+    scene.background = tex;
+    scene.backgroundBlurriness = 0.55;
+    scene.backgroundIntensity = paintEnv.scale * 0.7;
+    scene.backgroundRotation.copy(paintEnv.rot);
+  }
+  // a floor that only takes the sun's shadow, so the model sits somewhere instead of floating in the dark
+  return <>
+    <primitive object={sun} /><primitive object={sun.target} />
+    <mesh rotation-x={-Math.PI / 2} position={[layout.x, layout.y - r * 0.002, layout.z]} receiveShadow raycast={() => null}>
+      <planeGeometry args={[r * 6, r * 6]} />
+      <shadowMaterial opacity={0.35} depthWrite={false} />
+    </mesh>
+  </>;
 }
 function Remember({ url, hold, children }: { url: string; hold: { current: string | null }; children: ReactNode }) {
   useLayoutEffect(() => { hold.current = url; }, [url, hold]);
@@ -150,6 +167,20 @@ const opOf = (e: { shiftKey: boolean; ctrlKey: boolean }, click: boolean): SelOp
 
 type Box = { x0: number; y0: number; x1: number; y1: number };
 const track = (e: React.PointerEvent) => { pointer.view = '3d'; pointer.x = e.clientX; pointer.y = e.clientY; };
+/** Van Gogh, Shift+right-drag: turn the light round the model (Substance's), the plate and the key together. The view
+ *  and the texture view's Material mode redraw once a frame. */
+function lightDrag(e: React.PointerEvent) {
+  if (e.button !== 2 || !e.shiftKey) return;
+  e.preventDefault();
+  let x = e.clientX, queued = 0;
+  const move = (m: PointerEvent) => {
+    turnLight((m.clientX - x) * 0.01);
+    x = m.clientX;
+    queued ||= requestAnimationFrame(() => { queued = 0; useApp.setState((st) => ({ lightRev: st.lightRev + 1 })); });
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', () => removeEventListener('pointermove', move), { once: true });
+}
 
 /** Before a model: one action and the recent files, nothing to read. */
 function EmptyState() {
@@ -202,7 +233,7 @@ export function Viewport3D() {
           </label>
         )}
       </header>
-      <div className="vbody" onPointerMove={track} onPointerDown={track}
+      <div className="vbody" onPointerMove={track} onPointerDown={(e) => { track(e); if (paintWs) lightDrag(e); }}
         onContextMenu={(e) => { e.preventDefault(); if (paintWs) return; if (doc) polyContextMenu(); else contextMenu(); }}>
         {/* drawn only when something changed (orbit, a store update), not 60 times a second: an idle view costs no GPU */}
         <ViewBoundary>
@@ -211,14 +242,14 @@ export function Viewport3D() {
           onCreated={({ gl }) => setPaintRenderer(gl)}
           onPointerMissed={(e) => e.button === 0 && !e.shiftKey && !e.ctrlKey && clearSelection()}>
           <PaintGL />
-          <Backdrop color={scene.bg === 'custom' ? scene.background : THEME_BG} />
+          <Backdrop off={paintStudio && scene.hdriBackground} color={scene.bg === 'custom' ? scene.background : THEME_BG} />
           {/* Workspace lights stay as they were. A plate takes over: a warm or cool fill at the slider's
               level, plus one front-left lamp, and the map does the rest of the room. */}
           <hemisphereLight color={studio ? grade.sky : '#ffffff'} groundColor={studio ? grade.ground : '#333344'} intensity={paintStudio ? 0 : scene.ambient} />
           <directionalLight position={studio ? [-0.4, 7.9, 6.1] : [3, 4, 5]} intensity={paintStudio ? 0 : scene.key} color={studio ? grade.keyColor : '#ffffff'} />
           <RendererExposure exposure={scene.exposure} />
           {scene.lighting === 'studio' && <StudioEnvironment scene={scene} />}
-          {paintStudio && <Suspense fallback={null}><PaintStudio layout={layout} /></Suspense>}
+          {paintStudio && <Suspense fallback={null}><PaintStudio layout={layout} world={scene.hdriBackground} /></Suspense>}
           <gridHelper key={`grid${layout.span}`} visible={scene.showGrid} position={[layout.x, layout.y, layout.z]} args={[layout.span * 3, 20, '#59616b', '#343a42']} />
           <axesHelper key={`axes${layout.span}`} visible={scene.showAxes} position={[layout.x, layout.y, layout.z]} args={[layout.span * 0.55]} />
           {scene.shadow && unfold === 0 && result && (
@@ -229,7 +260,11 @@ export function Viewport3D() {
               <Model result={result} unfold={unfold} studio={studio} wireframe={scene.wireframe} showEdges={scene.showEdges} showVertices={scene.showVertices} showSeams={scene.showSeams} />
             </Bounds>
           )}
+          {result && <SymPlaneGizmo />}
           {paintWs && <BrushCursor />}
+          {paintWs && <DecalGizmo />}
+          {paintWs && <DecalPreview />}
+          <Picker />
           {/* the wheel zooms toward what's under the mouse (Blender's Zoom to Mouse Position), about 14% a notch (three's default 5% felt stuck on a big FBX), with no limit either way */}
           <OrbitControls makeDefault zoomToCursor zoomSpeed={3} minDistance={0} maxDistance={Infinity} mouseButtons={{ LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: -1 as THREE.MOUSE }} />
           <ClipPlanes span={layout.span} />
@@ -242,6 +277,7 @@ export function Viewport3D() {
         </ViewBoundary>
         {empty && <EmptyState />}
         {lasso && <svg className="lassosel"><polygon points={lasso.map((p) => p.join(',')).join(' ')} /></svg>}
+        <RefImage />
         {box && <div className="boxsel" style={{ left: Math.min(box.x0, box.x1), top: Math.min(box.y0, box.y1), width: Math.abs(box.x1 - box.x0), height: Math.abs(box.y1 - box.y0) }} />}
       </div>
     </section>
@@ -801,15 +837,30 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
     return lineGeo(new Float32Array(tris));
   }, [sel, out]);
   useEffect(() => () => { for (const g of [seams, wire, allVerts, selVerts, selFaces]) g?.dispose(); }, [seams, wire, allVerts, selVerts, selFaces]);
+  // Van Gogh: what a Bucket / Wand click or a dropped material would take, tinted and outlined
+  const hoverTris = useApp((s) => (paint && s.paintHover?.part === index ? s.paintHover.tris : null));
+  const hoverGeo = useMemo(() => {
+    if (!hoverTris) return null;
+    const fill = new Float32Array(hoverTris.length * 9), count = new Map<number, number>();
+    hoverTris.forEach((t, k) => {
+      for (let j = 0; j < 9; j++) fill[k * 9 + j] = out.positions[t * 9 + j];
+      for (let c = 0; c < 3; c++) { const e = topo.edge[t * 3 + c]; count.set(e, (count.get(e) ?? 0) + 1); }
+    });
+    const border = [...count].filter(([, n]) => n === 1).flatMap(([e]) => [topo.ends[e * 2], topo.ends[e * 2 + 1]].map((v) => [topo.pos[v * 3], topo.pos[v * 3 + 1], topo.pos[v * 3 + 2]] as [number, number, number]));
+    return { fill: lineGeo(fill), border };
+  }, [hoverTris, out, topo]);
+  useEffect(() => () => hoverGeo?.fill.dispose(), [hoverGeo]);
   const flat = unfold === 0, editing = !paint && (doc || selectMode !== 'island');
   const hover = (e: ThreeEvent<PointerEvent>) => {
     pointer.part = index; pointer.tri = e.faceIndex ?? -1;
     if (paint && e.face) { cursor.on = true; cursor.p.copy(e.point); cursor.n.copy(e.face.normal); invalidate(); }
+    if (shelfDrag.id) return; // a material held from the shelf: the drag outlines, it doesn't paint
+    if (paint && !painting()) { const t = useApp.getState().paint.tool; if (t === 'bucket' || t === 'wand') paintHoverAt(index, e.faceIndex ?? -1); }
     if (!paint || e.buttons !== 1 || !e.uv || e.faceIndex == null) return;
     e.stopPropagation();
     // a drag that began off the model starts painting where it comes onto it, as Photoshop paints from anywhere
     const tool = useApp.getState().paint.tool;
-    if (painting()) paintDrag(index, e.point.toArray(), [e.uv.x, e.uv.y], e.pointerType === 'pen' ? e.pressure : 1);
+    if (painting()) paintDrag(index, e.point.toArray(), [e.uv.x, e.uv.y], e.pointerType === 'pen' ? e.pressure : 1, e.faceIndex);
     else if ((tool === 'brush' || tool === 'erase') && !e.ctrlKey && !e.altKey && paintPress(index, e.faceIndex, e.point.toArray(), [e.uv.x, e.uv.y], { shift: false, alt: false, ctrl: false, pressure: e.pressure, pen: e.pointerType === 'pen' })) addEventListener('pointerup', paintEnd, { once: true });
     invalidate();
   };
@@ -853,7 +904,7 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
 
   return (
     <group>
-      <mesh geometry={geo} castShadow={paint} receiveShadow={paint} onUpdate={(m) => m.layers.enable(SOLID)} onClick={click} onPointerDown={press} onPointerMove={hover} onPointerOut={() => { if (pointer.part === index) pointer.part = -1; cursor.on = false; invalidate(); }}>
+      <mesh geometry={geo} castShadow={paint} receiveShadow={paint} onUpdate={(m) => m.layers.enable(SOLID)} onClick={click} onPointerDown={press} onPointerMove={hover} userData={{ part: index }} onPointerOut={() => { if (pointer.part === index) pointer.part = -1; cursor.on = false; if (useApp.getState().paintHover?.part === index) paintHoverAt(-1); invalidate(); }}>
         {(() => {
           // Blender's Lighting: Studio (lights and the environment), MatCap (a lit sphere by normal), Flat (unlit)
           const key = `${colour}-${uvReady}-${paint}-${pbr}-${normal}-${part.textured !== false}-${sc.lighting}-${sc.xray}`;
@@ -883,6 +934,8 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
       {flat && paintAO && ts?.aoTex && sc.lighting !== 'studio' && <mesh geometry={geo} renderOrder={1}><meshBasicMaterial map={ts.aoTex} blending={THREE.MultiplyBlending} premultipliedAlpha transparent toneMapped={false} depthWrite={false} polygonOffset polygonOffsetFactor={-1} side={THREE.DoubleSide} /></mesh>}
       {/* Van Gogh: what's outside the selection, shaded */}
       {flat && ts?.sel && <mesh geometry={geo} renderOrder={2}><meshBasicMaterial map={ts.shade} transparent depthWrite={false} polygonOffset polygonOffsetFactor={-1} side={THREE.DoubleSide} /></mesh>}
+      {flat && hoverGeo && <mesh geometry={hoverGeo.fill} renderOrder={3}><meshBasicMaterial color={SEL} transparent opacity={0.3} depthWrite={false} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} /></mesh>}
+      {flat && !!hoverGeo?.border.length && <Line points={hoverGeo.border} segments color={SEL} lineWidth={2.5} renderOrder={4} />}
       {flat && showSeams && !doc && !paint && <lineSegments geometry={seams}><lineBasicMaterial color={SEAM} /></lineSegments>}
       {flat && !paint && selFaces && (
         <mesh geometry={selFaces} renderOrder={2}>
@@ -933,6 +986,184 @@ function BrushCursor() {
       <lineLoop geometry={ring} scale={Math.max(0.02, hardness)} renderOrder={10}>
         <lineBasicMaterial color="#ffffff" depthTest={false} transparent opacity={0.9} />
       </lineLoop>
+    </group>
+  );
+}
+
+/** A material held from the shelf (a pointer drag, not an HTML one: the app window takes those on Windows): over the
+ *  model it outlines what it would cover (Face / Island / Part), let go there it fills it. True while over the model. */
+export function shelfDragOver(x: number, y: number) {
+  const h = pickAt.fn?.(x, y);
+  paintHoverAt(h?.part ?? -1, h?.tri ?? -1);
+  return !!h;
+}
+export function shelfDrop(id: string, x: number, y: number) {
+  const h = pickAt.fn?.(x, y);
+  if (h) paintHoverAt(h.part, h.tri);
+  const onto = h && useApp.getState().paintHover;
+  paintHoverAt(-1);
+  if (onto) assignMaterial(id, false, onto);
+}
+/** A mark held from the decal shelf: over the model (a face turned toward the camera) its frame shows where and how big it
+ *  lands (`DecalPreview`), let go there it is placed. True while it would land. */
+export function decalDragOver(x: number, y: number) {
+  const h = pickAt.fn?.(x, y);
+  decalAim.at = h?.front ? h : null;
+  pickAt.invalidate?.();
+  return !!decalAim.at;
+}
+export function decalDrop(id: string, x: number, y: number) {
+  const h = pickAt.fn?.(x, y);
+  decalAim.at = null;
+  pickAt.invalidate?.();
+  if (h?.front) dropDecal(id, h.part, h.tri, h.point);
+}
+/** The mirror plane the artist is placing: a translucent square with drei's move/rotate gizmo on it. The gizmo writes
+ *  the plane to the store as it moves (no unwrap yet); Apply in the options bar unwraps across it. The square takes no
+ *  ray, so a click beside it still picks the model. */
+function SymPlaneGizmo() {
+  const plane = useApp((s) => s.symPlane), edit = useApp((s) => s.symEdit), result = useApp((s) => s.result);
+  const uv = useApp((s) => s.workspace === 'uv'); // the mirror plane is UV Magician's: not drawn over Poly Doc or paint
+  // one group for the life of the view: the gizmo attaches to it, so it must not be replaced by a re-render
+  const group = useMemo(() => new THREE.Group(), []);
+  const span = useMemo(() => modelDiagonal(), [result]);
+  useEffect(() => {
+    if (!plane) return;
+    group.position.set(...plane.c);
+    // only re-aim when the normal moved: turning the plane about its own axis leaves the mirror as it is, and
+    // re-deriving the quaternion would make that rotation jump back
+    const n = new THREE.Vector3(...plane.n).normalize();
+    if (new THREE.Vector3(0, 0, 1).applyQuaternion(group.quaternion).dot(n) < 0.999999) {
+      group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+    }
+  }, [plane, group]);
+  const sync = () => {
+    const n = new THREE.Vector3(0, 0, 1).applyQuaternion(group.quaternion).normalize();
+    moveSymPlane([group.position.x, group.position.y, group.position.z], [n.x, n.y, n.z]);
+  };
+  if (!plane || !uv) return null;
+  const h = span * 0.5;
+  const loop = [[1, 1], [1, -1], [-1, -1], [-1, 1], [1, 1]].map(([x, y]) => new THREE.Vector3(x * h, y * h, 0));
+  return (
+    <>
+      <primitive object={group}>
+        <mesh renderOrder={5} raycast={() => null}>
+          <planeGeometry args={[span, span]} />
+          <meshBasicMaterial color={SEL} transparent opacity={edit ? 0.16 : 0.1} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+        <Line points={loop} color={SEL} lineWidth={1.5} raycast={() => null} />
+      </primitive>
+      {edit && <TransformControls object={group} mode={edit.mode} space="world" size={0.85} onObjectChange={sync} />}
+    </>
+  );
+}
+
+type Pick = { part: number; tri: number; point: [number, number, number]; normal: [number, number, number]; front: boolean };
+const decalAim: { at: Pick | null } = { at: null };
+/** The 3D view raycasts a screen point itself for the shelf drags (R3F's events only see the canvas's own pointer). */
+const pickAt: { fn: ((x: number, y: number) => Pick | null) | null; invalidate?: () => void } = { fn: null };
+function Picker() {
+  const { camera, scene, gl, raycaster, invalidate } = useThree();
+  useEffect(() => {
+    pickAt.invalidate = invalidate;
+    pickAt.fn = (x, y) => {
+      const r = gl.domElement.getBoundingClientRect();
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+      raycaster.setFromCamera(new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1), camera);
+      const hit = raycaster.intersectObjects(scene.children, true).find((h) => h.object.userData.part !== undefined && h.faceIndex != null);
+      if (!hit?.face) return null;
+      const n = hit.face.normal;
+      return { part: hit.object.userData.part as number, tri: hit.faceIndex!, point: hit.point.toArray(), normal: n.toArray(), front: n.dot(camera.position.clone().sub(hit.point)) > 0 };
+    };
+    return () => { pickAt.fn = null; };
+  }, [camera, scene, gl, raycaster, invalidate]);
+  return null;
+}
+const unitRect = lineGeo(new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]));
+/** Where a mark dragged from the shelf would land: its frame on the face under the pointer, at the next mark's size and
+ *  rotation (Decals tab), upright as `placeDecal` makes it. */
+function DecalPreview() {
+  const g = useRef<THREE.Group>(null);
+  useFrame(() => {
+    const o = g.current, at = decalAim.at;
+    if (!o) return;
+    o.visible = !!at;
+    if (!at) return;
+    const s = useApp.getState(), a = s.decals.find((d) => d.id === shelfDrag.id), w = (modelDiagonal() * s.paint.decalSize) / 100;
+    const n = new THREE.Vector3(...at.normal).normalize(), up = new THREE.Vector3(...(Math.abs(n.y) > 0.94 ? [0, 0, 1] : [0, 1, 0]) as [number, number, number]);
+    up.addScaledVector(n, -up.dot(n)).normalize();
+    const right = new THREE.Vector3().crossVectors(up, n).normalize();
+    o.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, n));
+    o.rotateZ((s.paint.decalRotation * Math.PI) / 180);
+    o.position.set(...at.point).addScaledVector(n, w * 0.02);
+    o.scale.set(w, w / (a ? a.width / a.height : 1), 1);
+  });
+  return (
+    <group ref={g} visible={false}>
+      <lineLoop geometry={unitRect} renderOrder={12}><lineBasicMaterial color={SEL} depthTest={false} transparent /></lineLoop>
+    </group>
+  );
+}
+
+/** The active decal as an object on the model (Substance's manipulator), Decal tool only: its frame, corner handles to
+ *  scale it, a knob above it to rotate it (Shift: 15° steps). Dragging inside it moves it over the surface (store
+ *  `moveDecal`); flips and quarter turns are in the options bar. */
+function DecalGizmo() {
+  const tool = useApp((s) => s.paint.tool);
+  useApp((s) => s.paintRev); useApp((s) => s.paintLive); useApp((s) => s.activePart);
+  const { camera, gl, invalidate } = useThree();
+  const a = tool === 'decal' ? activeDecal() : null;
+  if (!a) return null;
+  const d = a.decal, n = new THREE.Vector3(...d.normal).normalize();
+  const v = new THREE.Vector3(...d.up);
+  v.addScaledVector(n, -v.dot(n));
+  if (v.lengthSq() < 1e-12) v.set(1, 0, 0);
+  v.normalize();
+  const u = new THREE.Vector3().crossVectors(v, n).normalize(), rad = (d.rotation * Math.PI) / 180;
+  const ur = u.clone().multiplyScalar(Math.cos(rad)).addScaledVector(v, Math.sin(rad));
+  const vr = u.clone().multiplyScalar(-Math.sin(rad)).addScaledVector(v, Math.cos(rad));
+  const w = d.width, h = w / Math.max(d.aspect, 1e-4), knob = Math.max(w, h) * 0.06;
+  const c = new THREE.Vector3(...d.center).addScaledVector(n, Math.max(w, h) * 0.02);
+  const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(ur, vr, n));
+  const rect = [[-w / 2, -h / 2, 0], [w / 2, -h / 2, 0], [w / 2, h / 2, 0], [-w / 2, h / 2, 0], [-w / 2, -h / 2, 0]] as [number, number, number][];
+  const top: [number, number, number] = [0, h / 2 + knob * 4, 0];
+
+  const drag = (mode: 'scale' | 'rotate') => (e: ThreeEvent<PointerEvent>) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const box = gl.domElement.getBoundingClientRect(), p = c.clone().project(camera);
+    const sx = box.left + ((p.x + 1) / 2) * box.width, sy = box.top + ((1 - p.y) / 2) * box.height;
+    const angle = (x: number, y: number) => Math.atan2(-(y - sy), x - sx);
+    const d0 = Math.max(4, Math.hypot(e.clientX - sx, e.clientY - sy)), a0 = angle(e.clientX, e.clientY), w0 = d.width, r0 = d.rotation;
+    // seen from behind the projector, a turn on screen is the other way round
+    const sign = n.dot(camera.position.clone().sub(c)) >= 0 ? 1 : -1, span = modelDiagonal();
+    beginPaintEdit();
+    const move = (m: PointerEvent) => {
+      if (mode === 'scale') updateDecal({ width: Math.min(span * 1.5, Math.max(span * 0.003, (w0 * Math.hypot(m.clientX - sx, m.clientY - sy)) / d0)) }, false);
+      else {
+        let r = r0 + (sign * (angle(m.clientX, m.clientY) - a0) * 180) / Math.PI;
+        r = ((((r + 180) % 360) + 360) % 360) - 180;
+        updateDecal({ rotation: m.shiftKey ? Math.round(r / 15) * 15 : r }, false);
+      }
+      invalidate();
+    };
+    const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+  };
+  const handle = (at: [number, number, number], mode: 'scale' | 'rotate', key: string) => (
+    <mesh key={key} position={at} renderOrder={12} onPointerDown={drag(mode)}
+      onPointerOver={() => { gl.domElement.style.cursor = mode === 'scale' ? 'nwse-resize' : 'grab'; }} onPointerOut={() => { gl.domElement.style.cursor = ''; }}>
+      {mode === 'scale' ? <planeGeometry args={[knob * 2, knob * 2]} /> : <circleGeometry args={[knob * 1.3, 20]} />}
+      <meshBasicMaterial color={mode === 'scale' ? '#ffffff' : SEL} depthTest={false} transparent side={THREE.DoubleSide} />
+    </mesh>
+  );
+  return (
+    <group position={c} quaternion={q}>
+      <Line points={rect} color="#ffffff" lineWidth={1.5} depthTest={false} renderOrder={11} />
+      <Line points={[[0, h / 2, 0], top]} color={SEL} lineWidth={1.5} depthTest={false} renderOrder={11} />
+      {rect.slice(0, 4).map((p, k) => handle(p, 'scale', `s${k}`))}
+      {handle(top, 'rotate', 'r')}
     </group>
   );
 }

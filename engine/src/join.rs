@@ -34,6 +34,11 @@ const ENCLOSED: f64 = 0.5;
 /// An island whose area is under this share of a disc's with its outline's length (4πA/P²) is a sliver: filled into
 /// whatever it shares an edge with.
 const SLIVER: f64 = 0.05;
+/// An orphan thinner than this share of √(part area) (mean width 2A/P) is too narrow to carry texture detail: like a
+/// hidden one, it's worth more as part of a neighbour (paint and bakes run on across, one seam fewer) than on its own,
+/// so it's filled into any neighbour it shares an edge with. (Atlas space isn't the reason: the packer drops small
+/// islands into gaps, and shrinking every net under 1% of a gun part to nothing freed none.)
+const THIN: f64 = 0.012;
 /// Least share of the part's area each of two islands must have to be stitched.
 const STITCH_AREA: f64 = 0.05;
 /// Least share of the smaller island's outline a border must make up to be stitched.
@@ -149,7 +154,11 @@ fn join_once(m: &Mesh, isl: &mut [Island], mut redo: Option<(f64, &mut Set<[(u32
             // in a notch (most of its outline shared), or a sliver (far thinner than it is long) along any shared edge
             let (a, p) = (area(&isl[j]), around(&isl[j]));
             let sliver = 4. * std::f64::consts::PI * a < SLIVER * p * p && shared(i) > 0.;
-            if busy.contains(&i) || (shared(i) < ENCLOSED * p && !sliver) || !tried.insert([(u32::MAX - 1, 0), key(&isl[j])]) { continue; }
+            // or worth no texels of its own: hidden inside the model, or too thin to hold detail (a groove wall, a bevel
+            // strip): any shared edge will do
+            let hidden = m.hidden.get().is_some_and(|h| isl[j].l.tris.iter().filter(|&&t| h[t as usize]).count() * 2 > isl[j].l.tris.len());
+            let idle = (hidden || 2. * a / p < THIN * part_area.sqrt()) && shared(i) > 0.;
+            if busy.contains(&i) || (shared(i) < ENCLOSED * p && !sliver && !idle) || !tried.insert([(u32::MAX - 1, 0), key(&isl[j])]) { continue; }
             let glue: Vec<(u32, u32)> = glued[&(i, j)].iter().flat_map(|h| [(h.la, h.ja), (h.lb, h.jb)]).collect();
             if let Some(both) = book(m, &isl[i], &isl[j], &glue, *stretch, false) {
                 busy.extend([i, j]);

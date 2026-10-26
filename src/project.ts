@@ -37,6 +37,8 @@ type Doc = {
   activePart: number; scene: State['scene']; paint: State['paint']; paintChannel: State['paintChannel']; paintAO: boolean;
   parts: (Omit<Part, 'soup' | 'poly' | 'sides' | 'normals'> & { poly: boolean; sides: boolean; normals: boolean })[];
   result: { stats: Output['stats'] } | null; pins: Record<number, number[]>; sets: (SavedSet | null)[];
+  /** The mirror plane drawn by hand (world units), or missing/null for automatic. */
+  symPlane?: State['symPlane'];
 };
 
 /** The store's document and its blobs (`setOf(i)`: part i's texture set, if it has one). */
@@ -68,6 +70,7 @@ export function docOf(s: State, setOf: (i: number) => TexSet | null) {
     activePart: s.activePart, scene, paint: s.paint, paintChannel: s.paintChannel, paintAO: s.paintAO, parts,
     result: s.result ? { stats: s.result.stats } : null,
     pins: Object.fromEntries(Object.entries(s.pins).map(([i, p]) => [i, [...p.corners]])), sets,
+    symPlane: s.symPlane,
   };
   return { doc, blobs };
 }
@@ -105,7 +108,7 @@ export function docFrom(saved: unknown, blobs: Map<string, Uint8Array>) {
   const state = {
     source: doc.source, unit: doc.unit, params: doc.params, textureResolution: doc.textureResolution, workspace: doc.workspace,
     activePart: Math.min(doc.activePart, Math.max(0, parts.length - 1)), scene: doc.scene, paint: doc.paint, paintChannel: doc.paintChannel,
-    paintAO: doc.paintAO, parts, result, uvs, pins,
+    paintAO: doc.paintAO, parts, result, uvs, pins, symPlane: doc.symPlane ?? null, symEdit: null,
   } satisfies Partial<State>;
   return { state, sets: doc.sets, pixels };
 }

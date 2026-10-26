@@ -45,6 +45,13 @@ pub struct Decal {
     pub roughness: f32,
     pub metallic: f32,
     pub channels: Vec<String>,
+    #[serde(default, rename = "flipH")]
+    pub flip_h: bool,
+    #[serde(default, rename = "flipV")]
+    pub flip_v: bool,
+    /// Engraved depth 0..1 (paint.ts `Decal.engrave`): the mark's edge tilts the normal, its ink lowers the height.
+    #[serde(default)]
+    pub engrave: f32,
 }
 #[derive(Deserialize, Clone)]
 pub struct Gen {
@@ -95,6 +102,9 @@ pub struct ExportReq {
     pub base: String,
     #[serde(default)]
     pub parts: Option<Vec<usize>>,
+    /// Texels the paint is carried out past each island for the mip chain; None: max(4, size / 64).
+    #[serde(default)]
+    pub padding: Option<usize>,
     #[serde(default)]
     pub materials: HashMap<String, HashMap<String, String>>,
     #[serde(default)]
@@ -303,10 +313,11 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
 
 fn stride(ch: &str) -> usize { if ch == "color" || ch == "normal" { 4 } else { 2 } }
 
-/// Carry the paint `max(4, n/64)` texels out past its islands into the empty texture (paint.ts `bleed`): only
-/// texels off the surface are written, so a face left bare stays bare; two islands meeting in a gap stop halfway.
-fn pad(o: &mut Out, n: usize) {
-    let p = (n / 64).max(4);
+/// Carry the paint `p` texels out past its islands into the empty texture (paint.ts `bleed`): only texels off the
+/// surface are written, so a face left bare stays bare; two islands meeting in a gap stop halfway.
+fn pad(o: &mut Out, n: usize, p: usize) {
+    let p = p.min(512);
+    if p == 0 { return; }
     let mut seen: Vec<bool> = o.covered.clone();
     // only painted texels with an unpainted neighbour can spread (all of them would be 64M entries at 8K)
     let edge = |i: usize| { let (x, y) = (i % n, i / n); (x > 0 && !o.covered[i - 1]) || (x + 1 < n && !o.covered[i + 1]) || (y > 0 && !o.covered[i - n]) || (y + 1 < n && !o.covered[i + n]) };
@@ -429,7 +440,7 @@ fn run(req: &ExportReq, dir: &Path, fbx: Option<&[u8]>) -> Result<Vec<String>, S
         };
         let mut out = render(&mesh, set, n, diag, gen_span, occ.as_ref(), edges.as_ref(), &tiles, &assets);
         progress(format!("Padding {label}…"));
-        pad(&mut out, n);
+        pad(&mut out, n, req.padding.unwrap_or((n / 64).max(4)));
         progress(format!("Writing {label}…"));
         let prefix = format!("{}-{name}", req.base);
         let mut write = |suffix: &str, ch: usize, f: &(dyn Fn(usize, &mut [u8]) + Sync)| -> Result<(), String> {

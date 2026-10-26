@@ -1,6 +1,6 @@
 // Fixed pieces of the shell: the select modes, the one Display/Shading cluster, the menu at the pointer, the status bar.
 import { healthColor } from '../health';
-import { closeMenu, displayChoices, setPaint, setSelectMode, texSet, useApp, type SelectMode } from '../store';
+import { closeMenu, displayChoices, setPaint, setSelectMode, texSet, useApp, type FillBy, type SelectMode } from '../store';
 import { SceneSettings } from '../views/SceneSettings';
 
 const MODE_NAMES: [SelectMode, string, string][] = [['vert', 'Vertex', '1'], ['edge', 'Edge', '2'], ['face', 'Face', '3'], ['island', 'Island', '4']];
@@ -20,17 +20,25 @@ export function SelectModes() {
 }
 
 /** Van Gogh's selection granularity, in the same slot as the mesh select modes: what Select Faces and Bucket pick. */
-const PAINT_KINDS: ['face' | 'island' | 'part', string, string][] = [
+const PAINT_KINDS: [FillBy, string, string][] = [
   ['face', 'Face', 'One face (its whole polygon)'],
+  ['surface', 'Surface', 'The connected surface up to edges sharper than the angle: a panel, a flank, a bore'],
   ['island', 'Island', 'The UV island'],
   ['part', 'Part', 'The whole part'],
 ];
 function PaintSelectModes() {
-  const by = useApp((s) => s.paint.by);
+  const by = useApp((s) => s.paint.by), angle = useApp((s) => s.paint.angle);
   return (
-    <span className="seg modes" role="group" aria-label="Select by" title="What Select Faces and Bucket pick">
-      {PAINT_KINDS.map(([v, label, title]) => <button key={v} aria-pressed={by === v} title={title} onClick={() => setPaint({ by: v })}>{label}</button>)}
-    </span>
+    <>
+      <span className="seg modes" role="group" aria-label="Select by" title="What Select Faces and Bucket pick">
+        {PAINT_KINDS.map(([v, label, title]) => <button key={v} aria-pressed={by === v} title={title} onClick={() => setPaint({ by: v })}>{label}</button>)}
+      </span>
+      {by === 'surface' && (
+        <label title="Surface stops at edges bent more than this, and at twice this from the clicked face (90°: a whole bore)">
+          <input type="number" className="inc" min={1} max={90} step={5} value={angle} onChange={(e) => setPaint({ angle: Math.min(90, Math.max(1, +e.target.value || 30)) })} />°
+        </label>
+      )}
+    </>
   );
 }
 

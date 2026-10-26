@@ -1,4 +1,4 @@
-use barista::{mesh::Mesh, symmetry, unwrap_soup, Params};
+use barista::{mesh::Mesh, symmetry, unwrap, unwrap_soup, Params, PartIn};
 
 /// A house-shaped prism, sheared so its only mirror plane is x = 0: the right half built, the left half its mirror.
 fn house() -> Vec<f32> {
@@ -53,4 +53,20 @@ fn mirrored_shape_unwraps_into_mirrored_islands() {
         let (x, y) = (area(pair[0].0, pair[1].0, pair[2].0), area(pair[0].1, pair[1].1, pair[2].1));
         assert!(x * y < 0., "triangle {t} isn't flipped in its mirror");
     }
+}
+
+#[test]
+fn a_drawn_plane_recovers_symmetry_from_a_one_sided_detail() {
+    // a fin on one cap (a lever, an ejection port): the model no longer mirrors exactly, so auto-detect keeps its
+    // hands off it; the plane the artist draws still mirrors the bulk and charts the fin on its own
+    let mut soup = house();
+    for v in soup.chunks_exact_mut(3) { if v[2] < -0.9 { v[0] += 0.35; } }
+    let drawn = PartIn { name: "one-sided".into(), positions: soup.clone(), symmetry: vec![0., 0., 0., 1., 0., 0.], ..Default::default() };
+    let out = unwrap(&[drawn], Params::default()).unwrap();
+    assert!(out.stats.twins > 0, "the drawn plane mirrors nothing");
+    assert_eq!(out.stats.flips, 0);
+    assert!(out.stats.overlap < 0.001);
+    // the same part without a plane: no mirror, and the detail is just part of the unwrap
+    let auto = unwrap(&[PartIn { name: "one-sided".into(), positions: soup, ..Default::default() }], Params::default()).unwrap();
+    assert_eq!(auto.stats.twins, 0);
 }

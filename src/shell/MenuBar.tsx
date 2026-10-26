@@ -1,10 +1,11 @@
 import * as M from '@radix-ui/react-menubar';
 import type { ReactNode } from 'react';
 import {
-  clearRecent, clearSeams, clearSelection, cutSelection, deselectPaint, displayChoices, exportFbx, exportObjParts, exportTextures, fillPaintSelection, setTexturePreset, flipSel, invertPaintSelection, invertSelection,
-  loadShape, openProject, openRecent, saveProject, selectAllPaint, setDisplay, setTriangulate, pinSelected, unwrapSelected, pickFile, redo, repack, rotateSel, selectAll, selectEdgeLoop, selectLinked,
+  clearRecent, clearSeams, clearSelection, cutSelection, deselectPaint, displayChoices, fillPaintSelection, flipSel, growPaintSelection, pickRefImage, setRefImage, invertPaintSelection, invertSelection,
+  loadShape, openExport, openProject, openRecent, saveProject, selectAllPaint, setAskOnOpen, setDisplay, setTriangulate, pinSelected, unwrapSelected, pickFile, redo, repack, rotateSel, selectAll, selectEdgeLoop, selectLinked,
   stitchSelection, undo, undoPaint, redoPaint, unwrap, useApp, viewOp, pointer,
 } from '../store';
+import { EXPORT_TARGETS, targetTitle } from '../exporting';
 import { Icon, Mark } from '../ui/Icon';
 
 function Menu({ label, children }: { label: string; children: ReactNode }) {
@@ -17,8 +18,8 @@ function Menu({ label, children }: { label: string; children: ReactNode }) {
     </M.Menu>
   );
 }
-const Item = ({ onSelect, kbd, meta, disabled, children }: { onSelect: () => void; kbd?: string; meta?: string; disabled?: boolean; children: ReactNode }) => (
-  <M.Item className="mi" disabled={disabled} onSelect={() => onSelect()}>{children}{meta && <span className="item-meta">{meta}</span>}{kbd && <kbd>{kbd}</kbd>}</M.Item>
+const Item = ({ onSelect, kbd, meta, disabled, title, children }: { onSelect: () => void; kbd?: string; meta?: string; disabled?: boolean; title?: string; children: ReactNode }) => (
+  <M.Item className="mi" disabled={disabled} title={title} onSelect={() => onSelect()}>{children}{meta && <span className="item-meta">{meta}</span>}{kbd && <kbd>{kbd}</kbd>}</M.Item>
 );
 const Sep = () => <M.Separator className="msep" />;
 /** When a recent file was opened, short: "now", "5 min", "3 h", "2 d". */
@@ -29,6 +30,7 @@ function ago(t: number) {
 export function MenuBar() {
   const has = useApp((s) => !!s.result), none = useApp((s) => !s.selected.length);
   const size = useApp((s) => (s.exportSize >= 1024 ? `${s.exportSize / 1024}K` : `${s.exportSize}`));
+  const askOpen = useApp((s) => s.askOnOpen), hasRef = useApp((s) => !!s.refImage);
   const tri = useApp((s) => s.triangulate), workspace = useApp((s) => s.workspace), recent = useApp((s) => s.recent), shapes = useApp((s) => s.shapes);
   // subscribe to the one value the Display radio group shows, then read the same choices the Z pie and options bar use
   const display = useApp((s) => (s.workspace === 'doc' ? s.docView : s.workspace === 'paint' ? s.scene.lighting : s.mode));
@@ -72,19 +74,21 @@ export function MenuBar() {
             <M.SubTrigger className="mi subtrigger">Export<span className="subarrow" aria-hidden="true"><Icon name="chevron" size={12} /></span></M.SubTrigger>
             <M.Portal>
               <M.SubContent className="mc" sideOffset={4} alignOffset={-4}>
-                <Item onSelect={exportFbx} disabled={!has} kbd="Ctrl+Shift+E">FBX (Blender, Substance Painter)</Item>
-                <Item onSelect={exportObjParts} disabled={!has}>OBJ per part (ZIP)</Item>
+                <Item onSelect={() => openExport()} kbd="Ctrl+Shift+E" title="The export dialog: textures or a model, with every setting">Export…</Item>
                 <Sep />
-                <Item onSelect={() => void exportTextures(true)} disabled={!has} meta={size}>Blender ready (FBX + textures)…</Item>
-                {([['generic', 'Textures (PNG + ORM)…'], ['unreal', 'Textures for Unreal (DX normal, ORM)…'], ['unity-hdrp', 'Textures for Unity HDRP (MaskMap)…'],
-                  ['unity-urp', 'Textures for Unity URP (Metallic/Smoothness)…']] as const).map(([preset, label]) =>
-                  <Item key={preset} onSelect={() => { setTexturePreset(preset); void exportTextures(); }} disabled={!has} meta={size}>{label}</Item>)}
+                <Item onSelect={() => openExport({ kind: 'model', model: 'fbx' })} disabled={!has} title="One binary FBX, one material per texture set, UVs and the file's own normals: what Blender and Substance Painter read">Model › FBX (one file)…</Item>
+                <Item onSelect={() => openExport({ kind: 'model', model: 'obj' })} disabled={!has} title="A ZIP with one OBJ per part, each naming its material; OBJ has no materials or unit (metres)">Model › OBJ per part (ZIP)…</Item>
+                <Sep />
+                {EXPORT_TARGETS.map((t) => <Item key={t.id} onSelect={() => openExport({ kind: 'textures', target: t.id })} disabled={!has} meta={size} title={targetTitle(t.id)}>Textures › {t.label}…</Item>)}
               </M.SubContent>
             </M.Portal>
           </M.Sub>
           <Sep />
           <M.CheckboxItem className="mi" checked={tri} onCheckedChange={(v) => setTriangulate(!!v)} onSelect={(e) => e.preventDefault()}>
             <M.ItemIndicator className="check">✓</M.ItemIndicator>Triangulate on export (for baking)
+          </M.CheckboxItem>
+          <M.CheckboxItem className="mi" checked={askOpen} onCheckedChange={(v) => setAskOnOpen(!!v)} onSelect={(e) => e.preventDefault()}>
+            <M.ItemIndicator className="check">✓</M.ItemIndicator>Ask how to open models
           </M.CheckboxItem>
         </Menu>
         <Menu label="Edit">
@@ -109,6 +113,8 @@ export function MenuBar() {
               <Item onSelect={selectAllPaint} kbd="Ctrl+A">All</Item>
               <Item onSelect={deselectPaint} kbd="Ctrl+D">None</Item>
               <Item onSelect={invertPaintSelection} kbd="Ctrl+Shift+I">Invert</Item>
+              <Item onSelect={() => growPaintSelection(4)} kbd="Ctrl+Shift+=">Grow</Item>
+              <Item onSelect={() => growPaintSelection(-4)} kbd="Ctrl+Shift+-">Shrink</Item>
             </>
           ) : (
             <>
@@ -161,6 +167,9 @@ export function MenuBar() {
           <Item onSelect={() => viewOp('3d', 'front')} kbd="Numpad 1">Front</Item>
           <Item onSelect={() => viewOp('3d', 'right')} kbd="Numpad 3">Right</Item>
           <Item onSelect={() => viewOp('3d', 'top')} kbd="Numpad 7">Top</Item>
+          <Sep />
+          <Item onSelect={pickRefImage}>Reference image…</Item>
+          <Item onSelect={() => setRefImage(null)} disabled={!hasRef}>Close reference</Item>
         </Menu>
       </M.Root>
     </nav>

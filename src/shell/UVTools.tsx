@@ -1,7 +1,7 @@
 // UV Magician's tool strip, the same Photoshop strip as Poly Doc's. Modes and the core seam/selection tools live here;
 // the one-shot island commands (Unwrap, Relax, Pack, Align, Rotate) live in the options bar, the contextual island bar
 // and the menus, so the rail never repeats the dock.
-import { armBox, cutSelection, liveSel, pinSelected, selectEdgeLoop, selectLinked, selectionCount, setLiveUnwrap, stitchSelection, unwrapSelected, useApp } from '../store';
+import { applySymPlane, armBox, cancelSymPlane, cutSelection, editSymPlane, liveSel, pinSelected, selectEdgeLoop, selectLinked, selectionCount, setLiveUnwrap, setSymMode, stitchSelection, unwrapSelected, useApp } from '../store';
 import { glyph, Icon } from '../ui/Icon';
 import { ViewControls } from './Chrome';
 import { ToolStrip, type Counts, type ToolDef } from './PolyTools';
@@ -37,6 +37,7 @@ const UV_TOOLS: Partial<Record<UvTool, ToolDef>>[] = [
 export function UVOptionsBar() {
   const tool = useApp((s) => s.uvTool), live = useApp((s) => s.liveUnwrap);
   const sel = useApp((s) => { const c = selectionCount(s); return c ? `${c.n} ${c.label}` : ''; });
+  const plane = useApp((s) => s.symPlane), edit = useApp((s) => s.symEdit), has = useApp((s) => !!s.result);
   const t = tool ? UV_TOOLS.find((g) => g[tool as UvTool])?.[tool as UvTool] : undefined;
   const none = !sel;
   return (
@@ -45,6 +46,19 @@ export function UVOptionsBar() {
       {sel && <span className="hint">{sel} selected</span>}
       <button disabled={none} title="Unwrap just the selected faces again; pins hold (U)" onClick={() => void unwrapSelected()}>Unwrap selection</button>
       <label title="Dragging a pin lays its islands out again as you drag"><input type="checkbox" checked={live} onChange={(e) => setLiveUnwrap(e.target.checked)} />Live Unwrap</label>
+      {!edit ? (
+        <button className={plane ? 'on' : ''} disabled={!has} onClick={editSymPlane}
+          title={plane ? 'Move or turn the mirror plane, then Apply (Esc puts it back)' : 'Spawn the mirror plane: move and turn it, then Apply; Unwrap mirrors across it instead of guessing one'}>
+          {plane ? 'Symmetry plane ✓' : 'Symmetry plane'}
+        </button>
+      ) : (
+        <>
+          <button className="on" onClick={applySymPlane} title="Unwrap the whole model across the plane as it sits (Enter)">Apply</button>
+          <button className={edit.mode === 'translate' ? 'on' : ''} onClick={() => setSymMode('translate')} title="Move the plane (G)">Move</button>
+          <button className={edit.mode === 'rotate' ? 'on' : ''} onClick={() => setSymMode('rotate')} title="Turn the plane (R)">Rotate</button>
+          <button onClick={cancelSymPlane} title="Put the plane back and keep the UVs as they are (Esc)">Cancel</button>
+        </>
+      )}
       <ViewControls />
     </div>
   );

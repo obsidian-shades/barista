@@ -8,9 +8,14 @@ fn core_shapes_unwrap_perfectly() {
     let rows = check(Params::default());
     for r in &rows {
         let s = &r.stats;
-        eprintln!("{} {:9} islands {:3}  flips {}  overlap {:.2}%  stretch {:6.2}%  {:4.0} ms  ideal: {}",
-            if r.pass { "PASS" } else { "FAIL" }, r.shape, s.islands, s.flips, s.overlap * 100., s.mean_stretch * 100., s.ms, r.ideal);
+        let q = &s.seams;
+        eprintln!("{} {:9} islands {:3}  flips {}  overlap {:.2}%  stretch {:6.2}%  {:4.0} ms  ideal: {}\n           seams {:.3} len/√A  {:.0}% hidden  {} spurs ({:.3})  {:.1}% steps  {:.2}% inside a face",
+            if r.pass { "PASS" } else { "FAIL" }, r.shape, s.islands, s.flips, s.overlap * 100., s.mean_stretch * 100., s.ms, r.ideal,
+            q.length, q.hidden * 100., q.spurs, q.spur_length, q.steps * 100., q.inside * 100.);
     }
+    // a seam may never run inside a polygon: the export would split the face there (quads_stay_whole covers the
+    // other side of the same rule)
+    assert!(rows.iter().all(|r| r.stats.seams.inside == 0.), "a seam runs inside a polygon");
     assert!(rows.iter().all(|r| r.pass), "some core shapes failed (see above)");
 }
 
@@ -124,13 +129,20 @@ fn gun_packs_tightly() {
     }
     let s = unwrap(&parts, Params { one_atlas: true, ..Params::default() }).unwrap().stats;
     let unique = s.islands - s.twins;
-    eprintln!("gun: {} nets ({} counting mirrored pairs once), efficiency {:.1}%, overlap {:.3}%, {:.0} ms", s.islands, unique, s.efficiency * 100., s.overlap * 100., s.ms);
+    let q = &s.seams;
+    eprintln!("gun: {} nets ({} counting mirrored pairs once), efficiency {:.1}%, overlap {:.3}%, {:.0} ms\n     seams {:.2} length/√A, {:.0}% hidden, {} spurs ({:.3}), {:.1}% steps, {:.2}% inside a face",
+        s.islands, unique, s.efficiency * 100., s.overlap * 100., s.ms, q.length, q.hidden * 100., q.spurs, q.spur_length, q.steps * 100., q.inside * 100.);
     assert!(s.overlap < 0.001);
     // 508 islands when every 45° crease was a chart; charting by facing side, books and orphan fills: ~114. A
     // mirrored half's image is the same island again, so a pair counts once: the cap still guards fragmentation.
     assert!(unique < 140, "gun unwraps into {unique} islands, mirrored pairs counted once ({} in all)", s.islands);
     // bounding-box shelves filled 19% of the atlas; packing the nets' rasterised shapes fills ~43%
     assert!(s.efficiency > 0.38, "gun packs at {:.1}%", s.efficiency * 100.);
+    // the seams themselves (judge): a gun has plenty of hidden surface to run a cut through, and a cut that ends
+    // nowhere costs a seam for nothing; before quads were read back and paths charged for their bends this was 77
+    assert!(q.hidden > 0.05, "only {:.0}% of the gun's seams are hidden", q.hidden * 100.);
+    assert!(q.spurs < 60, "{} dead ends in the gun's seams", q.spurs);
+    assert!(q.inside < 0.01, "{:.2}% of a seam runs inside a face", q.inside * 100.);
 }
 
 #[test]

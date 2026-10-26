@@ -15,7 +15,22 @@ export const EMPTY = '#3a3b3d';
  *  too even to throw one); `mean` the environment's mean brightness once calibrated (plates come at any exposure,
  *  Substance's are made for exposure 0); `key` where the key comes from, upper front left of the model as a product
  *  shot's, the plate turned so its own brightest patch is on that side. Change it, then `relight()`. */
-export const look = { sun: 5, mean: 0.08, key: new THREE.Vector3(-0.5, 0.8, 0.35).normalize() };
+// The fill was 0.08: a shadowed side of a mid-grey material went near black, and a dark paint job (gunmetal,
+// black Cerakote) read as silhouette, so its texture couldn't be judged. 0.3 keeps the shadow side readable; the key
+// drops so the lit side doesn't clip without a tone curve.
+const KEY = new THREE.Vector3(-0.5, 0.8, 0.35).normalize();
+export const look = { sun: 3.2, mean: 0.3, key: KEY.clone() };
+
+/** Turn the key (and the plate with it) round the vertical by `a` radians: Substance's Shift+right-drag. */
+export function turnLight(a: number) {
+  look.key.applyAxisAngle(new THREE.Vector3(0, 1, 0), a);
+  relight();
+}
+/** Shading › Reset: the key back on the front-left. */
+export function resetLight() {
+  look.key.copy(KEY);
+  relight();
+}
 
 /** The environment both views light with, its sun (unit direction, toward it), the intensity that calibrates it, and a
  *  count that moves when it changes. */

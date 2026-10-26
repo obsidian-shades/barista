@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import type { Baked, Surface } from './bake';
 import type { MapKind, MapPixels, MaterialPixels } from './materials';
 import { uvShell } from './uvshell.ts';
+import { gpuComposite, gpuCompositeReady, MODES, type Group } from './gpucomp.ts';
 
 export type Channel = 'color' | 'rough' | 'metal' | 'normal' | 'height';
 /** Each channel: its name, how many values a texel holds, and what shows where no layer paints. */
@@ -22,6 +23,9 @@ export const CHANNELS: Record<Channel, { name: string; file: string; k: number; 
 /** A fill layer's projection and material settings. `tiling` repeats per UV unit; `tiles` is how many
  *  times the material crosses the model for tri-planar, so it is independent of the document's units. */
 export type Projection = 'uv' | 'triplanar';
+/** The asset id of a solid fill: no maps, one colour (the tint), roughness and metallic (Substance's fill layer with
+ *  plain values). It stays a layer of settings, so its colour can change without repainting. */
+export const SOLID = 'solid';
 export interface Fill {
   asset: string;
   projection: Projection;
@@ -51,6 +55,11 @@ export interface Decal {
   roughness: number;
   metallic: number;
   channels: Channel[];
+  /** Mirrored across its own width (flipH) or height (flipV). */
+  flipH?: boolean;
+  flipV?: boolean;
+  /** Engraved: how deep the mark is cut, 0..1 (the 'normal' and 'height' channels carry it; 0 or absent: ink only). */
+  engrave?: number;
 }
 /** How a layer combines with what is below it, per channel as Substance Painter holds it: the base colour, the
  *  roughness and the metallic each carry their own mode, so a grunge layer can multiply the colour and still lay its
@@ -290,7 +299,8 @@ async function drainComposite(s: TexSet, q: CompQueue) {
     while (q.full || q.rects.length) {
       const full = q.full, rects = q.rects;
       q.full = false; q.rects = [];
-      const n = s.size, band = Math.max(32, Math.ceil(n / 64));
+      // on the GPU a whole box is a few passes: no need to band it to stay interactive
+      const n = s.size, band = gpuCompositeReady(n) ? n : Math.max(32, Math.ceil(n / 64));
       if (full) {
         for (let y = 0; y < n; y += band) {
           composite(s, 0, y, n - 1, Math.min(n - 1, y + band - 1), undefined, false);
@@ -332,6 +342,8 @@ function blendedHeight(dst: number, src: number, mode: BlendMode) {
   return mode === 'add' ? Math.max(0, Math.min(1, dst + (src - 0.5))) : blended(dst, src, mode);
 }
 
+/** Texels in a composite box from which the GPU takes over (256²). */
+const GPU_MIN = 256 * 256;
 /** The layers flattened into the textures the model shows, within a texel rectangle (all of it by default).
  *  `only` limits the work to the channels a brush just touched: painting Base Color does not recomposite
  *  Roughness, Metallic, Normal and Height on every dab. */
@@ -346,7 +358,34 @@ export function composite(s: TexSet, x0 = 0, y0 = 0, x1 = s.size - 1, y1 = s.siz
     const set = l.fill?.channels ?? l.decal?.channels;
     return !set || set.includes(ch);
   };
-  for (const ch of ['color', 'rough', 'metal'] as Channel[]) {
+  const nOn = s.channels.includes('normal') && want('normal');
+  const hOn = s.channels.includes('height') && want('height');
+  // A box this size or more goes to the GPU (gpucomp.ts): the same blends as shader passes, read back into the arrays
+  // below. A dab's box stays here, where a readback would cost more than it saves.
+  let done = false;
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) >= GPU_MIN && gpuCompositeReady(n)) {
+    const stackOf = (ch: Channel, stride: 2 | 4) => shown.flatMap((l) => (writes(l, ch) && l.px[ch] ? [{ px: l.px[ch]!, stride, op: l.opacity, mask: l.mask, mode: MODES[blendOf(l, ch)] ?? 0 }] : []));
+    const groups: Group[] = [];
+    for (const ch of ['color', 'rough', 'metal'] as Channel[]) if (want(ch)) {
+      groups.push({ ch, kind: ch === 'color' ? 0 : 1, base: CHANNELS[ch].base.map((b) => b / 255), layers: s.channels.includes(ch) ? stackOf(ch, ch === 'color' ? 4 : 2) : [] });
+    }
+    if (nOn) groups.push({ ch: 'normal', kind: 2, base: [0, 0, 1], layers: stackOf('normal', 4) });
+    if (hOn) groups.push({ ch: 'height', kind: 3, base: [128 / 255], layers: stackOf('height', 2) });
+    done = gpuComposite(n, x0, y0, x1, y1, groups, (g, buf, tx, ty, w, h) => {
+      if (!buf) { // read straight into the array: colour's alpha came back as coverage
+        if (g.ch === 'color') for (let i = ty * n, e = (ty + h) * n; i < e; i++) { cov[i] = col[i * 4 + 3] > 127 ? 1 : 0; col[i * 4 + 3] = 255; }
+        return;
+      }
+      for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
+        const i = (ty + r) * n + tx + c, o = (r * w + c) * 4, d = i * 4;
+        if (g.ch === 'color') { col[d] = buf[o]; col[d + 1] = buf[o + 1]; col[d + 2] = buf[o + 2]; col[d + 3] = 255; cov[i] = buf[o + 3] > 127 ? 1 : 0; }
+        else if (g.ch === 'rough' || g.ch === 'metal') { orm[d] = 255; orm[d + (g.ch === 'rough' ? 1 : 2)] = buf[o]; orm[d + 3] = 255; }
+        else if (g.ch === 'normal') { nrm[d] = buf[o]; nrm[d + 1] = buf[o + 1]; nrm[d + 2] = buf[o + 2]; nrm[d + 3] = 255; }
+        else { hgt[d] = hgt[d + 1] = hgt[d + 2] = buf[o]; hgt[d + 3] = 255; }
+      }
+    }, (g) => (g.ch === 'color' ? col : g.ch === 'normal' ? nrm : g.ch === 'height' ? hgt : null));
+  }
+  if (!done) for (const ch of ['color', 'rough', 'metal'] as Channel[]) {
     if (!want(ch)) continue;
     const { k, base } = CHANNELS[ch], on = s.channels.includes(ch);
     const stack = shown.flatMap((l) => (writes(l, ch) && l.px[ch] ? [[l.px[ch]!, l.opacity, l.mask, blendOf(l, ch)] as const] : []));
@@ -369,11 +408,9 @@ export function composite(s: TexSet, x0 = 0, y0 = 0, x1 = s.size - 1, y1 = s.siz
     }
   }
   // Normals compose with a whiteout blend, never a plain average: averaging flattens the detail.
-  const nOn = s.channels.includes('normal') && want('normal');
-  const nstack = nOn ? shown.flatMap((l) => (writes(l, 'normal') && l.px.normal ? [[l.px.normal, l.opacity, l.mask] as const] : [])) : [];
-  const hOn = s.channels.includes('height') && want('height');
-  const hstack = hOn ? shown.flatMap((l) => (writes(l, 'height') && l.px.height ? [[l.px.height, l.opacity, l.mask, blendOf(l, 'height')] as const] : [])) : [];
-  if (nOn || hOn) for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+  const nstack = nOn && !done ? shown.flatMap((l) => (writes(l, 'normal') && l.px.normal ? [[l.px.normal, l.opacity, l.mask] as const] : [])) : [];
+  const hstack = hOn && !done ? shown.flatMap((l) => (writes(l, 'height') && l.px.height ? [[l.px.height, l.opacity, l.mask, blendOf(l, 'height')] as const] : [])) : [];
+  if (!done && (nOn || hOn)) for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
     const i = y * n + x;
     if (nOn) {
       let nx = 0, ny = 0, nz = 1;
@@ -530,10 +567,22 @@ function bleed(s: TexSet, x0: number, y0: number, x1: number, y1: number) {
     levelEnd = tail;
   }
 }
-/** The selection's shade: black, see-through inside, half over what's outside it. */
+/** The selection's shade, as the 3D view draws a selection: a light orange tint inside with a solid orange border
+ *  (`SEL`), black over what's outside. Darkening alone vanished on a dark material, so a click looked like nothing. */
 function shade(s: TexSet) {
-  const d = s.shade.image.data as Uint8ClampedArray, m = s.sel;
-  for (let i = 0; i < s.size * s.size; i++) d[i * 4 + 3] = m ? (255 - m[i]) * 0.5 : 0;
+  const d = s.shade.image.data as Uint8ClampedArray, m = s.sel, n = s.size;
+  // the border is a couple of texels wide, enough to survive the texture view's downsampled preview
+  const w = Math.max(1, Math.round(n / 512));
+  const on = (x: number, y: number) => x >= 0 && y >= 0 && x < n && y < n && m![y * n + x] > 127;
+  for (let i = 0; i < n * n; i++) {
+    const o = i * 4;
+    if (!m) { d[o + 3] = 0; continue; }
+    const x = i % n, y = (i / n) | 0, inside = m[i] > 127;
+    let edge = false;
+    if (inside) for (let k = 1; k <= w && !edge; k++) edge = !on(x + k, y) || !on(x - k, y) || !on(x, y + k) || !on(x, y - k);
+    if (inside) { d[o] = 255; d[o + 1] = 143; d[o + 2] = 31; d[o + 3] = edge ? 255 : 40; }
+    else { d[o] = d[o + 1] = d[o + 2] = 0; d[o + 3] = 140; }
+  }
   s.shade.needsUpdate = true;
   s.ver++;
 }
@@ -832,6 +881,36 @@ export function invertSelection(s: TexSet) {
   s.sel = s.sel ? s.sel.map((x) => 255 - x) : new Uint8Array(s.size * s.size);
   shade(s);
 }
+/** Photoshop's Select › Modify › Expand / Contract: the selection grown (`by` > 0) or shrunk by |by| texels, a square
+ *  max / min filter. Growing stays on the surface (`shell`); shrinking treats empty texture as selected, so only the
+ *  selection's own border moves in, not every UV border. */
+// ponytail: texel space, so a grow stops at a UV seam; walk the mesh across seams if that bites
+export function growSelection(s: TexSet, by: number, uvs: ArrayLike<number>) {
+  if (!s.sel || !by) return;
+  ensureShell(s, uvs);
+  const shell = s.shell;
+  const n = s.size, r = Math.abs(by), grow = by > 0, pick = grow ? Math.max : Math.min;
+  const src = s.sel.slice();
+  if (!grow && shell) for (let i = 0; i < src.length; i++) if (!shell[i]) src[i] = 255;
+  const pass = (a: Uint8Array, dx: number, dy: number) => {
+    const out = new Uint8Array(a.length);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      let v = a[y * n + x];
+      for (let k = 1; k <= r; k++) {
+        const x0 = x - k * dx, y0 = y - k * dy, x1 = x + k * dx, y1 = y + k * dy;
+        if (x0 >= 0 && y0 >= 0) v = pick(v, a[y0 * n + x0]); else if (!grow) v = 0;
+        if (x1 < n && y1 < n) v = pick(v, a[y1 * n + x1]); else if (!grow) v = 0;
+      }
+      out[y * n + x] = v;
+    }
+    return out;
+  };
+  const next = pass(pass(src, 1, 0), 0, 1);
+  if (shell) for (let i = 0; i < next.length; i++) if (!shell[i]) next[i] = 0;
+  keepSelection(s);
+  s.sel = next;
+  shade(s);
+}
 
 /** What the composite holds at UV (u, v): colour as #rrggbb, roughness and metallic 0..1 (the eyedropper). */
 export function sample(s: TexSet, u: number, v: number) {
@@ -954,12 +1033,14 @@ export function bakeFill(s: TexSet, l: PaintLayer, src: MaterialPixels, pos: Arr
   const buf: Partial<Record<Channel, Uint8ClampedArray>> = {};
   for (const ch of f.channels) buf[ch] = fillBuf(s, l, ch);
   const tint = hexTint(f.tint), strength = f.normalStrength;
+  // a solid fill has no maps: its colour is the tint; a material missing its colour map is unpainted grey
+  const plain = f.asset === SOLID ? [255, 255, 255] : CHANNELS.color.base;
   const color = src.basecolor, normalMap = src.normal, rough = src.roughness, metal = src.metallic, height = src.height;
   const roughV = (u: number, v: number) => f.roughness != null ? f.roughness * 255 : rough ? sampleMap(rough, u, v)[0] : CHANNELS.rough.base[0];
   const metalV = (u: number, v: number) => f.metallic != null ? f.metallic * 255 : metal ? sampleMap(metal, u, v)[0] : 0;
 
   const writeUV = (i: number, u: number, v: number) => {
-    if (buf.color) { const k = CHANNELS.color.k, px = buf.color; if (color) { const q = sampleMap(color, u, v); for (let c = 0; c < 3; c++) px[i * (k + 1) + c] = Math.min(255, q[c] * tint[c] / 255); } else for (let c = 0; c < 3; c++) px[i * (k + 1) + c] = CHANNELS.color.base[c]; px[i * (k + 1) + k] = 255; }
+    if (buf.color) { const k = CHANNELS.color.k, px = buf.color; if (color) { const q = sampleMap(color, u, v); for (let c = 0; c < 3; c++) px[i * (k + 1) + c] = Math.min(255, q[c] * tint[c] / 255); } else for (let c = 0; c < 3; c++) px[i * (k + 1) + c] = Math.min(255, plain[c] * tint[c] / 255); px[i * (k + 1) + k] = 255; }
     if (buf.rough) { const px = buf.rough; px[i * 2] = roughV(u, v); px[i * 2 + 1] = 255; }
     if (buf.metal) { const px = buf.metal; px[i * 2] = metalV(u, v); px[i * 2 + 1] = 255; }
     if (buf.height) { const px = buf.height; px[i * 2] = height ? sampleMap(height, u, v)[0] : CHANNELS.height.base[0]; px[i * 2 + 1] = 255; }
@@ -1023,7 +1104,7 @@ export function bakeFill(s: TexSet, l: PaintLayer, src: MaterialPixels, pos: Arr
           q = sampleMap(color, uy, vy); r += q[0] * wy; g += q[1] * wy; b += q[2] * wy;
           q = sampleMap(color, uz, vz); r += q[0] * wz; g += q[1] * wz; b += q[2] * wz;
           r /= ws; g /= ws; b /= ws;
-        } else { [r, g, b] = CHANNELS.color.base; }
+        } else { [r, g, b] = plain; }
         px[i * (k + 1)] = Math.min(255, r * tint[0] / 255); px[i * (k + 1) + 1] = Math.min(255, g * tint[1] / 255); px[i * (k + 1) + 2] = Math.min(255, b * tint[2] / 255); px[i * (k + 1) + k] = 255;
       }
       if (buf.rough) { const px = buf.rough, q1 = roughV(ux, vx), q2 = roughV(uy, vy), q3 = roughV(uz, vz); px[i * 2] = (q1 * wx + q2 * wy + q3 * wz) / ws; px[i * 2 + 1] = 255; }
@@ -1110,12 +1191,17 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
   const depth = Math.max(width * 0.55, span * 0.012);
   for (const ch of Object.keys(l.px) as Channel[]) if (!d.channels.includes(ch)) delete l.px[ch];
   const buf: Partial<Record<Channel, Uint8ClampedArray>> = {};
-  for (const ch of d.channels) if (ch === 'color' || ch === 'rough' || ch === 'metal') buf[ch] = fillBuf(s, l, ch);
+  const eng = Math.max(0, d.engrave ?? 0);
+  for (const ch of d.channels) if (ch === 'color' || ch === 'rough' || ch === 'metal' || (eng > 0 && (ch === 'normal' || ch === 'height'))) buf[ch] = fillBuf(s, l, ch);
   for (const b of Object.values(buf)) b.fill(0);
   if (!buf.color) return;
   const tint = hexTint(d.tint), rough = d.roughness * 255, metal = d.metallic * 255;
-  const color = buf.color, rc = buf.rough, mt = buf.metal;
-  let sr = 0, sg = 0, sb = 0, sa = 0;
+  const color = buf.color, rc = buf.rough, mt = buf.metal, nm = buf.normal, ht = buf.height;
+  // engraving: the ink's edge tilts the normal as a cut would (height = -ink), slope from the ink's gradient
+  const hu = 1.5 / src.width, hv = 1.5 / src.height, slope = eng * 3;
+  const ink = (u: number, v: number) => sampleDecal(src, d.flipH ? 1 - u : u, d.flipV ? 1 - v : v)[3] / 255;
+  let sr = 0, sg = 0, sb = 0, sa = 0, gx = 0, gy = 0, cut = false;
+  let tx = 1, ty = 0, tz = 0, bx = 0, by = 1, bz = 0;
   ready(n);
   for (let t = 0; t < pos.length / 9; t++) {
     const o = t * 9;
@@ -1125,6 +1211,16 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
     let fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x;
     const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
     if (fx * nx + fy * ny + fz * nz < 0.12) continue; // a mark only lands on surface facing the projector
+    if (eng > 0) {
+      // the triangle's tangent frame as the engine's Mesh has it: T from the UVs, B = N × T
+      const du1 = uvs[t * 6 + 2] - uvs[t * 6], dv1 = uvs[t * 6 + 3] - uvs[t * 6 + 1], du2 = uvs[t * 6 + 4] - uvs[t * 6], dv2 = uvs[t * 6 + 5] - uvs[t * 6 + 1];
+      const det = du1 * dv2 - du2 * dv1;
+      if (Math.abs(det) > 1e-12) {
+        tx = (e1x * dv2 - e2x * dv1) / det; ty = (e1y * dv2 - e2y * dv1) / det; tz = (e1z * dv2 - e2z * dv1) / det;
+        const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+      } else { tx = 1; ty = 0; tz = 0; }
+      bx = fy * tz - fz * ty; by = fz * tx - fx * tz; bz = fx * ty - fy * tx;
+    }
     raster(n, pos, uvs, t, (x, y, z) => {
       const dx = x - cx, dy = y - cy, dz = z - cz;
       const along = dx * nx + dy * ny + dz * nz;
@@ -1132,15 +1228,29 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
       const u = (dx * uxr + dy * uyr + dz * uzr) / width + 0.5;
       const v = (dx * vxr + dy * vyr + dz * vzr) / height + 0.5;
       if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
-      const q = sampleDecal(src, u, v);
+      const q = sampleDecal(src, d.flipH ? 1 - u : u, d.flipV ? 1 - v : v);
       sa = q[3] / 255;
-      if (sa <= 0) return 0;
+      cut = false;
+      if (eng > 0) {
+        const gu = ink(u + hu, v) - ink(u - hu, v), gv = ink(u, v + hv) - ink(u, v - hv);
+        cut = Math.abs(gu) + Math.abs(gv) > 1e-3;
+        // world tilt along the decal's axes, then into the triangle's tangent space
+        const wx = (gu * uxr + gv * vxr) * slope, wy = (gu * uyr + gv * vyr) * slope, wz = (gu * uzr + gv * vzr) * slope;
+        gx = wx * tx + wy * ty + wz * tz; gy = wx * bx + wy * by + wz * bz;
+      }
+      if (sa <= 0 && !cut) return 0;
       sr = Math.min(255, q[0] * tint[0] / 255); sg = Math.min(255, q[1] * tint[1] / 255); sb = Math.min(255, q[2] * tint[2] / 255);
-      return sa;
+      return cut ? 1 : sa;
     }, undefined, (_x, _y, _z, i) => {
       color[i * 4] = sr; color[i * 4 + 1] = sg; color[i * 4 + 2] = sb; color[i * 4 + 3] = sa * 255;
       if (rc) { rc[i * 2] = rough; rc[i * 2 + 1] = sa * 255; }
       if (mt) { mt[i * 2] = metal; mt[i * 2 + 1] = sa * 255; }
+      if (nm && cut) {
+        const l2 = Math.min(0.95, gx * gx + gy * gy), k = l2 > 0 ? Math.sqrt(l2 / (gx * gx + gy * gy)) : 0;
+        const ex = gx * k, ey = gy * k, ez = Math.sqrt(1 - ex * ex - ey * ey);
+        nm[i * 4] = (ex * 0.5 + 0.5) * 255; nm[i * 4 + 1] = (ey * 0.5 + 0.5) * 255; nm[i * 4 + 2] = (ez * 0.5 + 0.5) * 255; nm[i * 4 + 3] = 255;
+      }
+      if (ht && sa > 0) { ht[i * 2] = 128 - 64 * eng; ht[i * 2 + 1] = sa * 255; }
     });
   }
   for (const i of touched) weight[i] = 0;

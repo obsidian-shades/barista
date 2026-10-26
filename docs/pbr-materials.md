@@ -3,7 +3,7 @@
 **Status:** P1 and P2 are implemented — a game-first material library, fill layers, UV/tri-planar
 projection, normal and height channels, mask painting, folder import, layer blend modes, all-parts
 assignment and game-engine texture presets. The Materials panel is deliberately category-only: role and
-smart-finish rows were removed; `smartmaterials.ts` remains as data for later use. **Decals** ship as projected layers
+smart-finish rows were removed; the smart-material recipes were deleted. **Decals** ship as projected layers
 with their own shelf, import, drag-to-move, size/rotation/tint/roughness/metallic settings. The local
 **purchased PBR Asset Browser V3 pack** is now the material shelf itself: 4,981 materials, nine
 Material categories, paged grid, 1K browser cache from 2K sources; git-ignored and never bundled. The

@@ -12,7 +12,10 @@ UI follows espresso-level-designer (`../espresso-level-designer`): Photoshop/Spe
 
 ## How the unwrap works (engine/src)
 UVs are always computed on the real mesh's own triangles, never projected from a proxy (that smears triangles across seams).
-`mesh` weld + make winding consistent/outward, deterministic `Map`/`Set` · `region` charts like an artist blocks out hard surface:
+`symmetry` a part with exactly one mirror plane is solved on one half and mirrored; a plane drawn in the editor (UV Magician's
+"Symmetry plane" tool: move/rotate the gizmo, then Apply → `PartIn.symmetry`) is used as drawn — the normal kept, the distance moved onto
+the nearest layer of vertices, details with no partner charted once — so a near-symmetric model still gets the mirrored layout.
+`mesh` weld + make winding consistent/outward, deterministic `Map`/`Set`; a soup's flat convex triangle pairs are read back as one polygon (`recover_quads`), so no seam runs down a diagonal the file never drew · `region` charts like an artist blocks out hard surface:
 per shell a box frame from its big flat faces; smooth simple regions (disk, ring, sphere, torus) stay whole, boxy/tangled ones split into
 flat patches labelled by the side they face, Potts-smoothed (ICM: area×(1−cos) vs shared border) so groove walls and bevels stay on
 the flank they're cut into · `chart` per chart: closed genus-1 → `torus` (harmonic one-forms, seamless, re-cut to the reduced lattice
@@ -27,7 +30,8 @@ vertex to the border, relaxed from the layout as it is, kept if clean and less r
 Seams are priced by `seam_cost`: length, halved in a right-angle concave crease, quartered on hidden surface (`Mesh::hidden`, from `region`'s ray cone),
 ×1000 inside a file polygon (`PartIn.polys` → `Mesh::poly`, `Mesh::inside`: a quad's diagonal); `chart::whole` keeps every partition (region charts,
 carve, split) polygon-whole and the torus recut moves whole polygons, so Export writes quads and n-gons back whole (test `quads_stay_whole`);
-cone-tip and hole seams follow the cheapest path · `join` hangs islands off each other along shared edges into nets
+cone-tip and hole seams follow the cheapest path, searched over directed edges with a bend cost (`TURN`: a right angle ≈ 2.5
+edges, free where the two edges share no polygon) so a seam follows a loop instead of stepping across one · `join` hangs islands off each other along shared edges into nets
 (Paper Model-style priority: flattest, then longest shared border, then breadth-first from the biggest; no overlap, must stay compact).
 Two big islands whose shared border won't hinge rigidly become a book (`chart::book`): spine = the longest straight part of one shared
 stretch, the child re-flattened with its spine pinned onto the parent's so it opens on the far side; a pair that still folds stays two
@@ -36,7 +40,7 @@ hole of a bigger island (half its outline shared), or a sliver, is filled back b
 over if wound the other way); if the parent closed the notch up, the orphan and a few rings round it are re-laid (Tutte inside the held ring,
 then SLIM, `refill`); kept if clean and the pair stays within `tol` · `region` also keeps hidden interior patches (ray cone sees no way out)
 out of exterior charts · `pack` squares nets up (a book's spine along an axis), rasterises them and drops each (4 turns) at its
-lowest-top spot (xatlas-style), one square per part unless `one_atlas` ·
+lowest-top spot (xatlas-style), one square per part unless `one_atlas` · `judge` measures the seams themselves on the charts before `join` — length/√area, share on hidden surface, short dead ends (spurs), staircase turns, seams inside a polygon — as `Stats.seams`, checked by `tests/seams.rs` and printed by the gun benchmark ·
 `edit` hand edits: relax, stitch, and `reseam` (a seam toggled in the editor re-solves only the islands it touches, each
 fit back onto where it lay at the part's texel density, never the fit's own scale, which shrinks onto a projected shell; a
 stitched edge stays stitched: if the solve would cut it open again, the piece is flattened as its seams leave it; the rest, hand
@@ -61,23 +65,32 @@ as 256 px tiles `set/<part>/<layer id>/<channel|mask|clip>/<tx>_<ty>`, empty til
 again to edit a generator). Store: `project` (path) and `saved`; any change to parts, uvs, result, uvRev, paintRev,
 params or resolution clears `saved` (the title's dot, AppTabs). File › Open project… / Save (Ctrl+S) / Save as
 (Ctrl+Shift+S) / Recover autosave…; Open Recent keeps projects by path. Autosave every 2 min when unsaved: into the
-project's file, or `%APPDATA%\Barista\autosave\<name>.barista` before the first save. Check: `node src/project.check.ts`,
+project's file, or `%APPDATA%\Barista\autosave\<name>.barista` before the first save. Questions are one modal
+(`shell/AskDialog.tsx`, store `ask` / `answerAsk`): opening a model asks paint resolution, workspace, sharp edges, One atlas, Join into nets and auto unwrap (`openOpts`, remembered in localStorage;
+File › Ask how to open models turns it off; no unwrap = mesh-only stale parts, which Unwrap then does all of), and anything
+replacing an unsaved document or closing the window asks Save / Don't save / Cancel (`confirmDiscard`; Tauri `onCloseRequested`,
+needs `core:window:allow-destroy`; browser `beforeunload`). A freshly opened model counts as saved. Check: `node src/project.check.ts`,
 `cargo test project`.
 
 ## Texture export (`engine/src/texture/`: `mod.rs`, `layers.rs`, `bake.rs`)
-The editor paints at a working resolution (the set's size); File › Export (textures per preset, or Blender ready = the
-generic set plus the FBX with each part's material linked to its PNGs: `ExportPart.maps` → FBX Texture + Video on
-DiffuseColor / ReflectionFactor / ShininessExponent / NormalMap, which Blender's importer wires itself) and the Maps tab
-call `exportTextures`: it saves the project (its file, or the autosave folder before the first save), then sends
-`texture-export` a Pack: `ExportReq` (project path, `exportSize` up to 16K, preset, prefix, visible parts, each fill's map
-URLs and each decal's URL) plus the FBX. The engine reads the `.barista`, and per part at the export size: `Mesh::owners`
-(each texel's triangle, paint.ts `raster` with `bordersOf` tolerances, first triangle wins, bands in parallel), then per
-texel (rows in parallel) every visible layer: fills (`fill_at`, tri-planar / UV, the material files decoded with
+The editor paints at a working resolution (the set's size); File › Export… (Ctrl+Shift+E) is one dialog for both `src/shell/ExportDialog.tsx`
+and `src/exporting.ts`: the four presets plus Blender ready, each card saying what it writes (generic = every map and an ORM;
+Unreal = DX normal + ORM; HDRP = MaskMap R metal / G AO / B 0 / A smoothness; URP = Metallic/Smoothness; Blender = generic maps
+plus the FBX with each part's material linked to its PNGs: `ExportPart.maps` → FBX Texture + Video on DiffuseColor /
+ReflectionFactor / ShininessExponent / NormalMap, which Blender's importer wires itself). Its settings are the size (to 16K),
+which parts (visible / selected / all), the gutter (padding in texels; Auto = max(4, size/64)) and Triangulate. The Maps tab
+and the File menu's quick entries only open that dialog. Exporting saves the project (its file, or the autosave folder before
+the first save), then sends `texture-export` a Pack: `ExportReq` (project path, `size`, preset, prefix, part indices, `padding`,
+each fill's map URLs and each decal's URL) plus the FBX. The engine reads the `.barista`, and per part at the export size:
+`Mesh::owners` (each texel's triangle, paint.ts `raster` with `bordersOf` tolerances, first triangle wins, bands in parallel),
+then per texel (rows in parallel) every visible layer: fills (`fill_at`, tri-planar / UV, the material files decoded with
 `image`), decals (`DecalFrame::at`), generators (`gen_at` on AO from `Occlusion`: 96 CPU depth maps of the visible parts,
 and `Edges` distances) are rendered fresh; hand paint, layer masks and generator clips are the working-res tiles
 upsampled (`Up::sample`: bilinear over neighbours on the surface only); a fill / decal whose asset has no file (`blob:`
-imports) falls back to its pixels. Composite as paint.ts (blends, whiteout normals, additive height), `pad` = paint.ts
-`bleed` (max(4, n/64) texels, only off the surface), PNGs (`png`, rows flipped) per preset into a folder the engine asks
+imports) falls back to its pixels. `Edges` keeps whole edge segments and answers exact point-to-segment distances: sampling
+points every `reach/8` made an Edge Wear band narrower than that spacing bead into dots at any texture size (its `width`
+is a share of the model: 0.8% by default, 0.4% in the gun5 set) — the dots were world-space gaps, not the UV unwrap. Composite as paint.ts (blends, whiteout normals, additive height), `pad` = paint.ts
+`bleed` (the gutter, only off the surface), PNGs (`png`, rows flipped) per preset into a folder the engine asks
 for (`rfd`); `texture-status` is the busy line. URLs `/…` resolve under `$BARISTA_PUBLIC` or `public/`. Undo, the live
 view and the editor's bake stay at the working resolution; gun5 at 8K: ~90 s, the tab under 1 GB. Test: `cargo test texture`.
 
@@ -206,11 +219,11 @@ same on the model and in the texture view (store `paintPress` / `paintDrag` / `p
 starts painting). Per part a texture set (`setOf`, keyed by the part's soup, size fixed when made): channels Base Color,
 and with + PBR Roughness and Metallic (glTF metal/rough: composite `orm` G / B, read by `meshStandardMaterial`), Photoshop
 layers (each paints per channel with its own coverage), and a selection mask per texel (`sel`) that paint, fills and the
-eraser stay inside; document-wide like Photoshop's (`selectDoc`: replacing it empties every other part's), shaded outside
-(`shade`, an overlay mesh in 3D, drawn over the texture). Tools (Photoshop keys): Marquee M / Lasso L (on the model:
+eraser stay inside; document-wide like Photoshop's (`selectDoc`: replacing it empties every other part's), shown as a selection
+(`shade`: orange tint and border inside, black outside; an overlay mesh in 3D, drawn over the texture). Tools (Photoshop keys): Marquee M / Lasso L (on the model:
 screen shape, only what's seen, `depthOf`; in the texture view: UV polygon; a click deselects), Select Faces W, Bucket G
 (both take Face = the file's polygon / Island / Part, options bar), Brush B, Eraser E, Eyedropper I (and Alt+click with
-Brush / Bucket). Shift adds, Alt takes away; Ctrl+click picks the part (opens it in the Parts tree). Ctrl+A select all,
+Brush / Bucket). Shift adds, Alt takes away; Ctrl+click picks the part (opens it in the Parts tree), and painting a part makes it the active one. The texture view's Part / All changes only from its own buttons (an atlas model opens in All); in a shared atlas each part's set draws clipped to its own triangles, a click goes to the part under it, and a Brush / Eraser stroke there paints every part in the square (`atlasMates`, one undo step, CPU path). Ctrl+A select all,
 Ctrl+D deselect, Ctrl+Shift+I invert, Alt+Backspace fill selection (no selection: the layer), Delete clear, Ctrl+J duplicate,
 Ctrl+Shift+N new layer, Ctrl+[ ] move layer, [ ] brush size, Ctrl+Z / Ctrl+Shift+Z (20 steps across sets, copy-on-write
 layers; a step undone is kept for redo, a slider's step is taken by its first change, not its pointerdown, and a
@@ -226,14 +239,27 @@ metal, height **adds** around mid grey, normals always the whiteout combine, so 
 on Base Color alone (`paint.on`), so a colour stroke leaves the material's roughness and metallic under it; tick Rough /
 Metal in the options bar to paint those too. Export is the engine's (see `## Texture export`), never the browser's. Painted texels don't follow a re-unwrap;
 One atlas parts each still get their own set.
+Solid fill (layer bar square, `addSolidFill`): a fill whose asset is `SOLID` (paint.ts), no maps, colour = tint plus its roughness /
+metallic, editable later; the engine's `fill_at` draws it the same (`plain`). New fills, solids, decals and sheens go in under the
+generators above the active layer (`insertAt`). **All sets** (Layers bar, `linkSets`): adds go to every visible part and fill / generator /
+opacity edits go to the same-named layer on each (`matesOf`, made active so the undo step copies it). Generators bake a part with no
+mesh maps first. Select by **Surface** (`surfaceTris`: flood up to edges bent > angle and < 2× angle from the clicked face), Select ›
+Grow / Shrink (Ctrl+Shift+= / -, `growSelection`, texel space). Decal tool **Mirror** places a twin across the model's middle
+(`mirrorHit`); **Engrave** (`Decal.engrave`) bends the normal along the ink's edge and lowers the height, in the engine too
+(`DecalFrame::at`). Layer runs of 3+ decals fold into one row. View › Reference image… floats a picture over the 3D view
+(`views/RefImage.tsx`, not saved). `saveProjectTo(path)` saves without the dialog (scripts). Saves write `<file>.saving` then rename;
+errors name the file and folder; autosaves are per process (`<name>-<pid>.barista`).
 Color panel on top of the dock (`panels/ColorWheel.tsx`, Affinity's): hue ring (clockwise from red at the right) round
 an HSV triangle (tip the hue, white, black), swatch, eyedropper, H S L, hex, Flow; the dock scrolls (`.paintdock`).
+GPU composite (`src/gpucomp.ts`): any composite box of 256² or more (undo, opacity, visibility, blends, fills, generators, a stroke's commit) runs as shader passes, one per layer per channel in a float target (full-width bands, ~1024² a band), each layer's region uploaded into a reused scratch texture with `texSubImage2D` (three's update ranges only do RGBA), read back into the set's composite arrays (straight in when the box spans whole rows), so undo, save, export and every reader are unchanged; within 1 level of the CPU composite (rounding). A new viewport renderer drops its targets. Node and GPUs without float targets keep the CPU path. 2K, four PBR layers: ~300 ms in the software-GL pane vs ~3 s on the CPU.
+GPU brush (`src/gpupaint.ts`): a live stroke is stamped into a render target the model shows directly, then replayed on the CPU on release; it takes the plain brush, strokes inside a selection (the mask as a texture) and the eraser on the bottom colour layer (painted toward the unpainted base), and the texture view reads it back shrunk to 512 on the GPU. Fill / decal masks, blends, layers above and atlas strokes stay on the CPU.
 Brush cursor (Substance's): on the model two rings on the face under the mouse (`BrushCursor`: dashed = the dab's
 reach, solid = hardness), in the texture view CSS rings at the mouse. Bake (`src/bake.ts`, Mesh Maps panel, every visible part,
 every part occluding the others): AO the GPU way, the model's depth from 96 directions (orthographic, an offscreen
 renderer), per texel the cosine-weighted share of its sky seen (texel point + face normal from `surfaceOf`, lifted 1.5
-depth texels); edge maps = distance to the nearest sharp (> 20°) convex / concave edge over its strength, from edges
-sampled into a grid. Material view (Substance's, `src/matview.ts`): in Studio lighting with no plate, Van Gogh lights the model by a bundled
+depth texels); edge maps = distance to the nearest sharp (> 20°) convex / concave edge over its strength, each edge a
+whole segment in a reach-sized grid (not sampled points: an Edge Wear band narrower than the old reach/8 sampling beaded
+into dots). Material view (Substance's, `src/matview.ts`; Shift+right-drag turns the light, `turnLight`, its own `lightRev` so the document stays saved; a floor catches the sun's shadow; Background › World shows the plate): in Studio lighting with no plate, Van Gogh lights the model by a bundled
 plate (`PAINT_HDRI`, Dramatic studio) plus a shadow-casting key (`PaintStudio`; Canvas `shadows`), no lamps, no tone curve
 (Substance's Legacy sRGB), and draws the real PBR material (`meshStandardMaterial`: the set's roughness / metallic, or
 Substance's defaults 0.5 / 0.3 / 0 from its `lib-sampler`), smooth shaded within Sharp edges; Show AO puts the baked AO in
@@ -256,13 +282,22 @@ Browse is nine visible **Material** chips (Metal, Wood, Stone & Masonry, Tile & 
 Concrete & Ground, Fabric & Leather, Polymer & Carbon, Organic & Food, Other) plus search, infinite scroll and **All parts**;
 tiles (811) have their own **Tiles** tab instead, chips by kind from the name (`TILE_KINDS`: Hex, Roof, Terracotta…);
 search and chips stay sticky over the grid (`.matsticky`); the precise source category stays in the tile tooltip and search text. The core/pack switch, role filter and
-smart-finish rows were removed; `smartmaterials.ts` remains in the codebase but is not exposed. Cerakote and Anodized Metal head the shelf as plain
+smart-finish rows were removed; the smart-material recipes were deleted. Cerakote and Anodized Metal head the shelf as plain
 materials (`FINISHES` in `materials.ts`: the pack's painted / silver metal PBR maps under the finish's name, no tint).
 The Layers bar's Metal sheen (`addMetalLayer`) adds a layer filling the selection with Metallic 1 / Roughness 0.25 only. `src/decals.ts` +
 `public/decals/` hold 20 original CC0 transparent marks; the Decals tab arms one and the Decal tool D places it. A
 decal is a `PaintLayer.decal` (`bakeDecal` in `paint.ts`): a tangent projector at the clicked point, front-facing and
 depth-limited, baked to BaseColor/Roughness/Metallic so masks, blend modes and export behave like any layer; drag it
-on the model to move, or use Size/Rotate/Ink/Rough/Metal under Layers. A purchased 4,981-material Blender pack is
+on the model to move (it turns to face each triangle it crosses, `moveDecal`), or use Size/Rotate/Ink/Rough/Metal under Layers.
+With the Decal tool the active decal has a gizmo (`DecalGizmo`, Viewport3D): frame, corner handles scale, the knob rotates
+(Shift 15°); Flip H / Flip V (`Decal.flipH/flipV`, mirrored in the engine's `DecalFrame`) and ±90° in the options bar and
+under Layers. Live edits re-bake once a frame (`laterRebake`). Bucket / Wand hover and a material dragged from the shelf
+onto the model tint and outline what they'd take (`paintHover`, `paintHoverAt`: Face / Island / Part); the drop fills it
+masked to that (`assignMaterial(id, false, onto)`). The shelf drag is a pointer drag (`holdTile` in VanGogh.tsx: the ball
+follows the pointer as `.matghost`, Esc cancels, a press that doesn't move stays a click), not HTML drag-and-drop, which
+the Tauri window takes on Windows; the 3D view raycasts the screen point itself (`shelfDragOver` / `shelfDrop`, `Picker`).
+Decal tiles drag the same way (`decalDragOver` / `decalDrop`): over a face turned toward the camera the mark's frame shows
+where it lands at the next mark's size and rotation (`DecalPreview`), and letting go places it (`dropDecal`, Decal tool on). A purchased 4,981-material Blender pack is
 installed locally at `public/materials-pack` (git-ignored, excluded from `dist`): `tools/extract-pack.ps1` runs
 `blender-extract.py` over the `.blend` files into `D:\barista-pack-raw` (marked assets only, with their catalog; the
 full name from the maps' file stem when Blender cut it; DirectX normals where an unmuted "Normal Inverter" group sits on

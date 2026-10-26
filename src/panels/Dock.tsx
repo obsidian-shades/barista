@@ -5,7 +5,7 @@ import { islandsOf } from '../islands';
 import { CHANNELS, type Channel, type Shown } from '../paint';
 import { Icon } from '../ui/Icon';
 import {
-  alignSeamsSel, averageScalesSel, circleBoundarySel, clearSeams, copyShapeSel, mergeSel, normalizeSel, offsetBoundarySel, orientSel, orientWorldSel,
+  alignSeamsSel, averageScalesSel, circleBoundarySel, clearSeams, clearSymPlane, copyShapeSel, editSymPlane, mergeSel, normalizeSel, offsetBoundarySel, orientSel, orientWorldSel,
   pasteShapeSel, pickPaintChannel, pickPaintPart, rectifySel, selectAll, selectFlipped, selectMirror, selectPart, partsMenu, clearAllSeams, selectSide, selectSimilar, selectZeroArea,
   setAfterAlign, setAfterPack, setParams, setPartTextured, setPartVisible, setPbr, shuffleSel, sortSel, stackSel, stretchSel, straightenSel, symmetrizeSel, texSet, togglePaintOpen,
   unwrap, useApp,
@@ -140,6 +140,7 @@ function UVTools() {
   const n = useApp((s) => s.selected.length), loading = useApp((s) => !!s.loading), has = useApp((s) => !!s.result && !s.loading);
   const hasShape = useApp((s) => !!s.shapeClipboard), manual = useApp((s) => !!s.parts[s.activePart]?.manual);
   const [worldAxis, setWorldAxis] = useState<'auto' | 'x' | 'y' | 'z'>('auto'), [uvAxis, setUvAxis] = useState<0 | 1>(0);
+  const plane = useApp((s) => s.symPlane);
   const b = (label: string, title: string, run: () => void, off = n === 0 || loading) => <button key={label} disabled={off} title={title} onClick={run}>{label}</button>;
   const axis: 0 | 1 | 2 = worldAxis === 'auto' ? (uvAxis === 0 ? 0 : 2) : worldAxis === 'x' ? 0 : worldAxis === 'y' ? 1 : 2;
   const section = (title: string, hint: string, body: ReactNode) => (
@@ -177,6 +178,12 @@ function UVTools() {
         </div>
       </>)}
       {section('Symmetrize', '', <>
+        <label className="hint" title="Unwrap mirrors a part across one plane. A placed plane is used as drawn; otherwise the plane is found, and only on a part that has exactly one.">
+          Unwrap plane: {plane ? 'placed' : 'automatic'}</label>
+        <div className="tgrid two">
+          {b(plane ? 'Move plane' : 'Plane', 'Spawn the mirror plane, move and turn it with the gizmo, then Apply in the options bar', editSymPlane, false)}
+          {b('Clear plane', 'Back to the automatic mirror plane', clearSymPlane, !plane)}
+        </div>
         <label className="hint">UV axis <select value={uvAxis} onChange={(e) => setUvAxis(+e.target.value as 0 | 1)}><option value={0}>X</option><option value={1}>Y</option></select> 3D axis <select value={worldAxis} onChange={(e) => setWorldAxis(e.target.value as typeof worldAxis)}><option value="auto">Auto</option><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></label>
         <div className="tgrid two">
           {b('Symmetrize', 'Mirror selected source side UVs onto the matching 3D side', () => symmetrizeSel(axis, uvAxis))}

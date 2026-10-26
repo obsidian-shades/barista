@@ -88,8 +88,3 @@ export function uvMapCanvas(kind: UVMap, resolution = 1024) {
   }
   return cv;
 }
-
-/** The checker alone, `cells` across (the UV view's island mode and the editor's own preview use it). */
-export function checkerCanvas(cells = 64) {
-  return uvMapCanvas('checker', cells * 16);
-}

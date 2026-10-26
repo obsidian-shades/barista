@@ -64,11 +64,20 @@ fn err(e: impl std::fmt::Display) -> String {
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                       CREATE TABLE IF NOT EXISTS blob(name TEXT PRIMARY KEY, data BLOB NOT NULL);";
 
-/// Write `doc` and every blob to `path`, replacing what was there.
+/// Write `doc` and every blob to `path`, replacing what was there: written whole beside it, then renamed over it, so a
+/// failed save never leaves half a project and another program holding the old file can't make SQLite report a
+/// "readonly database". Errors say which file and folder, not SQLite's words alone.
 pub fn save(path: &Path, p: &Pack) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(err)?;
-    }
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let why = |e: String| format!("Couldn't save {}: {e}. Check that {} exists and this program may write there.", path.display(), dir.display());
+    std::fs::create_dir_all(dir).map_err(|e| why(e.to_string()))?;
+    let tmp = path.with_extension(format!("{EXT}.saving"));
+    let _ = std::fs::remove_file(&tmp);
+    write_db(&tmp, p).map_err(|e| { let _ = std::fs::remove_file(&tmp); why(e) })?;
+    std::fs::rename(&tmp, path).map_err(|e| { let _ = std::fs::remove_file(&tmp); why(format!("{e} (is it open in another program?)")) })
+}
+
+fn write_db(path: &Path, p: &Pack) -> Result<(), String> {
     let mut c = Connection::open(path).map_err(err)?;
     c.execute_batch(SCHEMA).map_err(err)?;
     let t = c.transaction().map_err(err)?;
@@ -147,7 +156,9 @@ pub fn save_pack(body: &[u8]) -> Result<Option<String>, String> {
     let p = Pack::decode(body)?;
     let head: SaveHead = serde_json::from_str(&p.json).map_err(err)?;
     let path = if head.autosave {
-        autosave_dir().join(format!("{}.{EXT}", head.name))
+        // per process: the desktop app and a browser editor open on the same model must not overwrite each other
+        // ponytail: one file per run piles up in the autosave folder; prune old ones if it grows
+        autosave_dir().join(format!("{}-{}.{EXT}", head.name, std::process::id()))
     } else {
         match head.path.as_ref().filter(|_| !head.save_as).map(PathBuf::from) {
             Some(p) => p,

@@ -114,3 +114,49 @@ button.primary kbd { color: var(--accent-ink)fffb0; padding-left: 12px; }
 .pie button[data-current] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .pie button[data-current]:hover:not(:disabled) { box-shadow: none; }
 @keyframes pie-in { from { opacity: 0; scale: .85; } }
+
+/* File › Export: a modal over the whole shell, Photoshop's dialog weight. Textures leave through the engine (a
+   folder picker), models through the browser's downloads, so the footer says which. */
+.exp-scrim { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px; background: #000000a8; }
+.exp-dialog { width: min(780px, calc(100vw - 48px)); max-height: min(800px, calc(100vh - 48px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-m); box-shadow: 0 24px 80px #000b; }
+.exp-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px 10px; border-bottom: 1px solid var(--line); }
+.exp-head > div { display: grid; gap: 2px; min-width: 0; }
+.exp-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.exp-head .hint { font-size: var(--fs-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exp-close { margin-left: auto; width: 26px; height: 26px; min-height: 0; padding: 0; justify-content: center; font-size: 18px; line-height: 1; color: var(--muted); }
+.exp-tabs { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+.exp-tabs button { min-height: 30px; padding: 0 12px; border: 0; border-radius: 0; color: var(--muted); font-weight: 600; font-size: var(--fs-s); }
+.exp-tabs button[aria-selected="true"] { background: none; color: var(--fg); box-shadow: inset 0 -2px var(--accent); }
+.exp-body { display: grid; align-content: start; gap: 12px; padding: 14px 16px; overflow-y: auto; }
+.exp-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.exp-preset { display: grid; gap: 2px; align-content: start; text-align: left; padding: 7px 10px; min-height: 0; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--panel); }
+.exp-preset:hover:not(:disabled) { background: var(--panel); border-color: var(--hair-hi); }
+.exp-preset[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.exp-preset-head { display: flex; align-items: baseline; gap: 8px; }
+.exp-preset-head b { font-size: var(--fs-s); }
+.exp-preset .target { font-size: var(--fs-xs); color: var(--muted); margin-left: auto; white-space: nowrap; }
+.exp-preset .what { font-size: var(--fs-xs); color: var(--muted); line-height: 1.3; }
+.exp-preset[aria-checked="true"] .what { color: var(--fg); }
+.exp-detail { margin: 0; color: var(--muted); font-size: var(--fs-s); line-height: 1.4; }
+.exp-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.exp-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.exp-grid label, .exp-field { display: grid; gap: 4px; align-content: start; font-size: var(--fs-s); color: var(--muted); }
+.exp-grid select, .exp-grid input, .exp-field select { width: 100%; }
+.exp-files { display: grid; gap: 6px; padding: 8px 10px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
+.exp-files ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.exp-files li { display: flex; gap: 10px; font-size: var(--fs-xs); line-height: 1.35; }
+.exp-files li .fn { flex: 0 0 160px; font-family: var(--num); color: var(--fg); }
+.exp-files li span:last-child { color: var(--muted); }
+.exp-files .hint { font-size: var(--fs-xs); line-height: 1.4; }
+.exp-foot { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); }
+.exp-foot .hint { margin-right: auto; font-size: var(--fs-xs); }
+.exp-foot button { min-width: 82px; justify-content: center; }
+.ask-dialog { width: min(440px, calc(100vw - 48px)); grid-template-rows: auto minmax(0, 1fr) auto; }
+.ask-dialog label.toggle { display: flex; align-items: center; gap: 6px; font-size: var(--fs-s); }
+@media (max-width: 720px) { .exp-presets, .exp-grid, .exp-grid.two { grid-template-columns: 1fr 1fr; } }
+/* Van Gogh: a material ball held from the shelf, following the pointer to the model */
+.matghost { position: fixed; left: 0; top: 0; z-index: 100; width: 56px; height: 56px; margin: -28px 0 0 -28px; border-radius: 50%;
+  pointer-events: none; opacity: 0.8; box-shadow: 0 6px 18px #000a; transition: opacity 0.1s; }
+.matghost.over { opacity: 1; outline: 2px solid var(--accent); outline-offset: 2px; }
+.matghost.decalghost { border-radius: 4px; object-fit: contain; background: #0006; }

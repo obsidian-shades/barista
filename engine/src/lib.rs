@@ -15,6 +15,7 @@ pub mod edit;
 pub mod flatten;
 pub mod ideal;
 pub mod join;
+pub mod judge;
 pub mod mesh;
 pub mod symmetry;
 pub mod texture;
@@ -92,6 +93,11 @@ pub struct PartIn {
     /// Per input triangle, the file's polygon it belongs to (empty: triangles): no seam runs inside a polygon.
     #[serde(default)]
     pub polys: Vec<u32>,
+    /// A symmetry plane the artist drew, as a point on it and its normal (6 numbers) in input units: empty means
+    /// auto-detect. Honoured as drawn (`symmetry::hand`), also when the auto-detect declines (a near-symmetric model,
+    /// one with many planes); a plane that mirrors under half the part is ignored, so a stray plane can't wreck a part.
+    #[serde(default)]
+    pub symmetry: Vec<f32>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -109,6 +115,9 @@ pub struct Stats {
     /// UV area of all triangles over the atlas area: how much of the square the packing fills (mean over parts,
     /// one atlas per part).
     pub efficiency: f64,
+    /// The seams themselves (`judge`): how long, how much of them is out of sight, where they dead-end and turn.
+    /// Measured on the charts before `join` hangs them into nets (a net's border is not a cut).
+    pub seams: judge::Seams,
     pub ms: f64,
     /// How many of the `islands` are a mirrored half's image (`symmetry`): islands − twins counts each pair once.
     /// Engine-side only (not sent to the editor).
@@ -225,41 +234,60 @@ pub fn unwrap(parts: &[PartIn], p: Params) -> Result<Output, String> {
         .map(|(i, q)| mesh::Mesh::from_soup(&q.positions).map(|mut m| { m.set_polys(&q.polys); m }).map_err(|e| named(i, e)))
         .collect::<Result<Vec<_>, _>>()?;
     #[allow(clippy::type_complexity)]
-    let per_part: Vec<(Vec<chart::Island>, Vec<usize>, Vec<(usize, usize)>)> = meshes.par_iter().enumerate().map(|(i, m)| {
+    let per_part: Vec<(Vec<chart::Island>, Vec<usize>, Vec<(usize, usize)>, judge::Raw)> = meshes.par_iter().enumerate().map(|(i, m)| {
         let seams = m.edges_at(&parts[i].seams);
-        // a part with a left and a right comes out as two mirrored halves (`symmetry`)
-        let sym = symmetry::find(m).filter(|s| s.keeps(&seams) && !s.seam(m).iter().any(|&k| m.inside(k)));
-        let (mut v, nets, twins) = match sym {
+        // a part with a left and a right comes out as two mirrored halves (`symmetry`). The mirror seam may not run
+        // inside a polygon: a quad read back from a soup is one too, and mirroring it split more charts than it saved
+        // on the gun benchmark (156 nets and 69 dead ends against 131 and 37 with symmetry held off there).
+        let draw = &parts[i].symmetry;
+        let sym = match draw[..] {
+            // the plane the artist drew wins over the guess; it is dropped when it doesn't fit (under half mirrors)
+            [px, py, pz, nx, ny, nz] if [px, py, pz, nx, ny, nz].iter().all(|x| x.is_finite()) && (nx != 0. || ny != 0. || nz != 0.) => {
+                let p = m.to_local([px, py, pz]);
+                symmetry::hand(m, p, [nx as f64, ny as f64, nz as f64])
+                    .filter(|s| s.splits() && s.coverage(m) >= 0.5 && s.keeps(&seams))
+                    .or_else(|| symmetry::find(m))
+            }
+            _ => symmetry::find(m),
+        }
+        .filter(|s| s.keeps(&seams) && !s.seam(m).iter().any(|&k| m.inside(k)));
+        let (mut v, nets, twins, judge) = match sym {
             Some(s) => {
                 let joined = symmetry::unwrap(m, &s, &seams, &p);
                 // a net is a paper-model convenience; the atlas pays for its empty corners. Solve the part both
                 // ways and keep whichever fills its square better (`arbitrate`).
-                if p.join && p.atlas > 0. {
+                let (v, nets, twins) = if p.join && p.atlas > 0. {
                     let mut loose = p;
                     loose.join = false;
                     arbitrate(m, joined, || symmetry::unwrap(m, &s, &seams, &loose))
-                } else { joined }
+                } else { joined };
+                // the halves' cuts are the part's cuts; the size change doesn't move them
+                let j = judge::measure(m, &v);
+                (v, nets, twins, j)
             }
             None => {
                 let mut v = chart::unwrap(m, &seams, &p);
-                if !p.join { let n = v.len(); (v, (0..n).collect(), vec![]) } else {
+                // before `join`: after it the charts' shared borders are no longer cuts
+                let j = judge::measure(m, &v);
+                if !p.join { let n = v.len(); (v, (0..n).collect(), vec![], j) } else {
                     let nets = join::join(m, &mut v, p.tol);
                     let loose = loosen(&v, &nets, p.atlas);
                     let nets = pick_nets(m, &v, nets, loose);
-                    (v, nets, vec![])
+                    (v, nets, vec![], j)
                 }
             }
         };
         for s in &mut v { s.part = i; }
-        (v, nets, twins)
+        (v, nets, twins, judge)
     }).collect();
     // number nets across parts; an island's id in the output is its net's
-    let (mut isl, mut net, mut twins, mut count) = (Vec::new(), Vec::new(), Vec::new(), 0);
-    for (v, g, t) in per_part {
+    let (mut isl, mut net, mut twins, mut count, mut seams) = (Vec::new(), Vec::new(), Vec::new(), 0, judge::Raw::default());
+    for (v, g, t, j) in per_part {
         net.extend(g.iter().map(|x| x + count));
         twins.extend(t.iter().map(|&(a, b)| (a + count, b + count)));
         count += g.iter().max().map_or(0, |x| x + 1);
         isl.extend(v);
+        seams.add(j);
     }
 
     // pack whole nets, in real units, so every part gets the same texel density: all into one square, or each
@@ -332,8 +360,10 @@ pub fn unwrap(parts: &[PartIn], p: Params) -> Result<Output, String> {
         let per: Vec<(f64, f64)> = out.par_iter().map(|o| (pack::overlap(&o.uvs, 512), pack::efficiency(&o.uvs))).collect();
         (per.iter().map(|x| x.0).fold(0., f64::max), per.iter().map(|x| x.1).sum::<f64>() / per.len() as f64)
     };
+    let area: f64 = meshes.iter().map(|m| m.a.iter().sum::<f64>()).sum();
     let stats = Stats {
         islands: count, tris: n, flips, overlap, efficiency, twins: twins.len(),
+        seams: seams.seams(area.sqrt()),
         mean_stretch: if sum_a > 0. { sum_e / sum_a } else { 0. },
         max_stretch: max_e,
         good_area: if sum_a > 0. { good / sum_a } else { 0. },

@@ -197,6 +197,11 @@ pub struct Mirror {
 
 /// How far (share of the part's radius) a vertex's mirror image may land from its partner.
 const TOL: f64 = 1e-3;
+/// The same for a plane the artist drew: slightly asymmetric models still mirror their bulk, and an odd detail with
+/// no partner within this stays one-sided.
+pub const HAND_TOL: f64 = 3e-3;
+/// How close to a drawn plane a vertex must be for the plane's distance to move onto its layer.
+const HAND_BAND: f64 = 8e-3;
 /// Share of vertices that must have a partner for a plane to count.
 const NEARLY_ALL: f64 = 0.9;
 /// Spreads closer than this (share of the largest) make one axis plane, not two axes.
@@ -236,11 +241,38 @@ pub fn find(m: &Mesh) -> Option<Mirror> {
         if planes.len() > 1 { return None; }
     }
     let (n, d) = planes.pop()?;
-    // the map: a vertex with no partner (a one-sided detail) has none. Triangles go by their vertices, not by a
-    // matching triangle: a mirrored quad is often split along its other diagonal.
-    let fine = Grid::new(&m.p, TOL);
-    let v: Vec<u32> = (0..m.p.len()).map(|i| fine.near(&m.p, reflect(m.p[i], n, d), TOL).unwrap_or(NONE)).collect();
-    let side = |x: u32| { let s = dot(m.pt(x), n) - d; if s > TOL { 1 } else if s < -TOL { -1 } else { 0 } };
+    at(m, n.map(|x| x * d), n, TOL)
+}
+
+/// A mirror across a plane the artist drew: `point` on it and its `normal`, both in the mesh's normalised frame.
+///
+/// No searching and no snapping of the normal: the plane is honoured as drawn, because the whole point is that the
+/// guess was wrong. The distance is nudged onto the nearest layer of vertices (`HAND_BAND` round the drawn plane), so
+/// the centre seam runs along edges instead of cutting a ragged strip out of the faces a few tenths of a percent off;
+/// the normal is kept, which is the part the artist is actually judging. Vertices with no partner within `HAND_TOL`
+/// are one-sided (`Half::Own`), so a slightly asymmetric model still mirrors its bulk and charts the odd detail once.
+pub fn hand(m: &Mesh, point: V3, normal: V3) -> Option<Mirror> {
+    let l = norm(normal);
+    if !(l > 1e-12) || !point.iter().all(|x| x.is_finite()) { return None; }
+    let n = normal.map(|x| x / l);
+    let mut d = dot(n, point);
+    // the plane the vertices themselves lie on: the median of those within reach of the drawn one, so a drawn plane a
+    // hair off the mirror line still cuts between two rows of faces instead of through one
+    let mut near: Vec<f64> = m.p.iter().map(|q| dot(*q, n)).filter(|x| (x - d).abs() <= HAND_BAND).collect();
+    if near.len() >= 8 {
+        near.sort_by(f64::total_cmp);
+        d = near[near.len() / 2];
+    }
+    at(m, n.map(|x| x * d), n, HAND_TOL)
+}
+
+/// The mirror map for a plane: vertices within `tol` (share of the radius) of their image get one, the rest are
+/// one-sided; triangles that straddle the plane (or touch a one-sided vertex) are charted on their own.
+fn at(m: &Mesh, point: V3, n: V3, tol: f64) -> Option<Mirror> {
+    let d = dot(n, point);
+    let fine = Grid::new(&m.p, tol);
+    let v: Vec<u32> = (0..m.p.len()).map(|i| fine.near(&m.p, reflect(m.p[i], n, d), tol).unwrap_or(NONE)).collect();
+    let side = |x: u32| { let s = dot(m.pt(x), n) - d; if s > tol { 1 } else if s < -tol { -1 } else { 0 } };
     let half = m.f.iter().map(|f| {
         let s = f.map(side);
         if f.iter().any(|&x| v[x as usize] == NONE) || s.contains(&1) == s.contains(&-1) { Half::Own }
@@ -275,6 +307,19 @@ impl Mirror {
             let (a, b) = (self.v[(k >> 32) as usize], self.v[(k & 0xffff_ffff) as usize]);
             a == NONE || b == NONE || seams.contains(&ek(a, b))
         })
+    }
+
+    /// Share of the surface that mirrors (kept and image triangles): near 1 for a truly mirrored part, low for a
+    /// drawn plane that doesn't fit the model.
+    pub fn coverage(&self, m: &Mesh) -> f64 {
+        let total: f64 = m.a.iter().sum();
+        let split: f64 = (0..m.f.len()).filter(|&t| self.half[t] != Half::Own).map(|t| m.a[t]).sum();
+        if total > 0. { split / total } else { 0. }
+    }
+
+    /// Whether the plane actually cuts the part in two: triangles on both sides, with images.
+    pub fn splits(&self) -> bool {
+        self.half.iter().any(|h| *h == Half::Kept) && self.half.iter().any(|h| *h == Half::Image)
     }
 
     /// Each kept island's image: the image half's triangles that land on it, laid out on its UVs with u flipped.

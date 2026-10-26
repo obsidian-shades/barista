@@ -7,13 +7,18 @@ import { Dock } from './panels/Dock';
 import { PolyDoc } from './panels/PolyDoc';
 import { PaintOptionsBar, PaintToolStrip, VanGogh } from './panels/VanGogh';
 import { AppTabs } from './shell/AppTabs';
+import { AskDialog } from './shell/AskDialog';
+import { ExportDialog } from './shell/ExportDialog';
+import { isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { PolyOptionsBar, PolyToolStrip, runTool } from './shell/PolyTools';
 import { Resizer } from './shell/Resizer';
 import { UVOptionsBar, UVToolStrip } from './shell/UVTools';
 import {
-  armBox, cancelDocMove, cancelXform, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, exportFbx, flipSel, invertSelection, pickFile, saveProject, pinSelected, pointer, redo, repack,
+  answerAsk, confirmDiscard, armBox, cancelDocMove, cancelXform, cancelSymPlane, closeExport, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, flipSel, invertSelection, openExport, pickFile, saveProject, pinSelected, pointer, redo, repack,
+  applySymPlane, setSymMode,
   pieMenu, scaleSel, cutSelection, stitchSelection, selectAll, selectAllPaint, selectLinked, selectLinkedUnder, setSelectMode, startXform, undo, unwrap, unwrapSelected, useApp, viewOp, viewPie, xformKey, xformSnap, openFile, type SelectMode,
-  type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, fillPaintSelection, type PaintTool,
+  type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, growPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, fillPaintSelection, type PaintTool,
 } from './store';
 import { Tooltip } from './ui/Tooltip';
 
@@ -51,8 +56,21 @@ function onKey(e: KeyboardEvent) {
   const run = (f: () => unknown) => { e.preventDefault(); f(); };
   // Esc closes the menu at the pointer from every workspace (Van Gogh had no path to it before).
   if (k === 'escape' && useApp.getState().menu) return run(closeMenu);
+  // A question (open options, unsaved changes) is modal: Esc cancels it, nothing behind it.
+  if (useApp.getState().ask) { if (k === 'escape') return run(() => answerAsk(null)); return; }
+  // The export dialog is modal: its own Esc, nothing behind it.
+  if (useApp.getState().exportOpen) { if (k === 'escape') return run(closeExport); return; }
   // A menu at the pointer is modal: every other key belongs to the pie/list until it closes.
   if (useApp.getState().menu) return;
+  // Placing the mirror plane: G / R switch the gizmo, Enter applies it, Esc puts it back; every other key still works.
+  if (useApp.getState().symEdit) {
+    if (k === 'escape') return run(cancelSymPlane);
+    if (k === 'enter') return run(applySymPlane);
+    if (!ctrl && !e.altKey && k === 'g') return run(() => setSymMode('translate'));
+    if (!ctrl && !e.altKey && k === 'r') return run(() => setSymMode('rotate'));
+  }
+  // Ctrl+Shift+E: the export dialog, from every workspace (before the workspace key maps, which claim most keys).
+  if (ctrl && k === 'e' && e.shiftKey) return run(() => openExport());
   // Ctrl+S / Ctrl+Shift+S: the project, from every workspace
   if (ctrl && k === 's' && !e.altKey) return run(() => saveProject(e.shiftKey));
   // Z: the Display pie, in every workspace: hold and release toward a view, or tap and click one. (Mid G/R/S and mid
@@ -73,6 +91,7 @@ function onKey(e: KeyboardEvent) {
       if (k === 'a') return run(selectAllPaint);
       if (k === 'd') return run(deselectPaint);
       if (k === 'i') return run(invertPaintSelection);
+      if (e.shiftKey && (k === '=' || k === '+' || k === '-' || k === '_')) return run(() => growPaintSelection(k === '-' || k === '_' ? -4 : 4));
       if (k === 'j') return run(duplicatePaintLayer);
       if (k === 'n' && e.shiftKey) return run(addPaintLayer);
       if (k === '[' || k === ']') return run(() => movePaintLayer(k === ']' ? 1 : -1));
@@ -120,7 +139,6 @@ function onKey(e: KeyboardEvent) {
   if (k === 'home') return run(() => viewOp(pointer.view, 'all'));
   if (ctrl) {
     if (k === 'o') run(pickFile);
-    else if (k === 'e' && e.shiftKey) run(exportFbx);
     else if (k === 'e') run(edgeMenu);
     else if (k === 'enter') run(unwrap);
     else if (k === 'z' && !e.shiftKey) run(undo);
@@ -166,6 +184,16 @@ export default function App() {
     addEventListener('keyup', up);
     return () => { removeEventListener('keydown', onKey); removeEventListener('keyup', up); removeEventListener('pointermove', move); removeEventListener('pointerdown', press, true); };
   }, []);
+  // Closing with unsaved work asks first: the app window through Save / Don't save / Cancel, a browser tab its own prompt.
+  useEffect(() => {
+    if (isTauri()) {
+      const off = getCurrentWindow().onCloseRequested(async (e) => { if (!(await confirmDiscard())) e.preventDefault(); });
+      return () => void off.then((f) => f());
+    }
+    const warn = (e: BeforeUnloadEvent) => { const s = useApp.getState(); if (!s.saved && s.parts.length) e.preventDefault(); };
+    addEventListener('beforeunload', warn);
+    return () => removeEventListener('beforeunload', warn);
+  }, []);
   const workspace = useApp((s) => s.workspace), dockW = useApp((s) => s.dockWidth), split = useApp((s) => s.viewSplit), work = useRef<HTMLDivElement>(null);
   const source = useApp((s) => s.source);
   useEffect(() => { document.title = source ? `${source} — Barista` : 'Barista'; }, [source]);
@@ -198,6 +226,8 @@ export default function App() {
         )}
       </div>
       <StatusBar />
+      <ExportDialog />
+      <AskDialog />
       <PopupMenu />
       <Tooltip />
     </div>
