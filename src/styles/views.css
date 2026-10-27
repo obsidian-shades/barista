@@ -1,54 +1,134 @@
-/* The two views (3D, UV layout): a header bar like espresso's view title bars, then the canvas. */
+/* The two views (3D, UV layout): a recessed header bar, then the canvas. The canvas is the deepest surface in the app. */
 .view { display: grid; grid-template-rows: var(--bar) minmax(0, 1fr); min-width: 0; background: var(--canvas); border-right: 1px solid var(--line); }
-.vbar { display: flex; align-items: center; gap: 10px; padding: 0 8px; min-width: 0; overflow: visible; position: relative; z-index: 5; background: var(--chrome); border-bottom: 1px solid var(--line); }
-.vbar .slider { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: var(--fs-s); }
+.vbar { display: flex; align-items: center; gap: 8px; padding: 0 4px 0 10px; min-width: 0; overflow: visible; position: relative; z-index: 5; background: var(--chrome); border-bottom: 1px solid var(--line); }
+.vbar > .caps { color: var(--muted); }
+/* The header is a strip of full-height cells, like the options bar: no floating chips inside a bar. */
+.vbar .slider { display: flex; align-items: center; gap: 6px; height: 100%; padding: 0 12px; color: var(--muted); font-size: var(--fs-s); border-left: 1px solid var(--line); }
+.vbar .slider:hover { background: var(--plate); }
 .vbar .slider output { min-width: 32px; text-align: right; font: 11px var(--num); color: var(--fg); }
-.vbar input[type="range"] { width: 120px; height: auto; padding: 0; border: 0; background: none; accent-color: var(--accent); }
+.vbar input[type="range"] { width: 120px; }
 .vbody { position: relative; min-height: 0; overflow: hidden; }
 .vbody > .r3f { position: absolute; inset: 0; } /* the 3D canvas fills the view; the overlays below sit on top */
 .vbar > .hint { font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.vtools { display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
+.vtools { display: flex; align-items: stretch; gap: 0; height: 100%; margin-left: auto; flex-shrink: 0; }
+.vbar .vlabel { display: flex; align-items: center; padding: 0 10px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; border-left: 1px solid var(--line); white-space: nowrap; }
+.vbar .vlabel + .seg { border-left: 0; }
 /* the UV header stays inside its column however narrow the divider makes it: the title gives way first, then the tools clip */
 .uvbar { overflow: hidden; }
 .uvbar > .caps { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.uvbar .vtools { flex-shrink: 1; min-width: 0; overflow: hidden; }
+.uvbar .vtools { flex-shrink: 0; }
 .vbar > .caps { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex-shrink: 0; max-width: 60%; }
-.vtools button { min-height: var(--ctl); padding: 0 7px; font-size: var(--fs-s); color: var(--icon); white-space: nowrap; }
-.vtools .sep { width: 1px; height: 16px; background: var(--hair); margin: 0 4px; }
+.uvbar > .caps { flex-shrink: 1; }
+.vtools button { min-height: 0; height: 100%; padding: 0 12px; font-size: var(--fs-s); color: var(--fg); background: transparent; border: 0; border-left: 1px solid var(--line); border-radius: 0; white-space: nowrap; }
+.vtools button:hover:not(:disabled) { background: var(--plate); }
+.vtools .seg { height: 100%; border: 0; border-left: 1px solid var(--line); border-radius: 0; background: transparent; }
+.vtools .seg button { height: 100%; border-radius: 0; padding: 0 12px; }
+.vtools .seg button + button { border-left: 1px solid var(--line-2); }
+.vtools .sep { display: none; }
 .uvbody canvas { position: absolute; inset: 0; touch-action: none; cursor: default; }
 /* a spinner over the UVs while they're being worked out (shown after a beat, so quick edits don't flash it) */
 .vbody > .uv-spin { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; background: #0000; animation: uv-dim .2s .15s both; }
 .uv-spinner { width: 34px; height: 34px; border: 3px solid #ffffff2a; border-top-color: var(--accent); border-radius: 50%; animation: uv-spin .8s linear infinite; }
-.uv-spin .err { padding: 8px 12px; background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-s); color: var(--bad-ink); }
+.uv-spin .err { padding: 8px 12px; background: var(--raise); border: 1px solid var(--float-line); border-radius: var(--r-s); color: var(--bad-ink); }
 @keyframes uv-dim { from { opacity: 0; } to { opacity: 1; background: #0000002e; } }
 @keyframes uv-spin { to { transform: rotate(360deg); } }
-.vtools .seg { display: flex; border: 1px solid var(--hair); border-radius: var(--r-s); overflow: hidden; }
-.vtools .seg button { border-radius: 0; }
-.vtools .seg button[aria-pressed="true"] { background: var(--hair); color: var(--accent-ink); }
-.vbar .scene-btn { flex: 0 0 auto; min-height: var(--ctl); padding: 0 8px; font-size: var(--fs-s); color: var(--icon); border: 1px solid var(--hair); }
-.vbar .scene-btn[aria-expanded="true"] { background: var(--hair); color: var(--accent-ink); }
-.scene-pop { width: 280px; max-height: calc(100vh - 16px); overflow: auto; background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-m); box-shadow: var(--shadow-pop); color: var(--fg); }
+.vbar .scene-btn { flex: 0 0 auto; min-height: 0; height: 100%; padding: 0 12px; font-size: var(--fs-s); color: var(--fg); background: transparent; border: 0; border-left: 1px solid var(--line); border-radius: 0; }
+.vbar .scene-btn.icon-only { width: 34px; padding: 0; justify-content: center; }
+.vbar .scene-btn:hover { background: var(--plate); }
+.vbar .scene-btn[aria-expanded="true"] { background: var(--accent); color: var(--accent-ink); }
+/* A narrow view header keeps the icon, drops the word: the tooltip still explains it. */
+@media (max-width: 1300px) {
+  .vbar .seg .mlab { display: none; }
+  .vbar .seg button { padding: 0 9px; }
+  .uvbar .vlabel { display: none; }
+  .uvbar .vlabel + .seg { border-left: 1px solid var(--line); }
+}
+.scene-pop { width: 288px; max-height: calc(100vh - 16px); overflow: auto; background: var(--raise); border: 1px solid var(--float-line); border-radius: var(--r-m); box-shadow: var(--shadow-pop); color: var(--fg); }
+/* UV options: a real dialog, anchored under its button rather than a menu at the pointer. */
+.uvopts { position: fixed; inset: auto; margin: 0; width: min(320px, calc(100vw - 16px)); max-height: calc(100vh - 16px); padding: 0; overflow: hidden; color: var(--fg); background: var(--window); border: 1px solid var(--float-line); border-radius: var(--r-m); box-shadow: 0 28px 80px #000c, 0 4px 16px #0008; }
+.uvopts[open] { display: flex; flex-direction: column; }
+.uvopts:not([open]) { display: none; }
+.uvopts:focus { outline: none; }
+.uvopts::backdrop { background: transparent; }
+.uvopts-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px 10px; background: var(--chrome); border-bottom: 1px solid var(--line); }
+.uvopts-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.uvopts-body { display: grid; gap: 13px; padding: 12px 14px; overflow: auto; min-height: 0; }
+.uvopts-sec { display: grid; gap: 6px; }
+.uvopts-sec .caps { color: var(--muted); }
+.uvopts-maps { display: grid; gap: 1px; }
+.uvopt-map { display: flex; align-items: center; gap: 8px; padding: 6px 7px; border-radius: 4px; cursor: pointer; }
+.uvopt-map:hover { background: var(--hover); }
+.uvopt-map input { margin: 0; }
+.uvopt-map > span { color: var(--fg); font-size: var(--fs-s); }
+.uvopts-res { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.uvopts-res button { justify-content: center; min-height: 26px; padding: 0 3px; background: var(--plate); border: 1px solid var(--plate-line); border-radius: 3px; font: 11px var(--num); color: var(--muted); }
+.uvopts-res button:hover { background: var(--plate-hi); color: var(--fg); }
+.uvopts-res button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .scene-body { display: grid; gap: 8px; padding: 10px; }
+.scene-body > .tsec { margin: 2px 0 -2px; padding-top: 8px; border-top: 1px solid var(--line-2); }
+.scene-body > .tsec:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 .settings.scene-flags { grid-template-columns: 1fr 1fr; gap: 4px 10px; }
 /* Blender's Viewport Shading: full-width segmented choices, the MatCap spheres, the option toggles */
-.seg3 { display: flex; border: 1px solid var(--hair); border-radius: var(--r-s); overflow: hidden; }
-.seg3 button { flex: 1; min-height: var(--ctl); padding: 0 6px; border: 0; border-radius: 0; font-size: var(--fs-s); color: var(--icon); }
-.seg3 button + button { border-left: 1px solid var(--hair); }
+.seg3 { display: flex; border: 1px solid var(--line); border-radius: var(--r-s); overflow: hidden; background: var(--well); }
+.seg3 button { flex: 1; min-height: var(--ctl); padding: 0 6px; border: 0; border-radius: 0; font-size: var(--fs-s); color: var(--muted); }
+.seg3 button + button { border-left: 1px solid var(--line-2); }
+.seg3 button:hover:not(:disabled):not([aria-checked="true"]) { background: var(--hover); color: var(--fg); }
 .seg3 button[aria-checked="true"] { background: var(--accent); color: var(--accent-ink); }
-.seg3 button:disabled { opacity: .35; }
+.seg3 button:disabled { opacity: .3; }
 .matcaps { display: grid; grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap: 4px; padding: 6px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
-.matcaps button { padding: 2px; min-height: 0; justify-content: center; border: 1px solid transparent; border-radius: var(--r-s); background: none; }
-.matcaps button[aria-checked="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.matcaps button { padding: 2px; min-height: 0; justify-content: center; border: 1px solid transparent; border-radius: 3px; background: none; }
+.matcaps button:hover { border-color: var(--hair); }
+.matcaps button[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .matcaps img { display: block; border-radius: 50%; }
 .settings.scene-opts { gap: 4px; }
+/* The Shading popover's switches: a setting is one row, label left, a small square track right. */
+.scene-switches { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+.scene-pop .switch { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 26px; padding: 0 4px; border-radius: 3px; color: var(--muted); font-size: var(--fs-s); cursor: pointer; }
+.scene-pop .switch:hover { background: var(--hover); color: var(--fg); }
+.scene-pop .switch input { appearance: none; -webkit-appearance: none; flex: none; width: 26px; height: 15px; margin: 0; padding: 0; border: 1px solid var(--edge-hi); border-radius: 3px; background: var(--well); position: relative; cursor: pointer; transition: background .12s, border-color .12s; }
+.scene-pop .switch input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 9px; height: 9px; border-radius: 2px; background: var(--muted); transition: transform .12s, background .12s; }
+.scene-pop .switch input:checked { background: var(--accent); border-color: var(--accent); }
+.scene-pop .switch input:checked::after { transform: translateX(11px); background: var(--accent-ink); }
+.scene-pop .switch input:disabled { opacity: .3; cursor: default; }
+/* The lighting map and its sliders fold away: the Shading popover opens on the two Look switches. */
+.scene-adv { border-top: 1px solid var(--line-2); padding-top: 4px; }
+.scene-adv > summary { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 4px; border-radius: 3px; list-style: none; cursor: pointer; color: var(--muted); font: 10px var(--ui); font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.scene-adv > summary::-webkit-details-marker { display: none; }
+.scene-adv > summary::before { content: '▸'; font-size: 10px; color: var(--icon); }
+.scene-adv[open] > summary::before { content: '▾'; }
+.scene-adv > summary span { flex: 1; }
+.scene-adv > summary em { font-style: normal; font-size: var(--fs-xs); font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--icon); }
+.scene-adv > summary:hover { background: var(--hover); color: var(--fg); }
+.scene-adv .settings { padding-top: 6px; }
 .boxsel { position: absolute; pointer-events: none; border: 1px dashed #d0d0d0; background: #ffffff10; }
-.vbody > .xform-info { position: absolute; inset: auto auto 10px 10px; display: grid; gap: 2px; padding: 6px 10px; background: #1b1d20e6; border: 1px solid var(--edge-hi); border-radius: var(--r-s); font: 12px/1.4 var(--num); color: var(--accent-ink); pointer-events: none; }
+.vbody > .xform-info { position: absolute; inset: auto auto 10px 10px; display: grid; gap: 2px; padding: 6px 10px; background: #1b1d20e6; border: 1px solid var(--float-line); border-radius: var(--r-s); font: 12px/1.4 var(--num); color: var(--accent-ink); pointer-events: none; }
 .xform-info span { color: var(--muted); font: var(--fs-xs) var(--ui); }
 /* The background colour input, drawn as a plain swatch. */
 .cswatch { width: 24px; height: var(--ctl); padding: 2px; min-height: 0; border: 1px solid var(--edge-hi); border-radius: var(--r-s); background: var(--well); cursor: pointer; }
 .cswatch:hover { border-color: var(--fg); }
 .cswatch::-webkit-color-swatch-wrapper { padding: 0; }
 .cswatch::-webkit-color-swatch { border: none; border-radius: 2px; }
+button.cswatch { padding: 0; box-shadow: inset 0 0 0 2px var(--well); flex: none; }
+/* ColorPick's popover (ui/ColorPick.tsx): Photoshop's picker */
+.cpick { position: fixed; inset: auto; margin: 0; z-index: 1000; color: var(--fg); display: grid; gap: 8px; padding: 10px; background: var(--raise); border: 1px solid var(--float-line); border-radius: var(--r-m); box-shadow: var(--shadow-pop); }
+.cpsv { position: relative; height: 150px; border-radius: 3px; cursor: crosshair; touch-action: none; box-shadow: inset 0 0 0 1px #0006; }
+.cpdot { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #0006; pointer-events: none; }
+.cphue { position: relative; height: 12px; border-radius: 2px; cursor: ew-resize; touch-action: none; box-shadow: inset 0 0 0 1px #0006;
+  background: linear-gradient(to right, #f00, #ff0 16.7%, #0f0 33.3%, #0ff 50%, #00f 66.7%, #f0f 83.3%, #f00); }
+.cpbar { position: absolute; top: -2px; bottom: -2px; width: 6px; margin-left: -3px; border: 2px solid #fff; border-radius: 2px; box-shadow: 0 0 0 1px #0008; pointer-events: none; }
+.cprow { display: flex; align-items: center; gap: 6px; }
+.cprow > button { width: 26px; height: 26px; min-height: 0; padding: 0; justify-content: center; background: var(--plate); border: 1px solid var(--plate-line); border-radius: var(--r-s); }
+.cprow > button:hover { background: var(--plate-hi); border-color: var(--edge-hi); }
+.cpcmp { display: grid; grid-template-rows: 1fr 1fr; width: 28px; height: 28px; border: 1px solid var(--edge-hi); border-radius: var(--r-s); overflow: hidden; flex: none; }
+.cpcmp span:last-child { cursor: pointer; }
+.cphex { display: flex; align-items: center; gap: 2px; flex: 1; color: var(--muted); }
+.cphex input { width: 100%; font-family: ui-monospace, monospace; text-transform: uppercase; }
+.cpnums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 6px; }
+.cpnums label { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+.cpnums input { width: 100%; min-width: 0; padding: 0 4px; }
+.cpchips { display: flex; flex-wrap: wrap; gap: 4px; }
+.cpchips button { width: 18px; height: 18px; min-height: 0; padding: 0; border: 1px solid var(--edge-hi); border-radius: 3px; }
+.cpchips button:hover { border-color: var(--fg); }
 .lassosel { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .lassosel polygon { fill: #ffffff10; stroke: #e0e0e0; stroke-width: 1; stroke-dasharray: 4 3; }
 /* Van Gogh: the brush in the texture view */
@@ -56,33 +136,36 @@
 .brushring > div { position: absolute; inset: 0; border: 1px solid #fff; border-radius: 50%; }
 canvas.painting { cursor: crosshair; }
 
-/* Van Gogh's island actions: a task bar over the texture view, Photoshop's contextual bar. */
-.islandbar { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; gap: 3px; max-width: calc(100% - 24px); padding: 5px; background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-s); box-shadow: var(--shadow-pop); z-index: 4; }
-.islandbar .align3 { display: grid; grid-template-columns: repeat(3, 24px); gap: 2px; }
-.islandbar button { width: 24px; height: 24px; min-height: 0; padding: 0; justify-content: center; color: var(--icon); }
-.islandbar button:hover:not(:disabled) { background: var(--hair); color: var(--accent-ink); }
-.islandbar .sep { width: 1px; height: 18px; background: var(--hair); margin: 0 3px; }
-.islandbar .count { padding: 0 6px; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
+/* Van Gogh's island actions: a task bar over the texture view, Photoshop's contextual bar. A genuinely floating surface,
+   so it alone gets the elevation shadow. */
+.islandbar { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 1px; width: max-content; max-width: calc(100% - 24px); padding: 4px; background: var(--raise); border: 1px solid var(--float-line); border-radius: var(--r-m); box-shadow: var(--shadow-pop); z-index: 4; }
+.islandbar .align3 { display: contents; }
+.islandbar button { width: 22px; height: 22px; min-height: 0; padding: 0; justify-content: center; color: var(--icon); border-radius: 3px; }
+.islandbar button:hover:not(:disabled) { background: var(--plate); color: var(--fg); }
+.islandbar .sep { width: 1px; height: 14px; background: var(--line); margin: 0 2px; }
+.islandbar .count { padding: 0 5px; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
 
-/* The app's one empty state: what to do before a model exists. */
-.empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; z-index: 3; background: var(--canvas); }
+/* The app's one empty state: what to do before a model exists. Its background never takes the pointer, so a model drawn
+   by the canvas underneath stays clickable; only what can be clicked does. */
+.empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; z-index: 3; background: var(--canvas); pointer-events: none; }
+.empty .actions, .empty .recent { pointer-events: auto; }
 .empty .mark { opacity: .9; }
 .empty h2 { margin: 0; font-size: 18px; font-weight: 600; color: var(--fg); }
 .empty p { margin: 0; max-width: 44ch; color: var(--muted); font-size: var(--fs-s); line-height: 1.5; }
 .empty .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
 .empty .recent { display: grid; gap: 2px; width: min(360px, 80vw); margin-top: 2px; }
 .empty .recent button { justify-content: space-between; min-height: var(--ctl-lg); padding: 0 10px; background: var(--well); border: 1px solid var(--line); }
-.empty .recent button:hover:not(:disabled) { background: var(--hair); }
+.empty .recent button:hover:not(:disabled) { background: var(--plate); border-color: var(--hair); }
 .empty .recent span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty .formats { font: 11px var(--num); color: var(--muted); }
 
 /* Tooltip: one styled layer for every `title` in the app (see ui/Tooltip). */
-.tip { position: fixed; z-index: 80; max-width: 300px; padding: 6px 8px; background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-s); box-shadow: var(--shadow-pop); color: var(--fg); font-size: var(--fs-xs); line-height: 1.4; pointer-events: none; }
+.tip { position: fixed; z-index: 80; max-width: 300px; padding: 6px 8px; background: var(--raise); border: 1px solid var(--float-line); border-radius: var(--r-s); box-shadow: var(--shadow-pop); color: var(--fg); font-size: var(--fs-xs); line-height: 1.4; pointer-events: none; }
 .tip .tipname { display: flex; align-items: baseline; gap: 10px; font-weight: 600; color: var(--fg); }
 .tip .tipname kbd { padding: 0; margin: 0 0 0 auto; color: var(--muted); font-size: 10px; }
 .tip .tiptext { margin-top: 2px; color: var(--muted); white-space: pre-wrap; }
 /* View › Reference image: a floating card over the 3D view, dragged by its bar, sized from the corner */
-.refimage { position: absolute; z-index: 5; background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-s); box-shadow: var(--shadow-pop); overflow: hidden; }
+.refimage { position: absolute; z-index: 5; background: var(--raise); border: 1px solid var(--float-line); border-radius: var(--r-s); box-shadow: var(--shadow-pop); overflow: hidden; }
 .refimage img { display: block; width: 100%; height: auto; pointer-events: none; }
 .refbar { display: flex; align-items: center; gap: 6px; height: var(--ctl-sm); padding: 0 4px 0 8px; background: var(--chrome); cursor: move; font-size: var(--fs-xs); color: var(--muted); }
 .refbar input[type="range"] { flex: 1; min-width: 40px; }

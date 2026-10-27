@@ -48,4 +48,27 @@ plane walk, re-triangulate, new edges as seams; the editor then replaces the par
   `tools/extract-pack.ps1` + `tools/build-pack.py`; `tools/pack-thumbs.py` makes the lit PBR sphere previews.
   Categories are nine visible Material chips, no core/pack, role or smart-finish rows. Decals are
   `src/decals.ts` + `public/decals/` (20 original CC0 marks) baked as `PaintLayer.decal` by `bakeDecal` in
-  `src/paint.ts`. Verify with `node src/paint.check.ts` and the browser at :5173.
+  `src/paint.ts`. The Decal tool selects and transforms (`paint.decalMode` edit / place): a click picks the mark under it
+  (`decalUnder`), a click on bare surface deselects it (`paint.decalSel`, hiding the gizmo; Delete with the tool removes the
+  layer) — a mark is picked anywhere inside its own outline and the projector's depth, not just the projector's rectangle:
+  a curved grip puts the panel's flanks tens of units behind the tangent plane, where a rectangle test made most of the
+  mark unclickable — a drag slides it over the surface keeping its plane until the face turns >15° (`dragDecal`), Shift snaps
+  it to the model's middle; the gizmo (`DecalGizmo`) keeps screen-sized, camera-facing handle glyphs — middle disc moves, corners scale, side
+  bars stretch (the `aspect`), the knob rotates (Shift 15°); a grip shape's outline is its boundary and is drawn on the
+  part's surface (`surfaceProjector`), with no projector rectangle beside it; each handle is picked in screen space before
+  the canvas (a corner behind the surface still scales, never slides the mark) and the grabbed one turns blue with the
+  frame. **Mirror** (`mirrorFrame`): Mirror new at placement, Mirror to other side / Ctrl+M for the selected mark, and
+  Unlink (in Decal settings) make or break a linked pair (`Decal.mirror {of, axis}`, editor-only): either half's transform,
+  look, opacity or visibility updates both in one undo step, and a Ctrl+J copy is a new mark, not a third side. The keys are
+  arrows / `[` `]` / `,` `.` / Ctrl+J (nudge,
+  size, turn, duplicate), with typed Width / Height / Rotate in the panel. Placement is a shelf drag, a Decals-tab tile
+  click (one placement), or Alt+click — never a stray click. The bake is footprint-indexed (`projectedUVBox` + 
+  `footprints`), recompositing only the box a drag changed. The Eyedropper (I) has two modes (`paint.pickMode`): **Materials**
+  lifts the clicked part's material layers — fills, solids, generators, bevels (not decals or hand paint) — onto the cursor
+  (`grabMaterials`, `paint.grab`): a round chip of the top fill's preview follows the pointer, the target for the options bar's
+  Face / Island / Part is outlined on hover, a click applies them (`applyGrab`) — Whole Part replaces that part's material
+  layers, a face / island / surface adds them masked there — and Esc drops the stack (`dropMaterials`). Each apply is one undo
+  step; the grab is settings only, the pixels bake on the target. **Color** samples base colour, roughness and metallic under
+  the pointer. Verify with `node src/paint.check.ts`,
+  `node src/decal.check.ts` (pick / deselect / delete through the store), `node src/pick.check.ts` (the Eyedropper's copy)
+  and the browser at :5173.

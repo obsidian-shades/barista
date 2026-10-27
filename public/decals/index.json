@@ -381,6 +381,62 @@
       "tint": "#b388ff",
       "license": "CC0-1.0",
       "source": "Barista original"
+    },
+    {
+      "id": "arcane-system",
+      "name": "Arcane System Wordmark",
+      "category": "Insignia",
+      "tags": ["arcane", "corporate", "android", "logo", "weapon"],
+      "notes": "Angular AS monogram and Arcane System synthetic-personnel division wordmark.",
+      "file": "arcane-system.svg", "width": 1024, "height": 512, "tint": "#e8edf2", "license": "CC0-1.0", "source": "Barista original"
+    },
+    {
+      "id": "arcane-unit-id",
+      "name": "Arcane Synthetic ID",
+      "category": "Data",
+      "tags": ["arcane", "android", "barcode", "serial", "unit id"],
+      "notes": "Android asset plate with model, unit serial, barcode, and corporate property marking.",
+      "file": "arcane-unit-id.svg", "width": 1024, "height": 512, "tint": "#f2f4f6", "license": "CC0-1.0", "source": "Barista original"
+    },
+    {
+      "id": "barcode-strip",
+      "name": "Synthetic Barcode Strip",
+      "category": "Data",
+      "tags": ["barcode", "android", "serial", "arcane", "stencil"],
+      "notes": "Long machine-readable identity strip for humanoid limbs, magazines, and equipment.",
+      "file": "barcode-strip.svg", "width": 1024, "height": 256, "tint": "#ffffff", "license": "CC0-1.0", "source": "Barista original"
+    },
+    {
+      "id": "fastener-set",
+      "name": "Fastener Set",
+      "category": "Hardware",
+      "tags": ["bolt", "nut", "screw", "hardware", "panel"],
+      "notes": "Phillips, Torx, slotted and hex fastener head diagrams with a hex nut profile.",
+      "file": "fastener-set.svg", "width": 1024, "height": 512, "tint": "#e8edf2", "license": "CC0-1.0", "source": "Barista original"
+    },
+    {
+      "id": "cut-line",
+      "name": "Panel Cut Line",
+      "category": "Marking",
+      "tags": ["cut", "service", "panel", "release", "android"],
+      "notes": "Bilateral service cut line with center release point and panel arrows.",
+      "file": "cut-line.svg", "width": 1024, "height": 512, "tint": "#f2f4f6", "license": "CC0-1.0", "source": "Barista original"
+    },
+    {
+      "id": "laser-cut",
+      "name": "Laser Cut Marker",
+      "category": "Warning",
+      "tags": ["cut", "laser", "service", "red", "panel"],
+      "notes": "Red laser-cut alignment mark for armor panels and weapon housings.",
+      "file": "laser-cut.svg", "width": 512, "height": 512, "tint": "#ff593d", "license": "CC0-1.0", "source": "Barista original"
+    },
+    {
+      "id": "synthetic-warning",
+      "name": "Synthetic Personnel Warning",
+      "category": "Warning",
+      "tags": ["android", "arcane", "warning", "service", "electric"],
+      "notes": "Amber high-voltage service warning for synthetic personnel and android housings.",
+      "file": "synthetic-warning.svg", "width": 1024, "height": 512, "tint": "#f0bc52", "license": "CC0-1.0", "source": "Barista original"
     }
   ]
 }

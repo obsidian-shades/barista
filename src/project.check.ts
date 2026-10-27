@@ -1,7 +1,7 @@
 // node src/project.check.ts: a document through docOf → Pack → docFrom → restoreSet comes back the same.
 import assert from 'node:assert';
 import { decodePack, docFrom, docOf, encodePack } from './project.ts';
-import { CHANNELS, fillAll, restoreSet, setOf, tilesOf, fromTiles, type TexSet } from './paint.ts';
+import { CHANNELS, disposeSet, fillAll, restoreSet, setOf, tilesOf, fromTiles, type TexSet } from './paint.ts';
 import type { State } from './store.ts';
 
 // tiles: empty ones are skipped, the rest come back exactly
@@ -36,4 +36,11 @@ assert.equal(ts2.layers.length, ts.layers.length);
 assert.deepEqual(ts2.layers[0].px.color, ts.layers[0].px.color, 'the painted pixels come back');
 assert.equal(ts2.layers[0].id, ts.layers[0].id);
 assert.equal(CHANNELS.color.k, 3);
+// a document replaced: its set is freed and the same soup gets a new one, not the disposed textures
+let freed = 0;
+const was = ts2.color.dispose.bind(ts2.color);
+ts2.color.dispose = () => { freed++; was(); };
+disposeSet(ts2);
+assert.equal(freed, 1, 'the set\'s textures are disposed');
+assert.notEqual(setOf(soup2, sets[0]!.size), ts2, 'a disposed set is never handed out again');
 console.log('project ok');

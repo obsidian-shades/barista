@@ -1,8 +1,15 @@
-// Fixed pieces of the shell: the select modes, the one Display/Shading cluster, the menu at the pointer, the status bar.
+// Fixed pieces of the shell: the selection modes (in the options bar) and the display modes (in the view header), the
+// menu at the pointer, the status bar.
+import type { ReactNode } from 'react';
 import { healthColor } from '../health';
 import { closeMenu, displayChoices, setPaint, setSelectMode, texSet, useApp, type FillBy, type SelectMode } from '../store';
-import { SceneSettings } from '../views/SceneSettings';
+import { ICON } from '../ui/Icon';
 
+/* The modes carry icons as well as names: a pro app's option bar is read at a glance, and the same vocabulary has to
+   work in the 38 px options bar and the 32 px view header. The artwork is `ui/Icon`'s `ICON`, the same set as the tool strip. */
+const MODE_ICON: Record<SelectMode, ReactNode> = {
+  vert: ICON.vert, edge: ICON.edge, face: ICON.face, island: ICON.island,
+};
 const MODE_NAMES: [SelectMode, string, string][] = [['vert', 'Vertex', '1'], ['edge', 'Edge', '2'], ['face', 'Face', '3'], ['island', 'Island', '4']];
 /** Blender's select mode buttons, in the same slot in every workspace that has mesh selection. Poly Doc has no UV
  *  islands, so its Island button is disabled rather than dropped: the row never changes width or position. */
@@ -13,7 +20,7 @@ export function SelectModes() {
       {MODE_NAMES.map(([k, name, key]) => {
         const off = doc && k === 'island';
         return <button key={k} aria-pressed={m === k} disabled={off} onClick={() => setSelectMode(k)}
-          title={off ? 'UV islands (UV Magician only)' : `${name} select (${key})`}>{name}</button>;
+          title={off ? 'UV islands (UV Magician only)' : `${name} select (${key})`}><span className="mico">{MODE_ICON[k]}</span>{name}</button>;
       })}
     </span>
   );
@@ -26,45 +33,49 @@ const PAINT_KINDS: [FillBy, string, string][] = [
   ['island', 'Island', 'The UV island'],
   ['part', 'Part', 'The whole part'],
 ];
+const PAINT_ICON: Record<FillBy, ReactNode> = {
+  face: MODE_ICON.face,
+  surface: ICON.surface,
+  island: MODE_ICON.island,
+  part: ICON.part,
+};
 function PaintSelectModes() {
   const by = useApp((s) => s.paint.by), angle = useApp((s) => s.paint.angle);
   return (
     <>
       <span className="seg modes" role="group" aria-label="Select by" title="What Select Faces and Bucket pick">
-        {PAINT_KINDS.map(([v, label, title]) => <button key={v} aria-pressed={by === v} title={title} onClick={() => setPaint({ by: v })}>{label}</button>)}
+        {PAINT_KINDS.map(([v, label, title]) => <button key={v} aria-pressed={by === v} title={title} onClick={() => setPaint({ by: v })}><span className="mico">{PAINT_ICON[v]}</span>{label}</button>)}
       </span>
       {by === 'surface' && (
         <label title="Surface stops at edges bent more than this, and at twice this from the clicked face (90°: a whole bore)">
-          <input type="number" className="inc" min={1} max={90} step={5} value={angle} onChange={(e) => setPaint({ angle: Math.min(90, Math.max(1, +e.target.value || 30)) })} />°
+          Angle<input type="number" className="inc" min={1} max={90} step={5} value={angle} onChange={(e) => setPaint({ angle: Math.min(90, Math.max(1, +e.target.value || 30)) })} />°
         </label>
       )}
     </>
   );
 }
 
-/** The Display modes: the same control in every options bar, mirroring the Z pie and View › Display. */
-function DisplayModes() {
+/** The Display modes: in the 3D header (Poly Doc, Van Gogh) and, compact, in the UV header. Mirrors the Z pie and
+ *  View › Display. */
+const DISPLAY_ICON: Record<string, ReactNode> = {
+  wire: ICON.wire, smooth: ICON.smooth, health: ICON.health, checker: ICON.checker, stretch: ICON.stretch, islands: ICON.islands,
+  studio: ICON.studio, matcap: ICON.matcap, flat: ICON.flat,
+};
+export function DisplayModes({ compact = false }: { compact?: boolean }) {
   const current = useApp((s) => (s.workspace === 'doc' ? s.docView : s.workspace === 'paint' ? s.scene.lighting : s.mode));
   const choices = displayChoices();
   return (
-    <span className="seg modes" role="group" aria-label="Display" title="What the view shows (Z)">
-      {choices.map((c) => <button key={c.id} aria-pressed={c.id === current} title={c.title} onClick={c.run}>{c.label}</button>)}
+    <span className={`seg modes${compact ? ' compact' : ''}`} role="group" aria-label="Display" title="What the view shows (Z)">
+      {choices.map((c) => <button key={c.id} aria-pressed={c.id === current} title={c.title} onClick={c.run}><span className="mico">{DISPLAY_ICON[c.id]}</span><span className="mlab">{c.label}</span></button>)}
     </span>
   );
 }
 
-/** The right end of every options bar: selection | display | Shading. One anatomy, one place to look. */
-export function ViewControls() {
-  const workspace = useApp((s) => s.workspace);
-  return (
-    <div className="viewcontrols">
-      {workspace === 'paint' ? <PaintSelectModes /> : <SelectModes />}
-      <span className="sep" aria-hidden="true" />
-      <DisplayModes />
-      <span className="sep" aria-hidden="true" />
-      <SceneSettings />
-    </div>
-  );
+/** The selection granularity at the start of every options bar, right after the tool. The modes are the label: no
+ *  "Select" caption repeating the tool name, just the four icons. */
+export function SelectionControls() {
+  const paint = useApp((s) => s.workspace === 'paint');
+  return <div className="optgroup selectgroup">{paint ? <PaintSelectModes /> : <SelectModes />}</div>;
 }
 
 /** The menu at the pointer: a list (right click, Ctrl+E) or a pie round it (Q). Click an item, or anywhere else to

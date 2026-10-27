@@ -8,7 +8,7 @@ import { health, healthSummary, healthVerdict, ruleCounts, RULES, type RuleKind 
 import { Panel, Parts } from './Dock';
 import { selectFound, selectPolygons, selectRed, selectRule, setDocView, setShowPoles, useApp } from '../store';
 
-/** A count you can click to select what it counts; orange when there's something to look at. */
+/** A count you can click to select what it counts; accented when there's something to look at. */
 const Count = ({ label, n, title, warn, run }: { label: string; n: number; title: string; warn?: boolean; run: () => void }) => (
   <button className={`census${warn && n ? ' warn' : ''}`} disabled={!n} title={title} onClick={run}>
     <span>{label}</span><span className="num">{n.toLocaleString()}</span>

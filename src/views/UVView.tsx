@@ -4,19 +4,101 @@
 // pans, Ctrl+middle drag zooms; Home frames all, numpad . the selection. G R S move, rotate, scale the selection
 // with the mouse (click keeps it, right click puts it back); pinned UVs show red. Shows the picked part's UVs alone,
 // or the whole model: each part's square as a tile.
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { islandColor, stretchColor, uvMapCanvas, type UVMap } from '../colors';
 import { pickTri } from '../islands';
 import {
-  texSet, paintPress, paintDrag, paintEnd, painting, selectPaintInUV, deselectPaint, type PaintMods, beginEdit, cancelXform, clearSelection, confirmXform, kindOf, liveSel, nudge, pinsOf, pointer, xformMouse, repack, selectElems, selectLoop, setUvScope, setTextureResolution, setUvMap, TEXTURE_RESOLUTIONS, TILE, useApp, uvTiles, contextMenu, openMenu, closeMenu,
-  type SelOp, type MenuItem,
+  texSet, paintPress, paintDrag, paintEnd, painting, selectPaintInUV, deselectPaint, type PaintMods, beginEdit, cancelXform, clearSelection, confirmXform, kindOf, liveSel, nudge, pinsOf, pointer, xformMouse, repack, selectElems, selectLoop, setUvScope, setTextureResolution, setUvMap, TEXTURE_RESOLUTIONS, TILE, useApp, uvTiles, contextMenu,
+  type SelOp,
 } from '../store';
 import { topoOf } from '../topo';
 import { canvasOf } from '../paint';
 import { materialCanvas } from '../matview';
 import { gpuPreviewCanvas } from '../gpupaint';
 import { IslandBar } from '../shell/IslandBar';
+import { DisplayModes } from '../shell/Chrome';
+import { ICON } from '../ui/Icon';
 import { SEL } from './Viewport3D';
+
+/** The UV view's reference maps, with what each makes easiest to read. */
+const UV_MAPS: [UVMap, string, string][] = [
+  ['checker', 'Checker', 'density, shear, stretch'],
+  ['grid', 'UV grid', 'labelled cells: name where a seam lands'],
+  ['uv', 'UV ramp', 'u red, v green: turn and seam jumps'],
+  ['arrows', 'Arrows', 'direction only'],
+];
+const resLabel = (n: number) => (n >= 1024 ? `${n / 1024}K` : `${n}`);
+
+/** The UV options dialog: a real dialog, anchored under the button rather than a menu at the pointer. The reference
+ *  map, resolution and island actions are grouped into sections; choosing one applies at once, Done closes. */
+function UVOptions({ onFrame }: { onFrame: () => void }) {
+  const uvMap = useApp((s) => s.uvMap), resolution = useApp((s) => s.textureResolution);
+  const [open, setOpen] = useState(false);
+  const btn = useRef<HTMLButtonElement>(null), dlg = useRef<HTMLDialogElement>(null);
+
+  useLayoutEffect(() => {
+    const d = dlg.current, b = btn.current;
+    if (!d || !b) return;
+    if (!open) { if (d.open) d.close(); return; }
+    if (!d.open) d.showModal();
+    const place = () => {
+      const r = b.getBoundingClientRect(), w = d.offsetWidth || 320, h = d.offsetHeight || 420;
+      const below = r.bottom + 6;
+      d.style.left = `${Math.max(8, Math.min(innerWidth - w - 8, r.right - w))}px`;
+      d.style.top = `${below + h > innerHeight - 8 ? Math.max(8, r.top - 6 - h) : below}px`;
+    };
+    place();
+    const raf = requestAnimationFrame(place);
+    addEventListener('resize', place);
+    return () => { cancelAnimationFrame(raf); removeEventListener('resize', place); };
+  }, [open]);
+
+  return (
+    <>
+      <button ref={btn} type="button" className="scene-btn icon-only" aria-label="UV options" aria-haspopup="dialog" aria-expanded={open}
+        title="Reference map, texture resolution, packing and framing" onClick={() => setOpen(true)}>
+        <span className="mico">{ICON.options}</span>
+      </button>
+      <dialog ref={dlg} className="uvopts" aria-labelledby="uvopts-title"
+        onClose={() => setOpen(false)}
+        onPointerDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
+        onKeyDown={(e) => e.stopPropagation()} onKeyUp={(e) => e.stopPropagation()}>
+        <header className="uvopts-head">
+          <h2 id="uvopts-title">UV options</h2>
+          <button type="button" className="exp-close" aria-label="Close" title="Close (Esc)" onClick={() => setOpen(false)}>×</button>
+        </header>
+        <div className="uvopts-body">
+          <section className="uvopts-sec">
+            <span className="caps">Reference map</span>
+            <div className="uvopts-maps">
+              {UV_MAPS.map(([id, label, why]) => (
+                <label key={id} className="uvopt-map" title={why}>
+                  <input type="radio" name="uv-reference-map" checked={uvMap === id} onChange={() => setUvMap(id)} />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </div>
+          </section>
+          <section className="uvopts-sec">
+            <span className="caps">Resolution</span>
+            <div className="uvopts-res">
+              {TEXTURE_RESOLUTIONS.map((n) => (
+                <button key={n} type="button" aria-pressed={resolution === n} title={`${n} × ${n}`} onClick={() => setTextureResolution(n)}>{resLabel(n)}</button>
+              ))}
+            </div>
+          </section>
+          <section className="uvopts-sec">
+            <span className="caps">Islands</span>
+            <div className="tgrid two">
+              <button type="button" title="Pack every island into the square (Ctrl+P)" onClick={() => void repack()}>Pack islands</button>
+              <button type="button" title="Frame the UV layout in the view (Home)" onClick={() => { onFrame(); setOpen(false); }}>Frame all</button>
+            </div>
+          </section>
+        </div>
+      </dialog>
+    </>
+  );
+}
 
 /** Part UVs `a` as a white-on-clear mask, n² (top row v = 1), kept per UV array: what a shared atlas shows of each
  *  part's set. Built once; a clip path of every triangle per frame was the texture view's lag in an atlas. */
@@ -120,7 +202,7 @@ export function UVView() {
           // While a stroke is live, show the painted channel straight from its DataTexture; the lit material
           // view is a full offscreen render and waits for the stroke to end.
           const live = liveView;
-          const mat = !live && channel === 'material' && result?.parts[pi] && useApp.getState().uvs[pi] ? materialCanvas(ts, result.parts[pi].positions, useApp.getState().uvs[pi], useApp.getState().paintAO) : null;
+          const mat = !live && channel === 'material' && result?.parts[pi] && useApp.getState().uvs[pi] ? materialCanvas(ts, result.parts[pi].positions, useApp.getState().uvs[pi], useApp.getState().paintAO, useApp.getState().workspace === 'paint' ? useApp.getState().scene.paintLift ?? 0.4 : 0) : null;
           const shown = channel === 'material' ? 'color' : (channel === 'ao' || channel === 'curv' ? !!ts.bake : ts.channels.includes(channel)) ? channel : 'color';
           const preview = Math.min(ts.size, live ? 512 : 1024);
           const gpu = live || ts.preview ? gpuPreviewCanvas(pi) : null;
@@ -135,10 +217,10 @@ export function UVView() {
           }
         }
         else if (first && mode === 'checker' && parts[pi]?.textured !== false) { x.globalAlpha = 0.75; x.drawImage(checker, X(u0), Y(v0 + 1), S, S); x.globalAlpha = 1; }
-        x.strokeStyle = '#383d43';
+        x.strokeStyle = '#3c4046';
         x.strokeRect(X(u0) + 0.5, Y(v0 + 1) + 0.5, S, S);
         if (tiles.cols * tiles.rows > 1 && parts[pi]) {
-          x.fillStyle = pi === activePart ? '#cfcfcf' : '#8a8f96';
+          x.fillStyle = pi === activePart ? '#e7e9ec' : '#9aa0a8';
           x.font = '11px sans-serif';
           x.fillText(parts[pi].name, X(u0) + 2, Y(v0 + 1) - 4);
         }
@@ -190,7 +272,7 @@ export function UVView() {
           }
           const pinned = pinsOf(useApp.getState(), pi);
           if (pinned) {
-            x.fillStyle = '#e2483a';
+            x.fillStyle = '#e54b39';
             for (const c1 of pinned) x.fillRect(U(a[c1 * 2]) - 3, V(a[c1 * 2 + 1]) - 3, 6, 6);
           }
           if (!sel && selectMode !== 'vert') return;
@@ -433,36 +515,20 @@ export function UVView() {
     redraw.current();
   };
   const frame = () => { view.current.fitted = false; redraw.current(); };
-  // The UV view's own menu: checker resolution, packing and framing. The color mode is the Display control in the
-  // options bar (also Z and View › Display), so it is not repeated here.
-  const display = (el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    pointer.x = r.right; pointer.y = r.bottom + 2;
-    const item = (label: string, run: () => void): MenuItem => ({ label, run: () => { closeMenu(); run(); } });
-    const res = TEXTURE_RESOLUTIONS.map((n) => item(`${textureResolution === n ? '✓ ' : ''}${n}×${n}`, () => setTextureResolution(n)));
-    const maps: [UVMap, string, string][] = [['checker', 'Checker', 'density, shear, stretch'], ['grid', 'UV grid', 'labelled cells: name where a seam lands'], ['uv', 'UV ramp', 'u red, v green: turn and seam jumps'], ['arrows', 'Arrows', 'direction only']];
-    const kind = maps.map(([k, label, why]) => item(`${uvMap === k ? '✓ ' : ''}${label} — ${why}`, () => setUvMap(k)));
-    openMenu('UV options', [
-      { kind: 'head', label: 'Reference map', run: () => {} }, ...kind,
-      { kind: 'head', label: 'Resolution', run: () => {} }, ...res,
-      { kind: 'head', label: 'Islands', run: () => {} },
-      item('Pack islands', () => void repack()),
-      item('Frame all', frame),
-    ]);
-  };
 
   return (
     <section className="view">
       <header className="vbar uvbar">
         <span className="caps">{paint ? 'Texture' : 'UV layout'}{uvScope === 'part' && parts[activePart] ? ` · ${parts[activePart].name}` : ' · whole model'}</span>
         <span className="vtools">
-          <span className="seg" role="group" aria-label="Show UVs of">
-            <button aria-pressed={uvScope === 'part'} title="Just the part you picked (click a part in 3D or in Parts)" onClick={() => setUvScope('part')}>Part</button>
-            <button aria-pressed={uvScope === 'all'} title={oneAtlas ? 'Every part, in the shared atlas' : 'Every part, each square side by side'} onClick={() => setUvScope('all')}>All</button>
+          {!paint && <span className="vlabel" title="How the UV view draws the layout">Display</span>}
+          {!paint && <DisplayModes compact />}
+          <span className="seg scope" role="group" aria-label="Show UVs of">
+            <button aria-pressed={uvScope === 'part'} title="Just the part you picked (click a part in 3D or in Parts)" onClick={() => setUvScope('part')}><span className="mico">{ICON.one}</span><span className="mlab">Part</span></button>
+            <button aria-pressed={uvScope === 'all'} title={oneAtlas ? 'Every part, in the shared atlas' : 'Every part, each square side by side'} onClick={() => setUvScope('all')}><span className="mico">{ICON.all}</span><span className="mlab">All</span></button>
           </span>
-          <span className="sep" />
-          {!paint && <button className="scene-btn" aria-haspopup="menu" title="Checker resolution, packing, framing" onClick={(e) => display(e.currentTarget)}>UV options</button>}
-          <button title="Frame all (Home)" onClick={frame}>Fit</button>
+          {!paint && <UVOptions onFrame={frame} />}
+          <button title="Frame all (Home)" aria-label="Frame all" onClick={frame}><span className="mico">{ICON.fit}</span>Fit</button>
         </span>
       </header>
       <div className="vbody uvbody" ref={box}>

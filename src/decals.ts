@@ -30,11 +30,10 @@ const grip = (id: string, name: string, w: number, h: number, shape: Shape, note
 /** Every grip texture starts this tall (% of the model): a pistol's grip panel, whatever its width. */
 const GRIP_TALL = 30;
 export const GRIP_SHAPES: DecalAsset[] = [
-  grip('stipple-panel', 'Stipple panel', 60, 100, { pattern: 'stipple', corner: 0.025, border: 0.006, depth: 0.003, cell: 0.0045, amount: 0.0012 }, 'Raised stipple inside a groove border: a polymer pistol\'s side panel.'),
-  grip('stipple-strip', 'Stipple strip', 22, 100, { pattern: 'stipple', corner: 0.012, border: 0.005, depth: 0.003, cell: 0.0045, amount: 0.0012 }, 'A narrow stippled band with its own border, for back straps and bevels.'),
-  grip('grooved-panel', 'Grooved panel', 30, 100, { pattern: 'grooves', corner: 0.01, border: 0, depth: 0.003, cell: 0.012, amount: 0.0025 }, 'Evenly spaced grooves across the panel: back and front straps, slide serrations.'),
-  grip('checker-panel', 'Checkered panel', 60, 100, { pattern: 'checker', corner: 0.02, border: 0.006, depth: 0.003, cell: 0.008, amount: 0.0015 }, 'Diamond checkering inside a groove border: wood and metal grip panels.'),
-  grip('groove-frame', 'Groove frame', 60, 100, { pattern: 'none', corner: 0.025, border: 0.006, depth: 0.003, cell: 0.005, amount: 0 }, 'Only the groove outline, to frame a panel or split two textures.'),
+  grip('stipple-panel', 'Stipple', 60, 100, { pattern: 'stipple', corner: 0.025, border: 0.006, depth: 0.003, cell: 0.0045, amount: 0.0012 }, 'Raised stipple for a textured grip panel.'),
+  grip('grooved-panel', 'Ribs', 30, 100, { pattern: 'grooves', corner: 0.01, border: 0.004, depth: 0.003, cell: 0.012, amount: 0.0025 }, 'Parallel grooves; adjust their spacing after choosing this look.'),
+  grip('checker-panel', 'Checkered', 60, 100, { pattern: 'checker', corner: 0.02, border: 0.006, depth: 0.003, cell: 0.008, amount: 0.0015 }, 'Diamond checkering for a textured grip panel.'),
+  grip('groove-frame', 'Border only', 60, 100, { pattern: 'none', corner: 0.025, border: 0.006, depth: 0.003, cell: 0.005, amount: 0 }, 'A simple raised outline with no inner pattern.'),
 ];
 
 /** A shape's shelf picture: its relief lit from the top left, transparent outside the outline. */

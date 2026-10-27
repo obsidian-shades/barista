@@ -1,7 +1,7 @@
 // node src/paint.check.ts: a unit square split at x = 0.5 into two islands far apart in UV. A dab on the seam paints
 // both; a dab paints a flat face evenly (no lines where its triangles meet); layers stack; erase and undo work.
 import assert from 'node:assert';
-import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, bakeShape, shapeHeight, expMap, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Brush, type Decal, type Fill, type GenKind, type PaintLayer, type Shape } from './paint.ts';
+import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, bakeShape, bakeBevel, bevelEdges, bevelNormal, hashu, shapeHeight, expMap, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Bevel, type Brush, type Decal, type Fill, type GenKind, type PaintLayer, type Shape } from './paint.ts';
 import type { MaterialPixels } from './materials.ts';
 
 // left half [0,.5] → uv (0..0.25, 0..0.5); right half [.5,1] → uv (0.5..0.75, 0..0.5): the seam is 0.25 apart in UV
@@ -143,6 +143,18 @@ bakeFill(fs, layer, maps, pos, uvs, 1);
 composite(fs);
 const tn = (fs.normal.image.data as Uint8ClampedArray)[(3 * 32 + 3) * 4];
 assert.ok(tn > 200, `tri-planar normal tilts too: ${tn}`);
+// A flat normal map through tri-planar leaves a face that isn't square to an axis alone: its Normal is (0, 0, 1). It
+// used to sum each plane's whole normal (±its axis), which bent a 37° face ~18° toward the axes, a different amount
+// per triangle: the fill broke a model's smooth / weighted shading into facets.
+{
+  const c = Math.cos(0.65), s = Math.sin(0.65);
+  const tilt = pos.map((v, i) => (i % 3 === 1 ? pos[i] * c - pos[i + 1] * s : i % 3 === 2 ? pos[i - 1] * s + v * c : v));
+  const ts = setOf(new Float32Array(tilt), 32), tl: PaintLayer = { ...newLayer(8), fill: { ...fill, projection: 'triplanar', tiles: 3 } };
+  ts.channels = ['normal']; tl.fill!.channels = ['normal']; ts.layers.push(tl); ts.active = 1;
+  bakeFill(ts, tl, { ...maps, normal: one([128, 128, 255, 255]) }, tilt, uvs, 1);
+  const px = tl.px.normal!, at = (3 * 32 + 3) * 4;
+  assert.ok(px[at + 3] === 255 && Math.abs(px[at] - 128) <= 1 && Math.abs(px[at + 1] - 128) <= 1 && px[at + 2] >= 254, `a flat map keeps a tilted face: ${Array.from(px.subarray(at, at + 4))}`);
+}
 // A finish can override a scan's roughness/metallic with one value (Violet Anodized lives on a brushed map
 // but is a satin anodize, not a rough one).
 fill.projection = 'uv';
@@ -186,6 +198,25 @@ bakeDecal(ds, dl, solid, pos, uvs, 1);
 composite(ds);
 assert.deepEqual(dpx(16, 16), BASE, 'moving the decal clears its old footprint');
 assert.deepEqual(dpx(8, 16), [255, 0, 0], 'and inks the new one');
+// A decal bakes only inside its own footprint (a drag used to re-ink every texel of the part each frame at 4K): the
+// box it reports is the mark's, and moving A → B → C leaves no ghost at A or B. Height follows the aspect, so a mark
+// can be stretched to fit a panel.
+decal.center = [0.3, 0.5, 0];
+const dbox = bakeDecal(ds, dl, solid, pos, uvs, 1);
+composite(ds);
+assert.ok(dbox && dbox[2] - dbox[0] < 64 && dbox[3] - dbox[1] < 64, `the bake reports its own footprint (${dbox})`);
+assert.deepEqual(dpx(10, 16), [255, 0, 0], 'ink at the moved centre');
+assert.deepEqual(dpx(2, 16), BASE, 'the mark before it is clear');
+decal.center = [0.5, 0.5, 0];
+bakeDecal(ds, dl, solid, pos, uvs, 1);
+composite(ds);
+assert.deepEqual(dpx(16, 8), [255, 0, 0], 'the mark at its square aspect reaches this row');
+decal.aspect = 2;
+bakeDecal(ds, dl, solid, pos, uvs, 1);
+composite(ds);
+assert.deepEqual(dpx(16, 16), [255, 0, 0], 'stretched: the middle still inks');
+assert.deepEqual(dpx(16, 8), BASE, 'stretched: the taller footprint is gone');
+assert.deepEqual(dpx(2, 16), BASE, 'stretched: and no earlier mark came back');
 // Blends are per channel, as Substance Painter's stack holds them: a grunge layer can multiply Base Color and still
 // lay its roughness straight down, and a channel nobody set keeps Substance's default.
 const pc: PaintLayer = { ...newLayer(12), blend: { color: 'multiply' } };
@@ -303,4 +334,28 @@ assert.ok(gs.sel!.every((x, i) => !x || gs.shell![i]), 'a grown selection stays 
   assert.equal(wrapped(false), 0, 'flat, the relief stops at the fold');
   assert.ok(wrapped(true) > 100, `wrapped, it carries over the fold: ${wrapped(true)} texels`);
 }
+// bevel: a box's top (z = 1, normal +z) meeting its side (x = 1, normal +x) at a 90° convex edge along y. A round
+// bevel of radius r leans the top's normal toward +x by a fillet's angle, asin((1 - d/r) tan 45°): 30° at d = r/2,
+// none past r; a chamfer leans the whole band 45°. The engine's test `bevel_matches_the_editor` pins the same numbers.
+{
+  const box = [0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1];
+  const round: Bevel = { radius: 0.1, profile: 'round', angle: 30, concave: false }, e = bevelEdges(box, round);
+  assert.equal(e.segs.length / 12, 1, 'one sharp edge');
+  const lean = (b: Bevel, x: number) => { const n = bevelNormal(bevelEdges(box, b), b, x, 0.5, 1, 0, 0, 1); return n && (Math.atan2(n[0], n[2]) * 180) / Math.PI; };
+  assert.ok(Math.abs(lean(round, 0.95)! - 30) < 1e-6, `round at r/2 leans 30°: ${lean(round, 0.95)}`);
+  assert.equal(lean(round, 0.85), null, 'past the radius: untouched');
+  assert.ok(Math.abs(lean({ ...round, profile: 'chamfer' }, 0.95)! - 45) < 1e-6, 'chamfer leans 45°');
+  assert.equal(bevelEdges(box, { ...round, angle: 100 }).segs.length, 0, 'a 90° edge is under a 100° threshold');
+  // baked: the top's texels near the edge lean +x in tangent space (u along x), the rest stay unwritten
+  const buv = box.flatMap((_, i) => (i % 3 ? [] : i < 18 ? [box[i] * 0.5, box[i + 1]] : [0.5 + (1 - box[i + 2]) * 0.5, box[i + 1]]));
+  const bs = setOf(new Float32Array(box), 64), bl: PaintLayer = { ...newLayer(11), bevel: round };
+  bakeBevel(bs, bl, box, buv);
+  const px = (x: number, y: number) => Array.from(bl.px.normal!.subarray((y * 64 + x) * 4, (y * 64 + x) * 4 + 4));
+  assert.equal(px(10, 32)[3], 0, 'mid face untouched');
+  const near = px(30, 32);
+  assert.ok(near[3] === 255 && near[0] > 150 && near[2] > 200, `next to the edge the normal leans along u: ${near}`);
+}
+// the grunge noise's lattice hash: these values are pinned in the engine too (layers.rs `hashu_matches_the_editor`)
+// and computed the same in gpubake.ts's shader, so a generator looks alike in the CPU, GPU and engine bakes
+assert.deepEqual([hashu(1, 2, 3), hashu(-5, 7, -9), hashu(0, 0, 0)], [72785788, 2634903715, 0], 'the lattice hash');
 console.log('paint ok');

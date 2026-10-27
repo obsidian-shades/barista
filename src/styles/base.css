@@ -1,11 +1,13 @@
 /*
  * Photoshop-style shell: menu bar, options bar, tool strip | views | panel dock, status bar.
- * One dark theme after Adobe Spectrum 2 (the Photoshop UI): a few greys stepping up from the canvas to floating surfaces,
- * one blue accent, Adobe's open-source Source Sans 3 and Source Code Pro.
+ * One dark theme after Adobe Spectrum 2 (the Photoshop UI): a cool-grey ladder from the recessed wells (darkest) through
+ * panels and bars to floating surfaces (lightest), one blue accent for "this is chosen", Adobe's open-source Source Sans 3
+ * and Source Code Pro.
  *
- * Geometry is deliberately small: 4 px on controls, rows and menus; 8 px only on large floating surfaces. Circles are
- * reserved for things that mean "point" (status dots, the brush cursor). Elevation is one shadow token for floating
- * surfaces; nothing else in the chrome floats above the work.
+ * Geometry: one radius (4 px) on every control, plate, row and menu; 6 px on large floating surfaces (dialogs, the Shading
+ * popover, the colour picker, the island bar). Circles are reserved for things that mean "point" (status dots, slider
+ * thumbs, the brush cursor). Depth is carried by surfaces and 1 px seams, never by stacking shadows: --line seals one
+ * region from the next, --line-2 divides rows, --hair edges a control. Floating surfaces alone get --shadow-pop.
  */
 /* The two faces are bundled: the desktop app must not fall back to system-ui when it is offline. Latin subsets, OFL. */
 @font-face {
@@ -24,30 +26,36 @@
 }
 
 :root {
-  /* Surfaces, darkest to lightest */
-  --app: #1e1e1e;       /* behind everything */
-  --well: #1a1a1a;      /* fields, lists, wells */
-  --panel: #262626;     /* panel bodies */
-  --chrome: #2e2e2e;    /* bars: menu, options, tool strip, tabs, panel headers */
-  --raise: #323232;     /* floating surfaces: task bars, floor widget, menus, popovers, the 3D window */
-  --line: #141414;      /* borders between areas */
-  --line-2: #222222;    /* borders inside wells and lists */
-  --hair: #3c3c3c;      /* inner separators, hover fills */
-  --edge-hi: #474747;   /* the light rim of floating surfaces */
-  --hover: #ffffff08;   /* row hover inside a well */
+  /* Surfaces, deepest (recessed) to lightest (floating). Every region of the shell sits on exactly one step. */
+  --well: #121316;        /* fields, lists, the inside of a control tray */
+  --app: #17181b;         /* behind dock groups, the window base */
+  --panel-inset: #1c1e22; /* recessed bars: menu, workspace tabs, tool strip, status */
+  --panel: #23252a;       /* panel bodies, the work area under the tabs */
+  --panel-raised: #292c31;/* emphasized panel sections, sticky shelf headers */
+  --chrome: #2b2e33;      /* raised bars: options, view headers, panel tab strips */
+  --raise: #30343a;       /* floating surfaces: menus, popovers, tooltips, the island bar */
+  --window: #26292e;      /* a modal's body: a window, not another grey slab */
+  --line: #0b0c0e;        /* the seam between two regions */
+  --line-2: #1b1d21;      /* the divider between rows inside a region */
+  --hair: #3c4046;        /* a control's edge on a dark surface */
+  --edge-hi: #565b63;     /* hover edge, the rim of a focused field */
+  --float-line: #3b4148;  /* the quiet edge of a floating surface */
+  --hover: #ffffff0a;     /* a row or flat button under the pointer */
+  /* Control plates: clearly above the bar they sit on, so a button occupies space instead of floating on it. */
+  --plate: #353940; --plate-hi: #3f434a; --plate-line: #4b5058;
   /* Text */
-  --fg: #e3e3e3; --muted: #9a9a9a; --faint: #6f6f6f; --icon: #cfcfcf; --ink-dark: #111;
-  /* Accent (Spectrum blue) */
-  --accent: #3b8af0; --accent-hover: #4c97f5; --accent-ink: #fff; --accent-soft: #3b8af033; --row-on: #2d4c72;
-  --hair-hi: #4a4a4a;   /* the second hover step on dense grids */
+  --fg: #e7e9ec; --muted: #9aa0a8; --faint: #6b7178; --icon: #d3d7dd; --ink-dark: #101113;
+  /* Accent (Spectrum blue). One meaning: the chosen state. */
+  --accent: #3f8fe8; --accent-hover: #57a2f5; --accent-ink: #fff; --accent-soft: #3f8fe826; --row-on: #233b55;
+  --hair-hi: #4a4f57;   /* the second hover step on dense grids */
   /* Semantic colour: one role per meaning, in chrome and on the model */
-  --ok: #4cb85a; --warn: #f0c43a; --bad: #e2483a; --bad-ink: #ff8a80;
-  --sel: var(--accent); --seam: #e8402a;   /* selection blue, seam red */
+  --ok: #4db36a; --warn: #e7b93f; --bad: #df4b3f; --bad-ink: #ff938a;
+  --sel: var(--accent); --seam: #e54b39;   /* selection blue, seam red */
   /* Plan canvas */
-  --canvas: #1d1f22; --grid: #26292d; --grid-major: #383d43; --edge: #0d0d0d;
+  --canvas: #1a1c1f; --grid: #22252a; --grid-major: #333940; --edge: #0b0c0e;
   /* Shape */
-  --r-s: 4px; --r-m: 8px;
-  --shadow-pop: 0 8px 24px #0008;
+  --r-s: 4px; --r-m: 6px;
+  --shadow-pop: 0 18px 48px #000000b8, 0 2px 8px #0000004d, inset 0 1px 0 #ffffff10;
   --ctl-sm: 22px; --ctl: 24px; --ctl-lg: 28px; --ctl-xl: 32px;
   --bar: 32px; --row: 28px;
   --ui: "Source Sans 3", "Adobe Clean", system-ui, sans-serif; --num: "Source Code Pro", ui-monospace, Consolas, monospace;
@@ -59,22 +67,52 @@ html, body, #root { height: 100%; margin: 0; }
 body { background: var(--app); color: var(--fg); font: var(--fs) / 1.3 var(--ui); overflow: hidden; user-select: none; -webkit-font-smoothing: antialiased; }
 button, select, input, textarea { font: inherit; color: inherit; }
 button { display: inline-flex; align-items: center; gap: 5px; background: none; border: 1px solid transparent; border-radius: var(--r-s); padding: 2px 8px; min-height: var(--ctl); cursor: pointer; }
-button:hover:not(:disabled) { background: var(--hair); }
-button:disabled { opacity: .45; cursor: default; }
+button:hover:not(:disabled) { background: var(--hover); }
+button:disabled { opacity: .4; cursor: default; }
+.ico { flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.mico { display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.ico .i-f { fill: currentColor; fill-opacity: .22; stroke: none; }
+.ico .i-F { fill: currentColor; stroke: none; }
+.ico .i-a { stroke: var(--sel); }
+.ico .i-A { fill: var(--sel); stroke: none; }
+.ico .i-d, .ico .i-ad { stroke-dasharray: 2 2; }
+.ico .i-ad { stroke: var(--sel); }
+/* on an accent (blue) button the lit part goes to the ink colour, as Blender's icons turn white when pressed */
+.seg button[aria-pressed="true"] .ico .i-a, .seg button.on .ico .i-a, .scene-btn[aria-expanded="true"] .ico .i-a { stroke: currentColor; }
+.seg button[aria-pressed="true"] .ico .i-A, .seg button.on .ico .i-A, .scene-btn[aria-expanded="true"] .ico .i-A { fill: currentColor; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 [aria-pressed="true"]:focus-visible, [aria-selected="true"]:focus-visible, [aria-checked="true"]:focus-visible { outline-color: var(--fg); }
 select, input { line-height: normal; height: var(--ctl); background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); padding: 0 6px; }
 select:hover, input:hover:not(:disabled) { border-color: var(--hair); }
 input:focus, select:focus { border-color: var(--accent); outline: none; }
+select { padding-right: 4px; }
 input[type="number"] { font: var(--fs-s) var(--num); }
-input[type="checkbox"], input[type="radio"] { height: auto; accent-color: var(--accent); }
-input[type="range"] { height: auto; padding: 0; border: 0; background: none; accent-color: var(--accent); }
-input[type="color"] { padding: 2px; }
+input[type="checkbox"], input[type="radio"] { appearance: none; -webkit-appearance: none; flex: none; width: 14px; height: 14px; margin: 0; padding: 0; display: inline-grid; place-content: center; border: 1px solid var(--hair); border-radius: 3px; background: var(--well); cursor: pointer; }
+input[type="checkbox"]:hover, input[type="radio"]:hover { border-color: var(--edge-hi); }
+input[type="checkbox"]:checked, input[type="radio"]:checked { background: var(--accent); border-color: var(--accent); }
+input[type="checkbox"]:checked::after { content: ""; width: 7px; height: 4px; margin-top: -1px; border-left: 2px solid var(--accent-ink); border-bottom: 2px solid var(--accent-ink); transform: rotate(-45deg); }
+input[type="radio"] { border-radius: 50%; }
+input[type="radio"]:checked::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-ink); }
+/* Sliders: a recessed track and a round thumb (a point on the track), the same in every bar and panel. */
+input[type="range"] { appearance: none; -webkit-appearance: none; height: 16px; padding: 0; border: 0; background: none; cursor: pointer; }
+input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--well); border: 1px solid var(--line); box-shadow: inset 0 1px 1px #0006; }
+input[type="range"]::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 12px; height: 12px; margin-top: -5px; border-radius: 50%; background: var(--accent); border: 1px solid #0007; box-shadow: 0 0 0 1px #ffffff26; }
+input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent-hover); }
+input[type="range"]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--well); border: 1px solid var(--line); }
+input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: 1px solid #0007; }
+input[type="range"]:disabled { opacity: .4; cursor: default; }
 input:disabled, select:disabled { opacity: .5; }
 kbd { font: 10px var(--num); color: var(--muted); margin-left: auto; padding-left: 24px; }
 .hint { color: var(--muted); margin: 0; }
 .num { font-family: var(--num); font-variant-numeric: tabular-nums; }
+/* A recessed tray groups related controls without inventing a second bar. */
+.tray { background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
 /* Section labels: panel groups, menu labels. The rule itself is with the shell. */
 /* Native popovers (scene settings): placed by script, not the browser's centring.
    No display rule on the popover itself: it would beat the browser's hiding of a closed one. */
 [popover] { inset: auto; margin: 0; padding: 0; border: 0; color: inherit; background: transparent; }
+* { scrollbar-width: thin; scrollbar-color: var(--hair) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--hair); border: 2px solid transparent; background-clip: content-box; border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--edge-hi); background-clip: content-box; }

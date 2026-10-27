@@ -10,6 +10,7 @@ import type { Baked, Surface } from './bake';
 import type { MapKind, MapPixels, MaterialPixels } from './materials';
 import { uvShell } from './uvshell.ts';
 import { gpuComposite, gpuCompositeReady, MODES, type Group } from './gpucomp.ts';
+import { BEVEL, FILL_OUT, GENERATOR, TRIPLANAR, UVFILL, cellTable, gpuBake, gpuBakeReady, hashu, mapTexture, rows } from './gpubake.ts';
 
 export type Channel = 'color' | 'rough' | 'metal' | 'normal' | 'height';
 /** Each channel: its name, how many values a texel holds, and what shows where no layer paints. */
@@ -65,6 +66,14 @@ export interface Decal {
   /** Bend round the model: the relief follows the surface's own coordinates out from `center` (`expMap`) instead of a
    *  flat projection, so it carries over bevels and curves without stretching. */
   wrap?: boolean;
+  /** A linked mirror pair (two layers, the same mark on the two sides): the other layer's id and the model axis they
+   *  are mirrored across. Editor-only — the engine bakes each layer from its own frame and ignores this. */
+  mirror?: { of: number; axis: 0 | 1 | 2 };
+}
+/** A decal without its mirror link (a copy of a paired mark is its own mark). */
+export function withoutMirror(d: Decal): Decal {
+  const { mirror, ...rest } = d;
+  return rest;
 }
 /** A grip texture's fill: raised stipple dots, grooves across the panel, diamond checkering, or none (the border alone). */
 export type Pattern = 'stipple' | 'grooves' | 'checker' | 'none';
@@ -90,8 +99,12 @@ export const blendOf = (l: PaintLayer, ch: Channel): BlendMode => l.blend?.[ch] 
 /** A layer: per channel it paints, k values + coverage per texel (row 0 = v 0). A generator layer (`gen`) is a fill of
  *  one value per channel whose coverage the generator makes from the baked maps, again whenever its settings change.
  *  A fill layer (`fill`) holds a material; its pixels are the baked cache, and `mask` applies the layer. */
-export interface PaintLayer { id: number; name: string; visible: boolean; opacity: number; blend?: Partial<Record<Channel, BlendMode>>; px: Partial<Record<Channel, Uint8ClampedArray>>; gen?: Gen; fill?: Fill; decal?: Decal; mask?: Uint8Array }
+export interface PaintLayer { id: number; name: string; visible: boolean; opacity: number; blend?: Partial<Record<Channel, BlendMode>>; px: Partial<Record<Channel, Uint8ClampedArray>>; gen?: Gen; fill?: Fill; decal?: Decal; bevel?: Bevel; mask?: Uint8Array }
 export type GenKind = 'edge' | 'dirt' | 'ao';
+/** A whole-part bevel faked in the normal map (Substance's / Blender's Bevel): within `radius` (world units) of an edge
+ *  sharper than `angle` degrees the normal turns toward the face across it, so a hard-edged low poly shades rounded
+ *  (`round`: a circular fillet's normals) or chamfered (`chamfer`: the halfway normal); concave edges too when `concave`. */
+export interface Bevel { radius: number; profile: 'round' | 'chamfer'; angle: number; concave: boolean }
 /** A generator (Substance's smart mask): `amount` how much it covers, `soft` how gradual its border, `width` the edge
  *  band (share of the model), `grunge` how much noise breaks it up, `scale` the noise's size (share of the model);
  *  `color` / `rough` / `metal` what it lays down; `clip` the selection it was made in. */
@@ -109,6 +122,8 @@ export type SelOp = 'set' | 'add' | 'sub';
 // ponytail: painted texels stay where they were in UV space, so a re-unwrap of the part scrambles the paint; bake through
 // the old UVs (or store paint per triangle) if that bites
 const sets = new WeakMap<Float32Array, TexSet>();
+/** Each set's soup, so `disposeSet` can unkey it (a set is otherwise only reachable through `setOf`). */
+const soups = new WeakMap<TexSet, Float32Array>();
 let ids = 0;
 
 const tex = (size: number, srgb: boolean) => {
@@ -125,9 +140,22 @@ export function setOf(soup: Float32Array, size: number): TexSet {
   if (!s) {
     s = { size, channels: ['color'], layers: [newLayer(1)], active: 0, sel: null, color: tex(size, true), orm: tex(size, false), shade: tex(size, false), normal: tex(size, false), height: tex(size, false), past: [], future: [], ver: 0 };
     sets.set(soup, s);
+    soups.set(s, soup);
     composite(s);
   } else if (s.size !== size) resize(s, size);
   return s;
+}
+
+/** Free a set's textures and forget it: nothing will draw it again (the document it belongs to was replaced). A
+ *  WebGL texture is only released by `dispose()`, never by its object being garbage collected. */
+export function disposeSet(s: TexSet) {
+  const soup = soups.get(s);
+  soups.delete(s);
+  if (soup && sets.get(soup) === s) sets.delete(soup);
+  // the preview texture belongs to gpupaint's render target, which `gpuFinish()` disposes
+  s.preview = undefined;
+  for (const t of [s.color, s.orm, s.shade, s.normal, s.height, s.aoTex]) t?.dispose();
+  s.bake = undefined;
 }
 
 /** The part's set if it has one yet (saving a project must not make empty ones). */
@@ -171,6 +199,7 @@ export function restoreSet(soup: Float32Array, saved: SavedSet, pixels: (id: num
   }));
   s.active = Math.min(saved.active, s.layers.length - 1);
   s.sel = null; s.past = []; s.future = []; s.bake = undefined; s.aoTex = undefined;
+  footprints.delete(s);
   ids = Math.max(ids, ...s.layers.map((l) => l.id));
   composite(s);
   return s;
@@ -192,6 +221,7 @@ export function saveSet(s: TexSet): { saved: SavedSet; buffers: { id: number; wh
  *  texel at the old size. Painting done before the move is as sharp as it was; nothing can add detail that was
  *  never sampled. Undo history is dropped with it: its buffers are the old size. */
 export function resize(s: TexSet, size: number) {
+  footprints.delete(s);
   const n = s.size, m = size;
   if (n === m) return;
   const map = (src: Uint8ClampedArray, stride: number) => {
@@ -217,11 +247,14 @@ export function resize(s: TexSet, size: number) {
   }
   if (s.sel) s.sel = mapMask(s.sel);
   s.size = m;
+  // the old size's textures are replaced outright: three keeps their GPU memory until they are disposed
+  const old = [s.color, s.orm, s.shade, s.normal, s.height, s.aoTex];
   s.color = tex(m, true);
   s.orm = tex(m, false);
   s.shade = tex(m, false);
   s.normal = tex(m, false);
   s.height = tex(m, false);
+  for (const t of old) t?.dispose();
   s.past = [];
   s.future = [];
   s.dirty = undefined;
@@ -234,7 +267,9 @@ export function resize(s: TexSet, size: number) {
   shade(s);
 }
 
-type Rect = [number, number, number, number];
+/** A texel rectangle: x0, y0, x1, y1, inclusive. */
+export type TexRect = [number, number, number, number];
+type Rect = TexRect;
 const snapshot = (s: TexSet): State => ({ channels: [...s.channels], layers: s.layers.map((l) => ({ ...l, px: { ...l.px }, mask: l.mask?.slice() })), active: s.active, sel: s.sel, undoRect: undefined });
 /** Keep the set as it is, for one undo step. Copy on write: the layers' buffers are shared with the step, and the
  *  active layer gets fresh copies before paint goes into them. */
@@ -263,6 +298,7 @@ export function undo(s: TexSet, defer = false): { rect?: Rect; full: boolean } |
   if (s.future.length > 20) s.future.shift();
   const oldSel = s.sel, rect = prev.undoRect;
   Object.assign(s, prev);
+  forgetDecalFootprints(s);
   if (oldSel !== prev.sel) shade(s);
   if (!defer) {
     if (rect) {
@@ -281,6 +317,7 @@ export function redo(s: TexSet, defer = false): { rect?: Rect; full: boolean } |
   if (s.past.length > 20) s.past.shift();
   const oldSel = s.sel, rect = next.undoRect;
   Object.assign(s, next);
+  forgetDecalFootprints(s);
   if (oldSel !== next.sel) shade(s);
   if (!defer) {
     if (rect) {
@@ -983,6 +1020,10 @@ export function setBaked(s: TexSet, b: Baked) {
 }
 
 /** Value noise in 3D, 0..1, three octaves (the grunge that breaks a generator's mask up). */
+export { hashu };
+/** The generators' lattice hash (their noise runs on the GPU too, so it is the integer one). */
+const latticeHash = (x: number, y: number, z: number) => hashu(x, y, z) / 4294967296;
+/** The grip stipple's jitter: CPU only, kept as it was so placed grips keep their dots. */
 const hash = (x: number, y: number, z: number) => { const h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453; return h - Math.floor(h); };
 function noise(x: number, y: number, z: number) {
   let sum = 0, amp = 0.5, f = 1;
@@ -990,7 +1031,7 @@ function noise(x: number, y: number, z: number) {
     const X = x * f, Y = y * f, Z = z * f, ix = Math.floor(X), iy = Math.floor(Y), iz = Math.floor(Z);
     const fx = X - ix, fy = Y - iy, fz = Z - iz, sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy), sz = fz * fz * (3 - 2 * fz);
     const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-    const plane = (k: number) => lerp(lerp(hash(ix, iy, k), hash(ix + 1, iy, k), sx), lerp(hash(ix, iy + 1, k), hash(ix + 1, iy + 1, k), sx), sy);
+    const plane = (k: number) => lerp(lerp(latticeHash(ix, iy, k), latticeHash(ix + 1, iy, k), sx), lerp(latticeHash(ix, iy + 1, k), latticeHash(ix + 1, iy + 1, k), sx), sy);
     sum += amp * lerp(plane(iz), plane(iz + 1), sz);
   }
   return sum / 0.875;
@@ -1010,7 +1051,17 @@ export function generate(s: TexSet, l: PaintLayer) {
   if (!g || !b) return;
   const n = s.size, values: Partial<Record<Channel, number[]>> = { color: [1, 3, 5].map((k) => parseInt(g.color.slice(k, k + 2), 16)), rough: [g.rough * 255], metal: [g.metal * 255] };
   const cover = new Float32Array(n * n);
-  for (let i = 0; i < n * n; i++) cover[i] = b.has[i] ? genAt(g, b, i) * (g.clip ? g.clip[i] / 255 : 1) : 0;
+  // the coverage on the GPU (gpubake.ts GENERATOR) when there is one: the noise is most of a generator's time
+  const gpu = gpuBakeReady(n) && gpuBake(n, {
+    frag: GENERATOR, inputs: 2,
+    uniforms: { uKind: g.kind === 'edge' ? 0 : g.kind === 'dirt' ? 1 : 2, uWS: g.width * b.span, uK: 1 / (g.scale * b.span), uGrunge: g.grunge, uAmount: g.amount, uSoft: g.soft },
+  }, [0], (y0, h, [a, p]) => {
+    for (let j = 0, i = y0 * n; j < n * h; j++, i++) {
+      a[j * 4] = b.ao[i]; a[j * 4 + 1] = b.convex[i]; a[j * 4 + 2] = b.concave[i]; a[j * 4 + 3] = b.has[i];
+      p[j * 4] = b.pos[i * 3]; p[j * 4 + 1] = b.pos[i * 3 + 1]; p[j * 4 + 2] = b.pos[i * 3 + 2]; p[j * 4 + 3] = g.clip ? g.clip[i] / 255 : 1;
+    }
+  }, (_o, y0, h, rgba) => { for (let j = 0, i = y0 * n; j < n * h; j++, i++) cover[i] = rgba[j * 4] / 255; });
+  if (!gpu) for (let i = 0; i < n * n; i++) cover[i] = b.has[i] ? genAt(g, b, i) * (g.clip ? g.clip[i] / 255 : 1) : 0;
   for (const ch of s.channels) {
     const vals = values[ch];
     if (!vals) continue; // a generator has no normal/height values
@@ -1022,16 +1073,25 @@ export function generate(s: TexSet, l: PaintLayer) {
 // ---- fill layers: a PBR material projected onto the mesh, baked into the layer's channel buffers ----
 /** Bilinear sample with repeat, row 0 at the top as images store it; returns a shared 4-byte array. */
 const sampleOut = [0, 0, 0, 0];
-function sampleMap(m: MapPixels, u: number, v: number) {
-  const w = m.width, h = m.height;
-  const fu = u - Math.floor(u), fv = v - Math.floor(v);
-  let x = fu * w - 0.5, y = (1 - fv) * h - 0.5;
+// Bilinear taps per slot: the corner offsets and fractions of (u, v) on a w×h map, so a tri-planar texel works out
+// each plane's taps once and every map of that size reads them (slot 3 is sampleMap's own).
+const tapO = new Int32Array(16), tapF = new Float64Array(8);
+function tap(p: number, w: number, h: number, u: number, v: number) {
+  const x = (u - Math.floor(u)) * w - 0.5, y = (1 - (v - Math.floor(v))) * h - 0.5;
   let x0 = Math.floor(x), y0 = Math.floor(y);
-  const fx = x - x0, fy = y - y0;
+  tapF[p * 2] = x - x0; tapF[p * 2 + 1] = y - y0;
+  // x0, y0 are at least -1 and x1, y1 at most w, h: wrapping is one step either way
   let x1 = x0 + 1, y1 = y0 + 1;
-  x0 = ((x0 % w) + w) % w; x1 = ((x1 % w) + w) % w; y0 = ((y0 % h) + h) % h; y1 = ((y1 % h) + h) % h;
-  const d = m.data, a = (y0 * w + x0) * 4, b = (y0 * w + x1) * 4, c = (y1 * w + x0) * 4, e = (y1 * w + x1) * 4;
-  for (let k = 0; k < 4; k++) sampleOut[k] = (d[a + k] * (1 - fx) + d[b + k] * fx) * (1 - fy) + (d[c + k] * (1 - fx) + d[e + k] * fx) * fy;
+  if (x0 < 0) x0 += w; if (x1 >= w) x1 -= w; if (y0 < 0) y0 += h; if (y1 >= h) y1 -= h;
+  tapO[p * 4] = (y0 * w + x0) * 4; tapO[p * 4 + 1] = (y0 * w + x1) * 4; tapO[p * 4 + 2] = (y1 * w + x0) * 4; tapO[p * 4 + 3] = (y1 * w + x1) * 4;
+}
+function tapped(d: Uint8ClampedArray, p: number, k: number) {
+  const fx = tapF[p * 2], fy = tapF[p * 2 + 1];
+  return (d[tapO[p * 4] + k] * (1 - fx) + d[tapO[p * 4 + 1] + k] * fx) * (1 - fy) + (d[tapO[p * 4 + 2] + k] * (1 - fx) + d[tapO[p * 4 + 3] + k] * fx) * fy;
+}
+function sampleMap(m: MapPixels, u: number, v: number) {
+  tap(3, m.width, m.height, u, v);
+  for (let k = 0; k < 4; k++) sampleOut[k] = tapped(m.data, 3, k);
   return sampleOut;
 }
 const hexTint = (hex: string) => [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16));
@@ -1051,8 +1111,8 @@ export function bakeFill(s: TexSet, l: PaintLayer, src: MaterialPixels, pos: Arr
   const buf: Partial<Record<Channel, Uint8ClampedArray>> = {};
   for (const ch of f.channels) buf[ch] = fillBuf(s, l, ch);
   const tint = hexTint(f.tint), strength = f.normalStrength;
-  // a solid fill has no maps: its colour is the tint; a material missing its colour map is unpainted grey
-  const plain = f.asset === SOLID ? [255, 255, 255] : CHANNELS.color.base;
+  // no colour map (a solid fill, a colorless finish such as Cerakote): its colour is the tint, on white
+  const plain = [255, 255, 255];
   const color = src.basecolor, normalMap = src.normal, rough = src.roughness, metal = src.metallic, height = src.height;
   const roughV = (u: number, v: number) => f.roughness != null ? f.roughness * 255 : rough ? sampleMap(rough, u, v)[0] : CHANNELS.rough.base[0];
   const metalV = (u: number, v: number) => f.metallic != null ? f.metallic * 255 : metal ? sampleMap(metal, u, v)[0] : 0;
@@ -1076,6 +1136,7 @@ export function bakeFill(s: TexSet, l: PaintLayer, src: MaterialPixels, pos: Arr
 
   if (f.projection === 'uv') {
     const rad = (f.rotation * Math.PI) / 180, co = Math.cos(rad), si = Math.sin(rad);
+    if (gpuBakeReady(n) && gpuBake(n, { frag: UVFILL, inputs: 0, uniforms: fillUniforms(f, src, f.tiling, co, si) }, fillOuts(f, buf), () => {}, putFill(n, buf, true))) return;
     for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
       const u = ((x + 0.5) / n - 0.5) * f.tiling, v = ((y + 0.5) / n - 0.5) * f.tiling;
       writeUV(y * n + x, u * co - v * si + 0.5 + f.offset[0], u * si + v * co + 0.5 + f.offset[1]);
@@ -1087,65 +1148,54 @@ export function bakeFill(s: TexSet, l: PaintLayer, src: MaterialPixels, pos: Arr
   // converts the blended world normal back to tangent space, which is what the normal map texture stores.
   ready(n);
   const tiles = f.tiles / (span || 1), rad = (f.rotation * Math.PI) / 180, co = Math.cos(rad), si = Math.sin(rad);
-  const planeOut = [0, 0, 0];
+  // every map of the first one's size reads the planes' shared taps; any other size samples on its own
+  const first = color ?? normalMap ?? rough ?? metal ?? height, tw = first?.width ?? 0, th = first?.height ?? 0;
+  const puv = new Float64Array(6);
+  const mix = (m: MapPixels, p: number, k: number) => m.width === tw && m.height === th ? tapped(m.data, p, k) : sampleMap(m, puv[p * 2], puv[p * 2 + 1])[k];
+  const roughP = (p: number) => f.roughness != null ? f.roughness * 255 : rough ? mix(rough, p, 0) : CHANNELS.rough.base[0];
+  const metalP = (p: number) => f.metallic != null ? f.metallic * 255 : metal ? mix(metal, p, 0) : 0;
+  if (bakeFillGpu(s, f, src, pos, uvs, buf, tiles, co, si)) return;
+  const fr = new Float64Array(16);
   for (let t = 0; t < pos.length / 9; t++) {
-    const o = t * 9;
-    const ax = pos[o], ay = pos[o + 1], az = pos[o + 2];
-    const e1x = pos[o + 3] - ax, e1y = pos[o + 4] - ay, e1z = pos[o + 5] - az;
-    const e2x = pos[o + 6] - ax, e2y = pos[o + 7] - ay, e2z = pos[o + 8] - az;
-    let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
-    const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= nl; ny /= nl; nz /= nl;
-    // UV tangent frame of this triangle
-    const du1 = uvs[t * 6 + 2] - uvs[t * 6], dv1 = uvs[t * 6 + 3] - uvs[t * 6 + 1];
-    const du2 = uvs[t * 6 + 4] - uvs[t * 6], dv2 = uvs[t * 6 + 5] - uvs[t * 6 + 1];
-    const det = du1 * dv2 - du2 * dv1;
-    let tx = 0, ty = 0, tz = 0, bx = 0, by = 0, bz = 0;
-    if (Math.abs(det) > 1e-12) {
-      tx = (e1x * dv2 - e2x * dv1) / det; ty = (e1y * dv2 - e2y * dv1) / det; tz = (e1z * dv2 - e2z * dv1) / det;
-      const tl = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1; tx /= tl; ty /= tl; tz /= tl;
-      bx = ny * tz - nz * ty; by = nz * tx - nx * tz; bz = nx * ty - ny * tx;
-      const bl = Math.sqrt(bx * bx + by * by + bz * bz) || 1; bx /= bl; by /= bl; bz /= bl;
-    } else { tx = 1; bx = 0; by = 1; }
-    const wx = Math.pow(Math.abs(nx), 4), wy = Math.pow(Math.abs(ny), 4), wz = Math.pow(Math.abs(nz), 4);
-    const ws = wx + wy + wz || 1;
+    triFrame(pos, uvs, t, fr);
+    const [nx, ny, nz, tx, ty, tz, bx, by, bz, wx, wy, wz, ws] = fr;
+    const blend = (m: MapPixels, k: number) => ((wx ? mix(m, 0, k) * wx : 0) + (wy ? mix(m, 1, k) * wy : 0) + (wz ? mix(m, 2, k) * wz : 0)) / ws;
+    const blendAt = (at: (p: number) => number) => ((wx ? at(0) * wx : 0) + (wy ? at(1) * wy : 0) + (wz ? at(2) * wz : 0)) / ws;
+    // per plane x / y / z: its share, and which way the face looks along that axis
+    const sx = nx >= 0 ? 1 : -1, sy = ny >= 0 ? 1 : -1, sz = nz >= 0 ? 1 : -1;
     raster(n, pos, uvs, t, (x, y, z, i) => {
       // rotate the projection around Y, then project on each plane
-      const rx = x * co + z * si, rz = -x * si + z * co;
-      const ux = rz * tiles + f.offset[0], vx = y * tiles + f.offset[1];
-      const uy = rx * tiles + f.offset[0], vy = rz * tiles + f.offset[1];
-      const uz = rx * tiles + f.offset[0], vz = y * tiles + f.offset[1];
+      const rx = x * co + z * si, rz = -x * si + z * co, ou = f.offset[0], ov = f.offset[1];
+      puv[0] = rz * tiles + ou; puv[1] = y * tiles + ov;
+      puv[2] = rx * tiles + ou; puv[3] = rz * tiles + ov;
+      puv[4] = rx * tiles + ou; puv[5] = y * tiles + ov;
+      if (first) { if (wx) tap(0, tw, th, puv[0], puv[1]); if (wy) tap(1, tw, th, puv[2], puv[3]); if (wz) tap(2, tw, th, puv[4], puv[5]); }
       if (buf.color) {
         const k = CHANNELS.color.k, px = buf.color;
         let r = 0, g = 0, b = 0;
         if (color) {
-          let q = sampleMap(color, ux, vx); r += q[0] * wx; g += q[1] * wx; b += q[2] * wx;
-          q = sampleMap(color, uy, vy); r += q[0] * wy; g += q[1] * wy; b += q[2] * wy;
-          q = sampleMap(color, uz, vz); r += q[0] * wz; g += q[1] * wz; b += q[2] * wz;
-          r /= ws; g /= ws; b /= ws;
+          r = blend(color, 0); g = blend(color, 1); b = blend(color, 2);
         } else { [r, g, b] = plain; }
         px[i * (k + 1)] = Math.min(255, r * tint[0] / 255); px[i * (k + 1) + 1] = Math.min(255, g * tint[1] / 255); px[i * (k + 1) + 2] = Math.min(255, b * tint[2] / 255); px[i * (k + 1) + k] = 255;
       }
-      if (buf.rough) { const px = buf.rough, q1 = roughV(ux, vx), q2 = roughV(uy, vy), q3 = roughV(uz, vz); px[i * 2] = (q1 * wx + q2 * wy + q3 * wz) / ws; px[i * 2 + 1] = 255; }
-      if (buf.metal) { const px = buf.metal, q1 = metalV(ux, vx), q2 = metalV(uy, vy), q3 = metalV(uz, vz); px[i * 2] = (q1 * wx + q2 * wy + q3 * wz) / ws; px[i * 2 + 1] = 255; }
-      if (buf.height) { const px = buf.height, q1 = height ? sampleMap(height, ux, vx)[0] : 128, q2 = height ? sampleMap(height, uy, vy)[0] : 128, q3 = height ? sampleMap(height, uz, vz)[0] : 128; px[i * 2] = (q1 * wx + q2 * wy + q3 * wz) / ws; px[i * 2 + 1] = 255; }
+      if (buf.rough) { const px = buf.rough; px[i * 2] = blendAt(roughP); px[i * 2 + 1] = 255; }
+      if (buf.metal) { const px = buf.metal; px[i * 2] = blendAt(metalP); px[i * 2 + 1] = 255; }
+      if (buf.height) { const px = buf.height; px[i * 2] = height ? blend(height, 0) : 128; px[i * 2 + 1] = 255; }
       if (buf.normal) {
         const px = buf.normal;
-        let wnx = 0, wny = 0, wnz = 0;
-        const add = (plane: 0 | 1 | 2, weight: number, u: number, v: number) => {
-          if (!normalMap || weight <= 0) return;
-          const q = sampleMap(normalMap, u, v);
-          let dx = (q[0] / 127.5 - 1) * strength, dy = (q[1] / 127.5 - 1) * strength;
-          const dz = Math.sqrt(Math.max(0, 1 - dx * dx - dy * dy));
-          const sign = (plane === 0 ? nx : plane === 1 ? ny : nz) >= 0 ? 1 : -1;
-          let pnx = 0, pny = 0, pnz = 0, ptx = 0, pty = 0, ptz = 0;
-          if (plane === 0) { pnx = sign; ptz = 1; } else if (plane === 1) { pny = sign; ptx = 1; } else { pnz = sign; ptx = 1; }
-          const pbx = pny * ptz - pnz * pty, pby = pnz * ptx - pnx * ptz, pbz = pnx * pty - pny * ptx;
-          planeOut[0] = ptx * dx + pbx * dy + pnx * dz;
-          planeOut[1] = pty * dx + pby * dy + pny * dz;
-          planeOut[2] = ptz * dx + pbz * dy + pnz * dz;
-          wnx += planeOut[0] * weight; wny += planeOut[1] * weight; wnz += planeOut[2] * weight;
-        };
-        add(0, wx / ws, ux, vx); add(1, wy / ws, uy, vy); add(2, wz / ws, uz, vz);
+        // The face's own normal plus each plane's detail along that plane's tangent and bitangent (UDN): a flat map
+        // leaves the face as it is, so the fill's Normal is (0, 0, 1) and the mesh keeps its smooth / weighted
+        // shading. Summing each plane's whole normal (±its axis) instead bent every face that isn't square to an
+        // axis toward the axes, by up to ~20°, a different amount per triangle: shading broke into facets.
+        let wnx = nx, wny = ny, wnz = nz;
+        if (normalMap) for (let p = 0; p < 3; p++) {
+          const weight = (p === 0 ? wx : p === 1 ? wy : wz) / ws;
+          if (weight <= 0) continue;
+          const dx = (mix(normalMap, p, 0) / 127.5 - 1) * strength, dy = (mix(normalMap, p, 1) / 127.5 - 1) * strength;
+          if (p === 0) { wny += -sx * dy * weight; wnz += dx * weight; }
+          else if (p === 1) { wnx += dx * weight; wnz += -sy * dy * weight; }
+          else { wnx += dx * weight; wny += sz * dy * weight; }
+        }
         if (!normalMap || (wx + wy + wz) === 0) { px[i * 4] = 128; px[i * 4 + 1] = 128; px[i * 4 + 2] = 255; }
         else {
           const l = Math.sqrt(wnx * wnx + wny * wny + wnz * wnz) || 1;
@@ -1161,6 +1211,86 @@ export function bakeFill(s: TexSet, l: PaintLayer, src: MaterialPixels, pos: Arr
   }
   for (const i of touched) weight[i] = 0;
   touched.length = 0;
+}
+
+/** Triangle t's tri-planar frame into `out` at `at`: face normal, UV tangent and bitangent, the three planes' weights
+ *  (a plane under 1/512 of the blend moves no texel by a level: dropped, so a face square to an axis samples once)
+ *  and their sum. The GPU bake (gpubake.ts) reads the same floats, 16 a triangle. */
+function triFrame(pos: ArrayLike<number>, uvs: ArrayLike<number>, t: number, out: Float64Array | Float32Array, at = 0) {
+  const o = t * 9;
+  const ax = pos[o], ay = pos[o + 1], az = pos[o + 2];
+  const e1x = pos[o + 3] - ax, e1y = pos[o + 4] - ay, e1z = pos[o + 5] - az;
+  const e2x = pos[o + 6] - ax, e2y = pos[o + 7] - ay, e2z = pos[o + 8] - az;
+  let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+  const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+  // UV tangent frame of this triangle
+  const du1 = uvs[t * 6 + 2] - uvs[t * 6], dv1 = uvs[t * 6 + 3] - uvs[t * 6 + 1];
+  const du2 = uvs[t * 6 + 4] - uvs[t * 6], dv2 = uvs[t * 6 + 5] - uvs[t * 6 + 1];
+  const det = du1 * dv2 - du2 * dv1;
+  let tx = 0, ty = 0, tz = 0, bx = 0, by = 0, bz = 0;
+  if (Math.abs(det) > 1e-12) {
+    tx = (e1x * dv2 - e2x * dv1) / det; ty = (e1y * dv2 - e2y * dv1) / det; tz = (e1z * dv2 - e2z * dv1) / det;
+    const tl = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+    bx = ny * tz - nz * ty; by = nz * tx - nx * tz; bz = nx * ty - ny * tx;
+    const bl = Math.sqrt(bx * bx + by * by + bz * bz) || 1; bx /= bl; by /= bl; bz /= bl;
+  } else { tx = 1; bx = 0; by = 1; }
+  let wx = Math.pow(Math.abs(nx), 4), wy = Math.pow(Math.abs(ny), 4), wz = Math.pow(Math.abs(nz), 4);
+  const cut = (wx + wy + wz) / 512;
+  if (wx < cut) wx = 0; if (wy < cut) wy = 0; if (wz < cut) wz = 0;
+  out[at] = nx; out[at + 1] = ny; out[at + 2] = nz; out[at + 3] = tx; out[at + 4] = ty; out[at + 5] = tz; out[at + 6] = bx; out[at + 7] = by;
+  out[at + 8] = bz; out[at + 9] = wx; out[at + 10] = wy; out[at + 11] = wz; out[at + 12] = wx + wy + wz || 1;
+}
+
+/** A fill's material and settings as gpubake.ts FILL_UNIFORMS. */
+function fillUniforms(f: Fill, src: MaterialPixels, tiles: number, co: number, si: number) {
+  const t = (m?: MapPixels) => (m ? mapTexture(m) : null);
+  return {
+    uColor: t(src.basecolor), uNormal: t(src.normal), uRough: t(src.roughness), uMetal: t(src.metallic), uHeight: t(src.height),
+    uHas: [+!!src.basecolor, +!!src.normal, +!!src.roughness, +!!src.metallic], uHasHeight: +!!src.height,
+    uTiles: tiles, uCo: co, uSi: si, uOffset: f.offset, uStrength: f.normalStrength, uTint: hexTint(f.tint),
+    uPlain: [255, 255, 255], uRoughV: f.roughness != null ? f.roughness * 255 : -1,
+    uMetalV: f.metallic != null ? f.metallic * 255 : -1, uRoughBase: CHANNELS.rough.base[0],
+  };
+}
+const FILL_CH: Channel[] = ['color', 'rough', 'metal', 'height', 'normal']; // FILL_OUT's order
+const fillOuts = (f: Fill, buf: Partial<Record<Channel, Uint8ClampedArray>>) => f.channels.filter((ch) => buf[ch]).map((ch) => FILL_OUT[ch]);
+/** A fill kernel's bytes into the layer: every texel (`all`), or those with a triangle in input 0. */
+const putFill = (n: number, buf: Partial<Record<Channel, Uint8ClampedArray>>, all: boolean) => (o: number, y0: number, h: number, rgba: Uint8Array, ins: Float32Array[]) => {
+  const px = buf[FILL_CH[o]]!, wide = o === FILL_OUT.color || o === FILL_OUT.normal;
+  for (let j = 0, i = y0 * n; j < n * h; j++, i++) {
+    if (!all && !ins[0][j * 4 + 3]) continue;
+    if (wide) { px[i * 4] = rgba[j * 4]; px[i * 4 + 1] = rgba[j * 4 + 1]; px[i * 4 + 2] = rgba[j * 4 + 2]; px[i * 4 + 3] = 255; }
+    else { px[i * 2] = rgba[j * 4]; px[i * 2 + 1] = 255; }
+  }
+};
+/** Each triangle's texel rows (with raster's 2-texel margin), so a band only rasterises the triangles reaching it. */
+function rowSpans(n: number, uvs: ArrayLike<number>, T: number) {
+  const lo = new Float32Array(T), hi = new Float32Array(T);
+  for (let t = 0; t < T; t++) {
+    const a = uvs[t * 6 + 1] * n, b = uvs[t * 6 + 3] * n, c = uvs[t * 6 + 5] * n;
+    lo[t] = Math.min(a, b, c) - 2; hi[t] = Math.max(a, b, c) + 2;
+  }
+  return (y0: number, h: number, t: number) => hi[t] >= y0 && lo[t] <= y0 + h;
+}
+
+/** bakeFill's tri-planar texels on the GPU (gpubake.ts TRIPLANAR): the CPU rasterises as ever, recording each texel's
+ *  point and triangle per band, and the shader samples. False: no GPU here (Node, a failed context), bake on the CPU. */
+function bakeFillGpu(s: TexSet, f: Fill, src: MaterialPixels, pos: ArrayLike<number>, uvs: ArrayLike<number>, buf: Partial<Record<Channel, Uint8ClampedArray>>, tiles: number, co: number, si: number) {
+  const n = s.size, T = pos.length / 9;
+  if (!gpuBakeReady(n) || T >= 1 << 24) return false;
+  const frames = new Float32Array(T * 16), reaches = rowSpans(n, uvs, T);
+  for (let t = 0; t < T; t++) triFrame(pos, uvs, t, frames, t * 16);
+  const uFrame = rows(frames);
+  const ok = gpuBake(n, { frag: TRIPLANAR, inputs: 1, uniforms: { ...fillUniforms(f, src, tiles, co, si), uFrame }, temp: [uFrame] }, fillOuts(f, buf), (y0, h, [at]) => {
+    const clip: Rect = [0, y0, n - 1, y0 + h - 1], base = y0 * n;
+    for (let t = 0; t < T; t++) {
+      if (!reaches(y0, h, t)) continue;
+      raster(n, pos, uvs, t, (x, y, z, i) => { const o = (i - base) * 4; at[o] = x; at[o + 1] = y; at[o + 2] = z; at[o + 3] = t + 1; return 1; }, clip);
+    }
+  }, putFill(n, buf, false));
+  for (const i of touched) weight[i] = 0;
+  touched.length = 0;
+  return ok;
 }
 
 /** Bilinear decal sample, clamped (a decal does not tile), returning premultiplied-safe RGB and alpha. */
@@ -1181,22 +1311,130 @@ function sampleDecal(m: MapPixels, u: number, v: number) {
   return decalSample;
 }
 
+/** A decal's projector: centre, facing, right / up turned by the rotation, size and how deep it reaches. */
+export interface DecalFrame {
+  cx: number; cy: number; cz: number; nx: number; ny: number; nz: number;
+  uxr: number; uyr: number; uzr: number; vxr: number; vyr: number; vzr: number;
+  width: number; height: number; depth: number;
+}
+/** The frame a decal is projected in: the gizmo, the placement preview and the bake all read it here, so the frame
+ *  drawn on the model is exactly the one the ink lands in. */
+export function decalFrame(d: Decal, span: number): DecalFrame {
+  const [cx, cy, cz] = d.center;
+  let [nx, ny, nz] = d.normal;
+  const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+  // Re-orthogonalise the stored up vector against the normal, then make the right vector. Text is upright
+  // when the decal is placed on a vertical face, which is how the reference markings read.
+  let [vx, vy, vz] = d.up;
+  const vd = vx * nx + vy * ny + vz * nz;
+  vx -= nx * vd; vy -= ny * vd; vz -= nz * vd;
+  let vl = Math.hypot(vx, vy, vz);
+  if (vl < 1e-6) { vx = 1; vy = 0; vz = 0; vl = 1; }
+  vx /= vl; vy /= vl; vz /= vl;
+  let ux = vy * nz - vz * ny, uy = vz * nx - vx * nz, uz = vx * ny - vy * nx;
+  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+  const rad = (d.rotation * Math.PI) / 180, co = Math.cos(rad), si = Math.sin(rad);
+  const uxr = ux * co + vx * si, uyr = uy * co + vy * si, uzr = uz * co + vz * si;
+  const vxr = -ux * si + vx * co, vyr = -uy * si + vy * co, vzr = -uz * si + vz * co;
+  const width = Math.max(d.width, 1e-5), height = width / Math.max(d.aspect, 1e-4);
+  const depth = Math.max(width * 0.55, span * 0.012);
+  return { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth };
+}
+
+/** Where each decal layer last put ink, per set and layer id: a move clears and recomposites only that box instead
+ *  of the whole texture. */
+const footprints = new WeakMap<TexSet, Map<number, Rect>>();
+/** The paint was put back (undo, a reload, another resolution): the recorded footprints belong to a state that is
+ *  gone, so the next decal bake clears its layer whole and starts again. */
+export function forgetDecalFootprints(s: TexSet) { footprints.delete(s); }
+/** Zero a layer's channels over a box (a decal's ink is wholly derived from its projector, so clearing is enough). */
+function clearRect(s: TexSet, l: PaintLayer, r: Rect) {
+  const n = s.size;
+  for (const ch of Object.keys(l.px) as Channel[]) {
+    const px = l.px[ch]!, st = CHANNELS[ch].k + 1;
+    for (let y = r[1]; y <= r[3]; y++) px.fill(0, (y * n + r[0]) * st, (y * n + r[2] + 1) * st);
+  }
+}
+
+/** The UV box (texels) a projector can ink triangle `t` in: the part of the triangle inside the projector's rectangle,
+ *  carried back through its barycentrics. Null for a triangle facing away (the projector's box reaches round a thin
+ *  part, and those would drag the clip across the atlas) or one it misses entirely. */
+function projectedUVBox(pos: ArrayLike<number>, uvs: ArrayLike<number>, t: number, f: DecalFrame, n: number): Rect | null {
+  const o = t * 9;
+  const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+  const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+  const fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x;
+  const fl = Math.hypot(fx, fy, fz);
+  if (fl < 1e-14 || (fx * f.nx + fy * f.ny + fz * f.nz) / fl < 0.12) return null;
+  const hw = f.width / 2, hh = f.height / 2;
+  // the triangle in the projector's own plane, with each corner's barycentric weights along for the ride
+  type Vtx = [number, number, number, number];
+  let poly: Vtx[] = [];
+  for (let k = 0; k < 3; k++) {
+    const dx = pos[o + k * 3] - f.cx, dy = pos[o + k * 3 + 1] - f.cy, dz = pos[o + k * 3 + 2] - f.cz;
+    poly.push([dx * f.uxr + dy * f.uyr + dz * f.uzr, dx * f.vxr + dy * f.vyr + dz * f.vzr, k === 1 ? 1 : 0, k === 2 ? 1 : 0]);
+  }
+  // Sutherland–Hodgman against the four sides of the rectangle; (b1, b2) interpolate with it
+  const cut = (a: Vtx, b: Vtx, u: number): Vtx => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u, a[3] + (b[3] - a[3]) * u];
+  const keep = (side: (p: Vtx) => number) => {
+    const out: Vtx[] = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length], da = side(a), db = side(b);
+      if (da >= 0) out.push(a);
+      if ((da >= 0) !== (db >= 0)) out.push(cut(a, b, da / (da - db)));
+    }
+    poly = out;
+  };
+  keep((p) => p[0] + hw);
+  keep((p) => hw - p[0]);
+  keep((p) => p[1] + hh);
+  keep((p) => hh - p[1]);
+  if (!poly.length) return null;
+  const u0 = uvs[t * 6], v0 = uvs[t * 6 + 1], u1 = uvs[t * 6 + 2], v1 = uvs[t * 6 + 3], u2 = uvs[t * 6 + 4], v2 = uvs[t * 6 + 5];
+  let x0 = n, y0 = n, x1 = -1, y1 = -1;
+  for (const p of poly) {
+    const b0 = 1 - p[2] - p[3], u = (b0 * u0 + p[2] * u1 + p[3] * u2) * n, v = (b0 * v0 + p[2] * v1 + p[3] * v2) * n;
+    if (u < x0) x0 = u; if (u > x1) x1 = u; if (v < y0) y0 = v; if (v > y1) y1 = v;
+  }
+  if (x1 < 0) return null;
+  const pad = 2; // the raster's seam tolerance reaches a texel past a corner
+  return [Math.max(0, Math.floor(x0) - pad), Math.max(0, Math.floor(y0) - pad), Math.min(n - 1, Math.ceil(x1) + pad), Math.min(n - 1, Math.ceil(y1) + pad)];
+}
+
 /** Bake a placed decal into a layer. A decal is a flat projector at `center`, tangent to the surface and
  *  facing along `normal`; only front-facing triangles within the projector's depth take ink. That keeps a
- *  mark from bleeding round the back of a slide or down the sides of a grip. */
-export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLike<number>, uvs: ArrayLike<number>, span: number) {
+ *  mark from bleeding round the back of a slide or down the sides of a grip. Returns the texel box the bake changed
+ *  (the caller recomposites it), or null. */
+export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLike<number>, uvs: ArrayLike<number>, span: number): Rect | null {
   const d = l.decal;
-  if (!d) return;
-  if (d.shape) { bakeShape(s, l, pos, uvs, span); return; }
+  if (!d) return null;
+  if (d.shape) { bakeShape(s, l, pos, uvs, span); return null; }
   ensureShell(s, uvs);
-  const n = s.size;
-  const { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth } = frameOf(d, span);
+  const n = s.size, f = decalFrame(d, span);
+  const { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth } = f;
   for (const ch of Object.keys(l.px) as Channel[]) if (!d.channels.includes(ch)) delete l.px[ch];
   const buf: Partial<Record<Channel, Uint8ClampedArray>> = {};
   const eng = Math.max(0, d.engrave ?? 0);
   for (const ch of d.channels) if (ch === 'color' || ch === 'rough' || ch === 'metal' || (eng > 0 && (ch === 'normal' || ch === 'height'))) buf[ch] = fillBuf(s, l, ch);
-  for (const b of Object.values(buf)) b.fill(0);
-  if (!buf.color) return;
+  if (!buf.color) return null;
+  // The triangles the projector's box reaches, and the box they occupy in the texture: the bake works inside it (a
+  // decal is a few hundred texels of a 4K atlas; the whole part per frame is what made a drag crawl).
+  const hits: [number, Rect][] = [];
+  let bx0 = n, by0 = n, bx1 = -1, by1 = -1;
+  for (let t = 0; t < pos.length / 9; t++) {
+    const box = projectedUVBox(pos, uvs, t, f, n);
+    if (!box) continue;
+    hits.push([t, box]);
+    if (box[0] < bx0) bx0 = box[0]; if (box[1] < by0) by0 = box[1]; if (box[2] > bx1) bx1 = box[2]; if (box[3] > by1) by1 = box[3];
+  }
+  const map = footprints.get(s) ?? (footprints.set(s, new Map()), footprints.get(s)!);
+  const old = map.get(l.id);
+  // Clear where the ink may be — last bake's box and this one's — or the whole layer when that box is not known
+  // (a project loaded its baked pixels, an undo put another state back).
+  let clear: Rect | null = old ? [...old] : null;
+  if (bx1 >= 0) clear = clear ? [Math.min(clear[0], bx0), Math.min(clear[1], by0), Math.max(clear[2], bx1), Math.max(clear[3], by1)] : [bx0, by0, bx1, by1];
+  if (clear) clearRect(s, l, clear); else for (const b of Object.values(buf)) b.fill(0);
+  if (!hits.length) { map.delete(l.id); return clear; }
   const tint = hexTint(d.tint), rough = d.roughness * 255, metal = d.metallic * 255;
   const color = buf.color, rc = buf.rough, mt = buf.metal, nm = buf.normal, ht = buf.height;
   // engraving: the ink's edge tilts the normal as a cut would (height = -ink), slope from the ink's gradient
@@ -1204,8 +1442,9 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
   const ink = (u: number, v: number) => sampleDecal(src, d.flipH ? 1 - u : u, d.flipV ? 1 - v : v)[3] / 255;
   let sr = 0, sg = 0, sb = 0, sa = 0, gx = 0, gy = 0, cut = false;
   let tx = 1, ty = 0, tz = 0, bx = 0, by = 1, bz = 0;
+  let ix0 = n, iy0 = n, ix1 = -1, iy1 = -1;
   ready(n);
-  for (let t = 0; t < pos.length / 9; t++) {
+  for (const [t] of hits) {
     const o = t * 9;
     const ax = pos[o], ay = pos[o + 1], az = pos[o + 2];
     const e1x = pos[o + 3] - ax, e1y = pos[o + 4] - ay, e1z = pos[o + 5] - az;
@@ -1234,7 +1473,9 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
       if (sa <= 0 && !cut) return 0;
       sr = Math.min(255, q[0] * tint[0] / 255); sg = Math.min(255, q[1] * tint[1] / 255); sb = Math.min(255, q[2] * tint[2] / 255);
       return cut ? 1 : sa;
-    }, undefined, (_x, _y, _z, i) => {
+    }, clear ?? undefined, (_x, _y, _z, i) => {
+      const ix = i % n, iy = (i / n) | 0;
+      if (ix < ix0) ix0 = ix; if (ix > ix1) ix1 = ix; if (iy < iy0) iy0 = iy; if (iy > iy1) iy1 = iy;
       color[i * 4] = sr; color[i * 4 + 1] = sg; color[i * 4 + 2] = sb; color[i * 4 + 3] = sa * 255;
       if (rc) { rc[i * 2] = rough; rc[i * 2 + 1] = sa * 255; }
       if (mt) { mt[i * 2] = metal; mt[i * 2 + 1] = sa * 255; }
@@ -1248,29 +1489,8 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
   }
   for (const i of touched) weight[i] = 0;
   touched.length = 0;
-}
-
-/** A decal's projector: centre, facing, right / up turned by the rotation, size and how deep it reaches. */
-function frameOf(d: Decal, span: number) {
-  const [cx, cy, cz] = d.center;
-  let [nx, ny, nz] = d.normal;
-  const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
-  // Re-orthogonalise the stored up vector against the normal, then make the right vector. Text is upright
-  // when the decal is placed on a vertical face, which is how the reference markings read.
-  let [vx, vy, vz] = d.up;
-  const vd = vx * nx + vy * ny + vz * nz;
-  vx -= nx * vd; vy -= ny * vd; vz -= nz * vd;
-  let vl = Math.hypot(vx, vy, vz);
-  if (vl < 1e-6) { vx = 1; vy = 0; vz = 0; vl = 1; }
-  vx /= vl; vy /= vl; vz /= vl;
-  let ux = vy * nz - vz * ny, uy = vz * nx - vx * nz, uz = vx * ny - vy * nx;
-  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
-  const rad = (d.rotation * Math.PI) / 180, co = Math.cos(rad), si = Math.sin(rad);
-  const uxr = ux * co + vx * si, uyr = uy * co + vy * si, uzr = uz * co + vz * si;
-  const vxr = -ux * si + vx * co, vyr = -uy * si + vy * co, vzr = -uz * si + vz * co;
-  const width = Math.max(d.width, 1e-5), height = width / Math.max(d.aspect, 1e-4);
-  const depth = Math.max(width * 0.55, span * 0.012);
-  return { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth };
+  if (ix1 >= 0) map.set(l.id, [ix0, iy0, ix1, iy1]); else map.delete(l.id);
+  return clear;
 }
 
 /** Triangle t's tangent frame as the engine's Mesh has it: T from the UVs, B = N × T (N the unit face normal). */
@@ -1477,7 +1697,7 @@ export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs:
   if (!d || !sh) return;
   ensureShell(s, uvs);
   const n = s.size;
-  const { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth } = frameOf(d, span);
+  const { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth } = decalFrame(d, span);
   for (const ch of Object.keys(l.px) as Channel[]) if (!d.channels.includes(ch)) delete l.px[ch];
   const nm = d.channels.includes('normal') ? fillBuf(s, l, 'normal') : null, ht = d.channels.includes('height') ? fillBuf(s, l, 'height') : null;
   nm?.fill(0); ht?.fill(0);
@@ -1539,6 +1759,157 @@ export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs:
   }
   for (const i of touched) weight[i] = 0;
   touched.length = 0;
+}
+
+/** A part's bevelled edges: per edge `[a xyz, b xyz, na xyz, nb xyz]` (the two faces' normals), and a grid of `radius`
+ *  cells listing the edges crossing each. Welded by exact position. Engine: `BevelSrc::new`. */
+export function bevelEdges(pos: ArrayLike<number>, b: Bevel) {
+  const tris = pos.length / 9, fn = new Float64Array(tris * 3), fc = new Float64Array(tris * 3);
+  for (let t = 0; t < tris; t++) {
+    const o = t * 9;
+    const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+    const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+    const fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x, l = Math.hypot(fx, fy, fz) || 1;
+    fn[t * 3] = fx / l; fn[t * 3 + 1] = fy / l; fn[t * 3 + 2] = fz / l;
+    for (let k = 0; k < 3; k++) fc[t * 3 + k] = (pos[o + k] + pos[o + 3 + k] + pos[o + 6 + k]) / 3;
+  }
+  const key = (c: number) => `${pos[c * 3]},${pos[c * 3 + 1]},${pos[c * 3 + 2]}`, on = new Map<string, number[]>();
+  for (let c = 0; c < tris * 3; c++) {
+    const d = c - (c % 3) + ((c + 1) % 3), ka = key(c), kb = key(d), k = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    const e = on.get(k);
+    if (e) e.push(c); else on.set(k, [c]);
+  }
+  const r = b.radius, cos = Math.cos((b.angle * Math.PI) / 180), segs: number[] = [], grid = new Map<string, number[]>();
+  const cell = (x: number, y: number, z: number) => `${Math.floor(x / r)},${Math.floor(y / r)},${Math.floor(z / r)}`;
+  for (const cs of on.values()) {
+    if (cs.length !== 2) continue;
+    const c = cs[0], ta = (c / 3) | 0, tb = (cs[1] / 3) | 0, d = c - (c % 3) + ((c + 1) % 3);
+    const dot = fn[ta * 3] * fn[tb * 3] + fn[ta * 3 + 1] * fn[tb * 3 + 1] + fn[ta * 3 + 2] * fn[tb * 3 + 2];
+    if (dot > cos) continue;
+    // concave when b's centre lies in front of a's plane
+    const side = (fc[tb * 3] - pos[c * 3]) * fn[ta * 3] + (fc[tb * 3 + 1] - pos[c * 3 + 1]) * fn[ta * 3 + 1] + (fc[tb * 3 + 2] - pos[c * 3 + 2]) * fn[ta * 3 + 2];
+    if (side > 0 && !b.concave) continue;
+    const id = segs.length / 12, ax = pos[c * 3], ay = pos[c * 3 + 1], az = pos[c * 3 + 2], bx = pos[d * 3], by = pos[d * 3 + 1], bz = pos[d * 3 + 2];
+    segs.push(ax, ay, az, bx, by, bz, fn[ta * 3], fn[ta * 3 + 1], fn[ta * 3 + 2], fn[tb * 3], fn[tb * 3 + 1], fn[tb * 3 + 2]);
+    const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay, bz - az) / (r / 8))), seen = new Set<string>();
+    for (let k = 0; k <= steps; k++) {
+      const f = k / steps, q = cell(ax + (bx - ax) * f, ay + (by - ay) * f, az + (bz - az) * f);
+      if (seen.has(q)) continue;
+      seen.add(q);
+      const list = grid.get(q);
+      if (list) list.push(id); else grid.set(q, [id]);
+    }
+  }
+  return { segs, grid };
+}
+/** The bevelled normal at p on a face of normal f, or null outside every edge's band. Each edge within `radius` whose
+ *  near face f belongs to (closer to f than half the edge's turn) leans the normal toward the far face by phi: a
+ *  fillet's at that distance (round), or the halfway turn (chamfer); leans add, so corners round both ways. */
+export function bevelNormal(e: ReturnType<typeof bevelEdges>, b: Bevel, px: number, py: number, pz: number, fx: number, fy: number, fz: number): [number, number, number] | null {
+  const r = b.radius, cx = Math.floor(px / r), cy = Math.floor(py / r), cz = Math.floor(pz / r), seen: number[] = [], S = e.segs;
+  let tx = 0, ty = 0, tz = 0, any = false;
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+    const list = e.grid.get(`${cx + dx},${cy + dy},${cz + dz}`);
+    if (!list) continue;
+    for (const id of list) {
+      if (seen.includes(id)) continue;
+      seen.push(id);
+      const o = id * 12, ex = S[o + 3] - S[o], ey = S[o + 4] - S[o + 1], ez = S[o + 5] - S[o + 2];
+      const qx = px - S[o], qy = py - S[o + 1], qz = pz - S[o + 2], ee = ex * ex + ey * ey + ez * ez;
+      const t = ee > 1e-20 ? Math.max(0, Math.min(1, (qx * ex + qy * ey + qz * ez) / ee)) : 0;
+      const d = Math.hypot(qx - ex * t, qy - ey * t, qz - ez * t);
+      if (d >= r) continue;
+      const sa = fx * S[o + 6] + fy * S[o + 7] + fz * S[o + 8], sb = fx * S[o + 9] + fy * S[o + 10] + fz * S[o + 11];
+      const half = Math.acos(Math.max(-1, Math.min(1, S[o + 6] * S[o + 9] + S[o + 7] * S[o + 10] + S[o + 8] * S[o + 11]))) / 2;
+      if (Math.max(sa, sb) <= Math.cos(half)) continue; // a face of another edge (a box's top beside a side's corner)
+      const k = sa >= sb ? o + 9 : o + 6, so = sa >= sb ? sb : sa;
+      let ux = S[k] - fx * so, uy = S[k + 1] - fy * so, uz = S[k + 2] - fz * so;
+      const ul = Math.hypot(ux, uy, uz);
+      if (ul < 1e-6) continue;
+      ux /= ul; uy /= ul; uz /= ul;
+      const phi = b.profile === 'chamfer' ? half : Math.min(half, Math.asin(Math.min(1, (1 - d / r) * Math.tan(half))));
+      const w = Math.tan(phi);
+      tx += ux * w; ty += uy * w; tz += uz * w; any = true;
+    }
+  }
+  if (!any) return null;
+  const nx = fx + tx, ny = fy + ty, nz = fz + tz, l = Math.hypot(nx, ny, nz) || 1;
+  return [nx / l, ny / l, nz / l];
+}
+/** Bake a bevel layer: its Normal, only where an edge leans it. Engine: `layers::BevelSrc::at`. */
+export function bakeBevel(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs: ArrayLike<number>) {
+  const b = l.bevel;
+  if (!b) return;
+  ensureShell(s, uvs);
+  const n = s.size, e = bevelEdges(pos, b);
+  for (const ch of Object.keys(l.px) as Channel[]) if (ch !== 'normal') delete l.px[ch];
+  const nm = fillBuf(s, l, 'normal');
+  nm.fill(0);
+  if (!e.segs.length || bakeBevelGpu(n, b, e, pos, uvs, nm)) return;
+  let a = 0, c = 0, z = 1;
+  ready(n);
+  for (let t = 0; t < pos.length / 9; t++) {
+    const o = t * 9;
+    const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+    const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+    let fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x;
+    const fl = Math.hypot(fx, fy, fz);
+    if (fl < 1e-14) continue;
+    fx /= fl; fy /= fl; fz /= fl;
+    const [tx, ty, tz, bx, by, bz] = tangentOf(pos, uvs, t, fx, fy, fz);
+    raster(n, pos, uvs, t, (x, y, zz) => {
+      const w = bevelNormal(e, b, x, y, zz, fx, fy, fz);
+      if (!w) return 0;
+      a = w[0] * tx + w[1] * ty + w[2] * tz; c = w[0] * bx + w[1] * by + w[2] * bz; z = w[0] * fx + w[1] * fy + w[2] * fz;
+      return 1;
+    }, undefined, (_x, _y, _z, i) => {
+      nm[i * 4] = (a * 0.5 + 0.5) * 255; nm[i * 4 + 1] = (c * 0.5 + 0.5) * 255; nm[i * 4 + 2] = (z * 0.5 + 0.5) * 255; nm[i * 4 + 3] = 255;
+    });
+  }
+  for (const i of touched) weight[i] = 0;
+  touched.length = 0;
+}
+
+/** bakeBevel on the GPU (gpubake.ts BEVEL): the edges, their grid as an open-addressed table of cells and each
+ *  triangle's frame go up as float rows; the CPU rasterises, keeping per texel the first two triangles over it (the
+ *  CPU loop takes the first that leans; a third over one texel is a corner of a seam's bleed, left out). */
+function bakeBevelGpu(n: number, b: Bevel, e: ReturnType<typeof bevelEdges>, pos: ArrayLike<number>, uvs: ArrayLike<number>, nm: Uint8ClampedArray) {
+  const T = pos.length / 9;
+  if (!gpuBakeReady(n) || T >= 1 << 24) return false;
+  const frames = new Float32Array(T * 12), live = new Uint8Array(T);
+  for (let t = 0; t < T; t++) {
+    const o = t * 9;
+    const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+    const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+    let fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x;
+    const fl = Math.hypot(fx, fy, fz);
+    if (fl < 1e-14) continue;
+    fx /= fl; fy /= fl; fz /= fl;
+    live[t] = 1;
+    const [tx, ty, tz, bx, by, bz] = tangentOf(pos, uvs, t, fx, fy, fz);
+    frames.set([fx, fy, fz, 0, tx, ty, tz, 0, bx, by, bz, 0], t * 12);
+  }
+  const cells = cellTable(e.grid), uFrame = rows(frames), uSeg = rows(new Float32Array(e.segs));
+  const reaches = rowSpans(n, uvs, T);
+  const ok = gpuBake(n, {
+    frag: BEVEL, inputs: 2, temp: [uFrame, uSeg, ...cells.temp],
+    uniforms: { uFrame, uSeg, ...cells.uniforms, uR: b.radius, uChamfer: +(b.profile === 'chamfer') },
+  }, [0], (y0, h, [c0, c1]) => {
+    const clip: Rect = [0, y0, n - 1, y0 + h - 1], base = y0 * n;
+    for (let t = 0; t < T; t++) {
+      if (!live[t] || !reaches(y0, h, t)) continue;
+      raster(n, pos, uvs, t, (x, y, z, i) => {
+        const o = (i - base) * 4, into = !c0[o + 3] ? c0 : !c1[o + 3] ? c1 : null;
+        if (into) { into[o] = x; into[o + 1] = y; into[o + 2] = z; into[o + 3] = t + 1; }
+        return 1;
+      }, clip);
+    }
+  }, (_o, y0, h, rgba) => {
+    for (let j = 0, i = y0 * n; j < n * h; j++, i++) if (rgba[j * 4 + 3]) { nm[i * 4] = rgba[j * 4]; nm[i * 4 + 1] = rgba[j * 4 + 1]; nm[i * 4 + 2] = rgba[j * 4 + 2]; nm[i * 4 + 3] = 255; }
+  });
+  for (const i of touched) weight[i] = 0;
+  touched.length = 0;
+  return ok;
 }
 
 /** A fill layer's mask, white where nothing has been painted yet. */

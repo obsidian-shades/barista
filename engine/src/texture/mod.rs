@@ -67,6 +67,16 @@ pub struct Shape {
     #[serde(default)]
     pub outline: Option<Vec<[f32; 2]>>,
 }
+/// A whole-part bevel in the normal map (paint.ts `Bevel`): `radius` world units, `profile` round / chamfer, edges
+/// sharper than `angle` degrees, concave ones too when `concave`.
+#[derive(Deserialize, Clone)]
+pub struct Bevel {
+    pub radius: f32,
+    pub profile: String,
+    pub angle: f32,
+    #[serde(default)]
+    pub concave: bool,
+}
 #[derive(Deserialize, Clone)]
 pub struct Gen {
     pub kind: String,
@@ -95,6 +105,8 @@ struct Layer {
     fill: Option<Fill>,
     decal: Option<Decal>,
     gen: Option<Gen>,
+    #[serde(default)]
+    bevel: Option<Bevel>,
 }
 #[derive(Deserialize)]
 struct Set { size: usize, channels: Vec<String>, layers: Vec<Layer> }
@@ -163,7 +175,7 @@ fn blended(d: f32, s: f32, mode: &str) -> f32 {
 }
 
 /// How a layer gets its texels at the export size.
-enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a Map, &'a [String]), Shape(layers::ShapeSrc<'a>), Gen(&'a Gen) }
+enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a Map, &'a [String]), Shape(layers::ShapeSrc<'a>), Bevel(layers::BevelSrc), Gen(&'a Gen) }
 
 /// One part's maps at size n: composite colour, roughness, metallic, normal, height, AO, and which texels are
 /// painted (for the padding) and on the surface.
@@ -193,6 +205,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
             if let Some(f) = &l.fill { if let Some(m) = assets.materials.get(&f.asset) { return Src::Fill(f, m); } }
             if let Some(d) = &l.decal { if let Some(sh) = &d.shape { return Src::Shape(layers::ShapeSrc::new(d, sh, span, mesh)); } }
             if let Some(d) = &l.decal { if let Some(img) = assets.decals.get(&d.asset) { return Src::Decal(DecalFrame::new(d, span), img, &d.channels); } }
+            if let Some(b) = &l.bevel { return Src::Bevel(layers::BevelSrc::new(b, mesh.pos)); }
             if let Some(g) = &l.gen { if occ.is_some() && edges.is_some() { return Src::Gen(g); } }
             Src::Pixels
         })
@@ -228,6 +241,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
                             Src::Fill(f, m) => fill_at(f, m, mesh, t, p, x, y, n, span),
                             Src::Decal(fr, img, ch) => fr.at(img, mesh, t, p, ch),
                             Src::Shape(sh) => sh.at(mesh, t, p),
+                            Src::Bevel(b) => b.at(mesh, t, p),
                             Src::Gen(g) => {
                                 if convex.is_nan() { convex = edges.unwrap().dist(0, p); concave = edges.unwrap().dist(1, p); }
                                 let clip = buf.get("clip").map(|m| up.sample(m, 1, true, u, v, &mut tmp) * tmp[0] / 255.0).unwrap_or(1.0);
@@ -504,6 +518,21 @@ fn run(req: &ExportReq, dir: &Path, fbx: Option<&[u8]>) -> Result<Vec<String>, S
 mod tests {
     use super::*;
     use crate::project::save;
+
+    /// A box's top (normal +z) meeting its side (+x) at a 90° edge: the same numbers as paint.check.ts's bevel block —
+    /// a round bevel leans 30° at half the radius and nothing past it, a chamfer 45°, and a 100° threshold skips it.
+    #[test]
+    fn bevel_matches_the_editor() {
+        let bx: [f32; 36] = [0., 0., 1., 1., 0., 1., 1., 1., 1., 0., 0., 1., 1., 1., 1., 0., 1., 1., 1., 0., 1., 1., 0., 0., 1., 1., 0., 1., 0., 1., 1., 1., 0., 1., 1., 1.];
+        let b = |profile: &str, angle: f32| Bevel { radius: 0.1, profile: profile.into(), angle, concave: false };
+        let lean = |src: &layers::BevelSrc, x: f32| src.normal([x, 0.5, 1.0], [0.0, 0.0, 1.0]).map(|n| n[0].atan2(n[2]).to_degrees());
+        let round = layers::BevelSrc::new(&b("round", 30.0), &bx);
+        assert!((lean(&round, 0.95).unwrap() - 30.0).abs() < 1e-3, "round at r/2: {:?}", lean(&round, 0.95));
+        assert!(lean(&round, 0.85).is_none(), "past the radius");
+        let chamfer = layers::BevelSrc::new(&b("chamfer", 30.0), &bx);
+        assert!((lean(&chamfer, 0.95).unwrap() - 45.0).abs() < 1e-3, "chamfer");
+        assert!(lean(&layers::BevelSrc::new(&b("round", 100.0), &bx), 0.95).is_none(), "under the threshold");
+    }
 
     /// The engine draws a grip texture as the editor does: paint.ts `shapeHeight` at the same points (from Node).
     #[test]

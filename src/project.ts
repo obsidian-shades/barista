@@ -67,7 +67,8 @@ export function docOf(s: State, setOf: (i: number) => TexSet | null) {
   const scene = s.scene.hdriUrl?.startsWith('blob:') ? { ...s.scene, hdriUrl: null, hdriId: '', hdriName: '' } : s.scene;
   const doc: Doc = {
     version: PROJECT_VERSION, source: s.source, unit: s.unit, params: s.params, textureResolution: s.textureResolution, workspace: s.workspace,
-    activePart: s.activePart, scene, paint: s.paint, paintChannel: s.paintChannel, paintAO: s.paintAO, parts,
+    // the material held on the Eyedropper is cursor state, not a document setting
+    activePart: s.activePart, scene, paint: { ...s.paint, grab: null }, paintChannel: s.paintChannel, paintAO: s.paintAO, parts,
     result: s.result ? { stats: s.result.stats } : null,
     pins: Object.fromEntries(Object.entries(s.pins).map(([i, p]) => [i, [...p.corners]])), sets,
     symPlane: s.symPlane,
@@ -105,9 +106,16 @@ export function docFrom(saved: unknown, blobs: Map<string, Uint8Array>) {
   }
   const pixels = (part: number, size: number) => (id: number, what: Channel | 'mask' | 'clip', stride: number) =>
     fromTiles(new Uint8Array(size * size * stride), size, stride, tiles.get(`${part}/${id}/${what}`) ?? []);
+  // a project saved before the decal pick (`paint.decalSel`), the Eyedropper's material mode (`paint.pickMode`) or the
+  // Decal tool's Edit / Place switch (`paint.decalMode`) existed has no such field: default them as the store does
+  // A project saved before the material view's Lift, or with the old Headlight view, gets the current scene fields.
+  // Headlight had replaced the key and its shadow: lifting the material does that job now, so a project that used it
+  // opens with the shadow back on.
+  const hadHeadlight = (doc.scene as { paintHeadlight?: boolean } | undefined)?.paintHeadlight === true;
+  const { paintHeadlight: _headlight, ...savedScene } = (doc.scene ?? {}) as typeof doc.scene & { paintHeadlight?: boolean };
   const state = {
     source: doc.source, unit: doc.unit, params: doc.params, textureResolution: doc.textureResolution, workspace: doc.workspace,
-    activePart: Math.min(doc.activePart, Math.max(0, parts.length - 1)), scene: doc.scene, paint: doc.paint, paintChannel: doc.paintChannel,
+    activePart: Math.min(doc.activePart, Math.max(0, parts.length - 1)), scene: { ...savedScene, paintShadow: hadHeadlight ? true : savedScene.paintShadow ?? true, paintLift: savedScene.paintLift ?? 0.4 }, paint: { ...doc.paint, decalSel: doc.paint.decalSel ?? true, decalMode: doc.paint.decalMode ?? 'edit', pickMode: doc.paint.pickMode ?? 'material', grab: null }, paintChannel: doc.paintChannel,
     paintAO: doc.paintAO, parts, result, uvs, pins, symPlane: doc.symPlane ?? null, symEdit: null,
   } satisfies Partial<State>;
   return { state, sets: doc.sets, pixels };

@@ -28,6 +28,9 @@ export interface MaterialAsset {
   source: string;
   thumb?: string;
   asset?: string;
+  /** No colour of its own: the base colour map is left out and the fill's tint is the colour (on white), so one
+   *  finish takes any colour (Cerakote). Its roughness / normal / height keep the coating's texture. */
+  colorless?: boolean;
 }
 
 export interface MapPixels { width: number; height: number; data: Uint8ClampedArray }
@@ -84,9 +87,9 @@ export const tileKind = (m: MaterialAsset) => TILE_KINDS.find(([, re]) => re.tes
 const BASE = '/materials';
 /** Weapon finishes the pack has under other names: the same maps, shelved again under the finish's name
  *  (textures only, no tint). [name, the pack material it is]. */
-const FINISHES: [string, string][] = [
-  ['Cerakote', 'painted metal PBR'],
-  ['Anodized Metal', 'silver metal PBR'],
+const FINISHES: [string, string, boolean][] = [
+  ['Cerakote', 'painted metal PBR', true],
+  ['Anodized Metal', 'silver metal PBR', false],
 ];
 let library: MaterialAsset[] | null = null;
 let loading: Promise<MaterialAsset[]> | null = null;
@@ -102,9 +105,14 @@ export function loadMaterialLibrary(): Promise<MaterialAsset[]> {
         const pj = await pr.json() as { materials?: MaterialAsset[] };
         if (Array.isArray(pj.materials) && pj.materials.length) {
           library = pj.materials.map((m) => ({ ...m, library: 'pack' as const }));
-          for (const [name, of] of FINISHES) {
+          for (const [name, of, colorless] of FINISHES) {
             const m = library.find((x) => x.name === of);
-            if (m) library.unshift({ ...m, id: `finish-${name.toLowerCase().replace(/\W+/g, '-')}`, name, tags: [...m.tags, 'finish', name.toLowerCase()], notes: `${name} finish (the pack's “${of}”)` });
+            if (!m) continue;
+            library.unshift({
+              ...m, id: `finish-${name.toLowerCase().replace(/\W+/g, '-')}`, name, tags: [...m.tags, 'finish', name.toLowerCase(), ...(colorless ? ['colorless', 'any colour'] : [])],
+              notes: colorless ? `${name} finish (the pack's “${of}” texture, no colour: the fill's tint is its colour)` : `${name} finish (the pack's “${of}”)`,
+              ...(colorless ? { maps: { ...m.maps, basecolor: undefined }, colorless } : {}),
+            });
           }
           return library;
         }
@@ -179,16 +187,17 @@ export function materialPixels(m: MaterialAsset): Promise<MaterialPixels> {
   }
   const job = (async () => {
     const out: MaterialPixels = {};
-    for (const kind of ['basecolor', 'normal', 'roughness', 'metallic', 'ao', 'height'] as MapKind[]) {
+    // all maps at once: one after another was a fetch + decode round trip each
+    await Promise.all((['basecolor', 'normal', 'roughness', 'metallic', 'ao', 'height'] as MapKind[]).map(async (kind) => {
       const url = mapUrl(m, kind);
-      if (!url) continue;
+      if (!url) return;
       const px = await decodeImage(url);
       // One convention everywhere inside the painter: tangent-space OpenGL. DirectX bakes
       // (Unreal, some Substance exports) only differ in the green channel.
       if (kind === 'normal' && m.normal === 'dx') for (let i = 1; i < px.data.length; i += 4) px.data[i] = 255 - px.data[i];
       out[kind] = px;
-    }
-    if (!out.basecolor) throw new Error(`${m.name} has no base color map`);
+    }));
+    if (!out.basecolor && !m.colorless) throw new Error(`${m.name} has no base color map`);
     return out;
   })();
   pixels.set(m.id, job);

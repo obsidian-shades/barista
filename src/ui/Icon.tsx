@@ -2,8 +2,9 @@
 //
 // The standard chrome (eye, checker, chevron, delete, duplicate, layers…) is drawn filled on a 20×20 grid, the way
 // Adobe's Spectrum workflow icons are: that is what makes a Photoshop-like shell read as Photoshop. Domain tools that
-// Photoshop has no icon for (Cut, Stitch, Unwrap, Pin, mesh tools) stay line glyphs in the same optical weight: 20×20,
-// 1.5 px effective stroke, rounded ends. Render both at 18 px in the rail and 16 px in dense rows.
+// Photoshop has no icon for (Cut, Stitch, Pin, mesh tools) and the workspace tabs are two-tone `ico`s in the same optical
+// weight: 20×20, 1.4 stroke, rounded ends, faces faint, what the tool acts on lit. Each one is the picture other apps
+// use for that job (Blender, Maya, Photoshop, Illustrator, Substance); docs/icons.md lists which. Rendered at 18 px.
 import type { ReactNode } from 'react';
 
 export type IconName = 'eye' | 'eye-off' | 'checker' | 'chevron' | 'close' | 'plus' | 'trash' | 'duplicate' | 'layers' | 'cursor' | 'lock' | 'folder' | 'fullscreen' | 'mark';
@@ -30,22 +31,69 @@ export function Icon({ name, size = 16, className }: { name: IconName; size?: nu
   return <svg className={className} width={size} height={size} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">{FILLED[name]}</svg>;
 }
 
-/** A 16-unit line drawing wrapped onto the 20-unit grid: 1.5 px at the rail's 18 px, rounded like Spectrum. */
-export const glyph = (d: string, dash = '', dots: [number, number][] = []) => (
-  <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <g transform="scale(1.25)">
-      <path d={d} />
-      {dash && <path d={dash} strokeDasharray="1.6 1.6" />}
-      {dots.map(([x, y], i) => <circle key={i} cx={x} cy={y} r="1.4" fill="currentColor" stroke="none" />)}
-    </g>
+/** How a tool icon's path is inked: '' line, `f` faint face, `F` solid, `a` lit line, `A` lit fill, `d` dashed, `ad` lit
+ *  dashed. Lit uses the app's blue selection accent to mark what the tool acts on or makes. */
+type Ink = '' | 'f' | 'F' | 'a' | 'A' | 'd' | 'ad';
+
+/** A dot as a path (fill it with `F` or `A`). */
+export const dot = (x: number, y: number, r = 1.4) => `M${x - r} ${y}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0`;
+export const dots = (pts: [number, number][], r?: number) => pts.map(([x, y]) => dot(x, y, r)).join('');
+
+/** A two-tone tool icon drawn straight on the 20×20 grid (no rescale), styled by `.ico` in base.css. */
+export const ico = (...parts: (string | [string, Ink])[]) => (
+  <svg className="ico" width="18" height="18" viewBox="0 0 20 20" aria-hidden="true">
+    {parts.map((p, i) => { const [d, k] = typeof p === 'string' ? [p, ''] : p; return <path key={i} d={d} className={k ? `i-${k}` : undefined} />; })}
   </svg>
 );
 
-/** The app mark: a cup, the simplest thing that says Barista at 22 px. */
+/** The app mark: an espresso cup on its saucer, steam above (public/mark.svg and the app icon are the coloured one). */
 export const Mark = ({ size = 22 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M3.5 7.5h11v4.4A5 5 0 0 1 9.5 17h-1a5 5 0 0 1-5-5z" />
-    <path d="M14.5 8.5h1.4a2.3 2.3 0 0 1 0 4.6h-1.4" />
-    <path d="M6.4 3.2c0 1.1 1 1.2 1 2.4M10.4 3.2c0 1.1 1 1.2 1 2.4" />
+    <path d="M4 8h10v3a5 5 0 0 1-5 5 5 5 0 0 1-5-5z" fill="currentColor" fillOpacity=".25" />
+    <path d="M14 9h1.2a2.1 2.1 0 0 1 0 4.2H14M2 18.2h14" />
+    <path d="M7 2.2c-.9 1.2.9 1.9 0 3.3M10.6 2.2c-.9 1.2.9 1.9 0 3.3" />
   </svg>
 );
+
+/** An isometric cube of size `r` centred on (x, y): its outline and its three inner edges. */
+const cube = (x: number, y: number, r: number) => {
+  const w = r * 0.87, h = r / 2;
+  return [`M${x} ${y - r}l${w} ${h}v${r}l${-w} ${h}l${-w} ${-h}v${-r}z`, `M${x - w} ${y - h}l${w} ${h} ${w} ${-h}M${x} ${y}v${r}`];
+};
+const [CUBE, CUBE_IN] = cube(10, 10, 8);
+const SPHERE = 'M10 3a7 7 0 1 1 0 14a7 7 0 1 1 0-14';
+
+/** Icons used in more than one place, and the shell's modes and commands (each named for what it stands for). */
+export const ICON = {
+  // Blender's select modes: the cube with the element a click takes lit; island = a UV island; part = the selected object's outline
+  vert: ico(CUBE + CUBE_IN, [dot(10, 10, 2.4), 'A']),
+  edge: ico(CUBE + CUBE_IN, ['M10 10v8', 'a'], [dots([[10, 10], [10, 18]], 1.5), 'A']),
+  face: ico(['M10 10l7-4v8l-7 4z', 'A'], CUBE + CUBE_IN),
+  island: ico(['M3 4h6l1.5 4.5L8 15H3z', 'A'], ['M12.5 3.5H17v6h-2.5l-2-2.5zM12.5 12.5H17V17h-4.5z', 'f'], 'M12.5 3.5H17v6h-2.5l-2-2.5zM12.5 12.5H17V17h-4.5z'),
+  surface: ico(['M4 6v8a6 2.2 0 0 0 12 0V6a6 2.2 0 0 1-12 0z', 'A'], 'M4 6a6 2.2 0 1 0 12 0a6 2.2 0 1 0-12 0M4 6v8a6 2.2 0 0 0 12 0V6'),
+  part: ico([CUBE, 'f'], CUBE_IN, [CUBE, 'a']),
+  // display: Blender's wireframe globe, solid-shaded ball, MatCap ball, flat disc; the UV checker; a heat ramp for stretch
+  wire: ico(SPHERE + 'M10 3a3.2 7 0 1 0 0 14a3.2 7 0 1 0 0-14M3 10h14M4.2 6.2h11.6M4.2 13.8h11.6'),
+  smooth: ico([SPHERE, 'f'], SPHERE, [dot(7.5, 7.5, 1.6), 'F']),
+  health: ico(['M10 17.5S2.5 13 2.5 7.6A4.1 4.1 0 0 1 10 5.2a4.1 4.1 0 0 1 7.5 2.4C17.5 13 10 17.5 10 17.5z', 'f'], 'M10 17.5S2.5 13 2.5 7.6A4.1 4.1 0 0 1 10 5.2a4.1 4.1 0 0 1 7.5 2.4C17.5 13 10 17.5 10 17.5z', ['M2.5 10.5h4l1.5-3 2.5 5 1.5-2h5.5', 'a']),
+  checker: ico('M3 3h14v14H3z', ['M3 3h3.5v3.5H3zM10 3h3.5v3.5H10zM6.5 6.5H10V10H6.5zM13.5 6.5H17V10h-3.5zM3 10h3.5v3.5H3zM10 10h3.5v3.5H10zM6.5 13.5H10V17H6.5zM13.5 13.5H17V17h-3.5z', 'F']),
+  stretch: ico(['M3 3h4.7v14H3z', 'f'], ['M7.7 3h4.6v14H7.7z', 'f'], ['M7.7 3h4.6v14H7.7z', 'f'], ['M12.3 3H17v14h-4.7z', 'A'], 'M3 3h14v14H3z'),
+  islands: ico(['M2.5 3h7v6.5h-7z', 'A'], ['M11.5 3h6v4l-2 2.5h-4z', 'F'], ['M2.5 11.5h5.5l1.5 2.5V17h-7zM11.5 12h6v5h-6z', 'f'], 'M2.5 11.5h5.5l1.5 2.5V17h-7zM11.5 12h6v5h-6z'),
+  studio: ico(['M12 6a6 6 0 1 1 0 12a6 6 0 1 1 0-12', 'f'], 'M12 6a6 6 0 1 1 0 12a6 6 0 1 1 0-12', [dot(4.5, 4.5, 2.2), 'A'], ['M8.5 4.5h1.2M4.5 8.5v1.2M7.3 7.3l.9.9', 'a']),
+  matcap: ico([SPHERE, 'f'], ['M15 5A7 7 0 0 1 5 15z', 'F'], SPHERE, [dot(7.2, 7.2, 1.4), 'F']),
+  flat: ico([SPHERE, 'F']),
+  shading: ico(SPHERE, ['M10 3a7 7 0 0 1 0 14a4.5 7 0 0 0 0-14z', 'F']),
+  options: ico('M3 6h14M3 14h14', [dots([[7, 6], [13, 14]], 2.3), 'F']),
+  one: ico([CUBE, 'f'], CUBE + CUBE_IN),
+  all: ico(...[cube(6, 13.5, 4.2), cube(14, 13.5, 4.2), cube(10, 6, 4.2)].flatMap(([o, i]) => [[o, 'f'] as [string, Ink], o + i])),
+  fit: ico(['M7 7h6v6H7z', 'f'], 'M7 7h6v6H7zM3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4'),
+  // the eyedropper, bucket and relax are tools and also buttons elsewhere
+  picker: ico(['M12.5 3.2a2.4 2.4 0 0 1 3.4 0l.9.9a2.4 2.4 0 0 1 0 3.4l-2.2 2.2-4.3-4.3z', 'F'], 'M9.6 4.7l5.7 5.7M11.4 7.6l-6.9 6.9-1 2 2-1 6.9-6.9', [dot(2.6, 17.6, 1.2), 'A']),
+  bucket: ico(['M3 9l13 1-6 6z', 'A'], 'M9 3l7 7-6 6-7-7zM5.5 6.2C4.6 3.6 6.8 1.6 9 3', ['M17.3 12.3s1.8 2.2 1.8 3.4a1.8 1.8 0 0 1-3.6 0c0-1.2 1.8-3.4 1.8-3.4z', 'A']),
+  relax: ico(['M3 3h14v14H3z', 'f'], 'M3 3h14v14H3z', ['M10 3L6.5 6.5M3 10l3.5-3.5M17 10L6.5 6.5M10 17L6.5 6.5', 'd'], ['M10 3v14M3 10h14', 'a'], [dot(10, 10, 1.7), 'A']),
+  // Photoshop's new fill / adjustment layer (the half-filled circle); metal = a glossy ball with a glint
+  solidFill: ico('M10 3a7 7 0 1 1 0 14a7 7 0 1 1 0-14', ['M10 3a7 7 0 0 0 0 14z', 'F']),
+  metal: ico([SPHERE, 'f'], SPHERE, 'M5.8 9a4.5 4.5 0 0 1 3.4-3.6', ['M15.5 1l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z', 'A']),
+  left: ico('M16 10H4M8 6l-4 4 4 4'),
+  right: ico('M4 10h12M12 6l4 4-4 4'),
+};

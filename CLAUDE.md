@@ -69,7 +69,12 @@ project's file, or `%APPDATA%\Barista\autosave\<name>.barista` before the first 
 (`shell/AskDialog.tsx`, store `ask` / `answerAsk`): opening a model asks paint resolution, workspace, sharp edges, One atlas, Join into nets and auto unwrap (`openOpts`, remembered in localStorage;
 File › Ask how to open models turns it off; no unwrap = mesh-only stale parts, which Unwrap then does all of), and anything
 replacing an unsaved document or closing the window asks Save / Don't save / Cancel (`confirmDiscard`; Tauri `onCloseRequested`,
-needs `core:window:allow-destroy`; browser `beforeunload`). A freshly opened model counts as saved. Check: `node src/project.check.ts`,
+needs `core:window:allow-destroy`; browser `beforeunload`). A freshly opened model counts as saved (the redraw the
+environment map's arrival asks for is not a paint edit); opening frees the previous document's texture sets (their
+WebGL textures), resets Unfold, and unwraps the parts Poly Doc left mesh-only, so a reopened project never comes back
+with every UV at 0. Opening frames the model by snapping the camera to its bounds (`FitOnOpen`, not drei's animated
+`Bounds`: these models sit thousands of units from the origin, and a fit made before the canvas had a size — or one
+that only fitted its first layout — left the view pointed at empty space). Check: `node src/project.check.ts`,
 `cargo test project`.
 
 ## Texture export (`engine/src/texture/`: `mod.rs`, `layers.rs`, `bake.rs`)
@@ -103,14 +108,15 @@ view and the editor's bake stay at the working resolution; gun5 at 8K: ~90 s, th
 - Running server locks `engine/target/release`: test with `CARGO_TARGET_DIR=target/check cargo test --release`.
 - `src/api.ts` mirrors `engine/src/lib.rs` (Params, Stats, Output): change both together.
 - Every user action lives in `src/store.ts`; components only read state and call those.
-- The editor works like Blender (left-click select, middle-drag orbit, numpad views, 1-4 vertex/edge/face/island, A / Alt+A / Ctrl+I /
+- The editor works like Blender (left-click select, middle-drag orbit, Alt+middle orbit snap, numpad views, 1-4 vertex/edge/face/island, A / Alt+A / Ctrl+I /
   L / Ctrl+L, Alt+click loop, B box; right click (list) or Q (pie): Cut = make seams, Stitch = join along edges (seams or
   hand tears; with faces selected, Cut takes their outline, Stitch the edges between them); in UV: G/R/S modal with X/Y, typed values, Ctrl snap; P / Alt+P pins, which
   `reseam` holds in place; U unwraps the selection; Live Unwrap lays a pin's islands out as it's dragged). After an auto unwrap every
   island border is a seam (`Part.seams`, clearing one joins its islands); `Part.marked` are the hand-marked ones, all Auto Unwrap keeps.
   3D navigation: the wheel zooms toward the cursor (`zoomToCursor`, `zoomSpeed` 3 ≈ 14% a notch, no distance limits); near / far
   follow the camera every frame (`ClipPlanes`: distance / 500 … distance × 4 + model size × 4), never fixed at framing, so a big FBX
-  can be zoomed into without the near plane slicing it; Home / numpad . frame all / the selection.
+  can be zoomed into without the near plane slicing it; Home / Space recenter to the model, numpad . frames the selection;
+  Alt+middle snaps the orbit to 15°.
   One selection (`csel`, ids from `src/topo.ts`) is shared by the 3D and UV views; `selected` (islands it touches) is derived from
   it for the island tools. A face is its whole polygon however it's picked (`selectElems` → `wholePolygons`; switching to face mode
   keeps only polygons with every triangle selected, `completePolygons`), except island picks in UV Magician (Ctrl+L, L, island tools),
@@ -134,20 +140,25 @@ polygons (`Part.poly` / `Part.sides`) and never move them, so UVs and stretch st
 connected patch (`dissolveFaces`, whole patch at once), edges selected → the two sides of each edge merge; Tris to Quads: lone selected triangles paired greedily, flattest
 (bend < 40°) and squarest first, convex only. A merge whose outline wouldn't be one simple loop is skipped. A triangles-only file
 starts as one polygon per triangle (`ownPolygons`). Check: `node src/polyedit.check.ts`.
-The options bar ends with the same ViewControls cluster in every workspace (`shell/Chrome.tsx`): selection | Display |
-Shading. Selection is Vertex / Edge / Face / Island (Poly Doc disables Island: it has no UVs); Van Gogh's same slot is
-Face / Island / Part (what Select Faces and Bucket pick). Display is the workspace's view mode (Poly Doc Wire / Smooth /
-Health = `docView`; UV Magician Checker / Stretch / Islands = `mode`; Van Gogh Studio / MatCap / Flat = `scene.lighting`),
-mirrored by the Z pie and View › Display, so Z never cycles or means something else in another workspace.
-The Shading popover (`views/SceneSettings.tsx`, Blender's Viewport Shading): Lighting Studio (lights + environment map) /
+The options bar is the tool's own strip (`shell/Chrome.tsx`): the tool name, then the Mode group — Vertex /
+Edge / Face / Island (Poly Doc disables Island: it has no UVs), the icons are the label; Van Gogh's Select-by modes
+(Face / Surface / Island / Part) appear only for Select Faces, Bucket and the Materials eyedropper — then the tool's settings. The workspace view
+mode lives in the 3D view header (Poly Doc Wire / Smooth / Health = `docView`; Van Gogh Studio / MatCap / Flat =
+`scene.lighting`), next to the Shading popover; UV Magician's UV header carries Checker / Stretch / Islands = `mode`,
+the Part / All scope, UV options and Fit (UV options opens a dialog anchored under its button: reference map, resolution,
+islands). All are mirrored by the Z pie and View › Display, so Z never cycles or means
+something else in another workspace.
+The Shading popover (`views/SceneSettings.tsx`, in the 3D header, Blender's Viewport Shading): Lighting Studio (lights + environment map) /
 MatCap (`src/shading.ts`: spheres drawn on a canvas, no image files: clay, studio grey, red wax, jade, chrome, toon, normals) / Flat
 (unlit); Poly Doc Face color (Single / Random per part = `docColor`); Background
-Theme / World (the map, `hdriBackground`) / Custom; Options: Backface Culling, Outline (drei `Outlines`), Specular, X-Ray + alpha,
-Shadow + amount, Cavity (world space, `cavityOf`: neighbours' height over each vertex's tangent plane; Ridge / Valley); Overlays.
+Theme / World (the map, `hdriBackground`) / Custom; Options: Backface Culling, Outline (a 1 px silhouette from the
+part ids in the Workbench normals pass, not an extra mesh: drei's `Outlines` built a second creased shell that could cover
+the surface), Specular, X-Ray + alpha, Shadow + amount, Cavity (world space, `cavityOf`: neighbours' height over each
+vertex's tangent plane; Ridge / Valley); Overlays.
 `PartMesh` builds one colour attribute (colour mode × cavity) and picks the material by lighting.
 All three workspaces share one frame so switching never moves anything (`.space`: a 32 px options bar row that wraps instead of clipping,
-then strip | views | panel; UV Magician's bar is `UVOptionsBar`: last strip tool `uvTool`, selection, Unwrap selection,
-Live Unwrap; Van Gogh's is `PaintOptionsBar`: the tool's settings; both end in ViewControls). File › Open Recent (`src/recent.ts`,
+then strip | views | panel; UV Magician's bar is `UVOptionsBar`: last strip tool `uvTool`, its Mode group, Unwrap selection,
+Live Unwrap; Van Gogh's is `PaintOptionsBar`: the tool's settings and, for the tools that use it, its Select-by modes). File › Open Recent (`src/recent.ts`,
 IndexedDB, newest 10 by name): a File System Access handle where the browser has `showOpenFilePicker` (Chromium, WebView2: reread from
 disk, permission asked once), else a copy up to 64 MB; a file that can't be reopened drops off the list.
 The workspaces: a tool strip on the left (`ToolStrip` in `shell/PolyTools.tsx`; UV Magician's is `shell/UVTools.tsx`: box select,
@@ -155,8 +166,8 @@ loop, linked, Cut, Stitch, Pin, Unpin; the one-shot island commands are in the c
 sections) and draggable dividers (`shell/Resizer.tsx`, espresso's dock resizer: the panel's width `dockWidth`, and in UV Magician the
 3D / UV share `viewSplit`, both kept in localStorage). Poly Doc's panel has the Parts list too (`Parts workspace="doc"`: polygon counts,
 no checker toggle). Panels collapse from their headers; Van Gogh pins Layers to the bottom.
-Layout (Photoshop / espresso-level-designer): options bar on top (`PolyOptionsBar`: current tool, its settings `docOpts` = slide
-amount, Limited Dissolve angle, Relax rounds, `fixNote`, then the shared ViewControls), tool strip on the left (`PolyToolStrip`, `shell/PolyTools.tsx`:
+Layout (Photoshop / espresso-level-designer): options bar on top (`PolyOptionsBar`: current tool, Mode group, its settings `docOpts` = slide
+amount, Limited Dissolve angle, Relax rounds, `fixNote`), tool strip on the left (`PolyToolStrip`, `shell/PolyTools.tsx`:
 line glyphs in Spectrum's stroke weight, grouped clean up / shape / edge loops; a click runs the tool and makes it `docTool`; dimmed
 until the selection fits), the panel on the right for looking only. Panel order: Health (verdict + rules grouped broken / bake / craft,
 `healthVerdict`), Mesh Check (non-manifold edges and vertices, flipped faces, inside-out closed shells, zero-area / duplicate faces,
@@ -223,14 +234,19 @@ eraser stay inside; document-wide like Photoshop's (`selectDoc`: replacing it em
 (`shade`: orange tint and border inside, black outside; an overlay mesh in 3D, drawn over the texture). Tools (Photoshop keys): Marquee M / Lasso L (on the model:
 screen shape, only what's seen, `depthOf`; in the texture view: UV polygon; a click deselects), Select Faces W, Bucket G
 (both take Face = the file's polygon / Island / Part, options bar), Brush B, Eraser E, Eyedropper I (and Alt+click with
-Brush / Bucket). Shift adds, Alt takes away; Ctrl+click picks the part (opens it in the Parts tree), and painting a part makes it the active one. The texture view's Part / All changes only from its own buttons (an atlas model opens in All); in a shared atlas each part's set draws clipped to its own triangles, a click goes to the part under it, and a Brush / Eraser stroke there paints every part in the square (`atlasMates`, one undo step, CPU path). Ctrl+A select all,
+Brush / Bucket). The Eyedropper's `pickMode` is **Materials** — a click lifts the clicked part's material layers (fills,
+solids, generators, bevels; not decals or hand paint) onto the cursor (`grabMaterials`, `paint.grab`; a round chip of the top
+fill's preview follows the pointer and the target for the options bar's Face / Island / Part is outlined on hover), and the
+next click applies them (`applyGrab`): Whole Part replaces that part's own material layers, a face / island / surface adds
+them masked there; Esc drops the stack (`dropMaterials`), and each apply is one undo step — or **Color**, which samples
+base colour, roughness and metallic. Shift adds, Alt takes away; Ctrl+click picks the part (opens it in the Parts tree), and painting a part makes it the active one. The texture view's Part / All changes only from its own buttons (an atlas model opens in All); in a shared atlas each part's set draws clipped to its own triangles, a click goes to the part under it, and a Brush / Eraser stroke there paints every part in the square (`atlasMates`, one undo step, CPU path). Ctrl+A select all,
 Ctrl+D deselect, Ctrl+Shift+I invert, Alt+Backspace fill selection (no selection: the layer), Delete clear, Ctrl+J duplicate,
 Ctrl+Shift+N new layer, Ctrl+[ ] move layer, [ ] brush size, Ctrl+Z / Ctrl+Shift+Z (20 steps across sets, copy-on-write
 layers; a step undone is kept for redo, a slider's step is taken by its first change, not its pointerdown, and a
 selection step shares the layers — an island pick is document-wide, so it must not copy every part's buffers). A dab on
 the model is a world-space sphere (triangles near it rasterised in UV), in the texture view a texel circle (size % of the
 texture); each texel takes a dab once (strongest weight) so triangle edges never show, and paint bleeds 1.5 px only across
-UV borders (`bordersOf`), so a face fill stops exactly at its edges inside an island. Panel: Parts tree (collapsible,
+UV borders (`bordersOf`), so a face fill stops exactly at its edges inside an island. Panel (Layers tab): Texture sets as a list of pictures of each part in its paint (`matview.partShot`, Parts paint mode), then the layers, the selected layer's opacity / blend / fill / decal / generator settings unfolded under its row (click it again to fold). Parts tree (collapsible,
 `paintOpen`; channels under each, click one to see it in the texture view), Layers as Photoshop's (opacity on top, rows
 with eye + thumbnail, drag to reorder, double-click renames; Fill / Duplicate / New / Delete along the bottom), pinned
 to the bottom of the dock; the Blend row edits the blend of the channel being viewed (`paintChannel`), as Substance's
@@ -244,12 +260,12 @@ metallic, editable later; the engine's `fill_at` draws it the same (`plain`). Ne
 generators above the active layer (`insertAt`). **All sets** (Layers bar, `linkSets`): adds go to every visible part and fill / generator /
 opacity edits go to the same-named layer on each (`matesOf`, made active so the undo step copies it). Generators bake a part with no
 mesh maps first. Select by **Surface** (`surfaceTris`: flood up to edges bent > angle and < 2× angle from the clicked face), Select ›
-Grow / Shrink (Ctrl+Shift+= / -, `growSelection`, texel space). Decal tool **Mirror** places a twin across the model's middle
-(`mirrorHit`); **Engrave** (`Decal.engrave`) bends the normal along the ink's edge and lowers the height, in the engine too
+Grow / Shrink (Ctrl+Shift+= / -, `growSelection`, texel space). **Mirror** (`mirrorFrame`): Mirror new puts each new mark on both sides, and Mirror to other side (Ctrl+M) / Unlink in its settings do the same for the selected mark. The pair is linked — `Decal.mirror {of, axis}` on both layers (editor-only: the engine bakes each half from its own frame and ignores it) — so moving, scaling, turning, re-inking, fading or hiding either half mirrors it across the stored axis and bakes the partner in the same undo step; deleting one clears the other's link, and a Ctrl+J copy is a new mark, not a third side. `mirrorFrame` mirrors the point into the model's middle on that axis and takes the nearest same-part triangle facing the other way, upright, so both sides read correctly from outside.
+**Bevel** (Maps › Generators › Bevel, `addBevel` / `editBevel`; `PaintLayer.bevel`): a whole-part bevel faked in the Normal map: within Radius of every edge sharper than Angle (concave ones when ticked) the face's normal leans toward the face across, a fillet's angle at that distance (Round) or the halfway turn (Chamfer); leans from several edges add, so corners round both ways (`bevelEdges` / `bevelNormal` / `bakeBevel`; engine `layers::BevelSrc`, rendered fresh at the export size; tests `paint.check.ts` and `bevel_matches_the_editor` pin 30° at half the radius, 45° chamfer). No bake needed; it uses the part's flat face normals, so it wants Smooth within Sharp edges. **Engrave** (`Decal.engrave`) bends the normal along the ink's edge and lowers the height, in the engine too
 (`DecalFrame::at`). **Grip textures** (Decals › Grip, `GRIP_SHAPES` in decals.ts): decals with a `Decal.shape` and no image —
 a rounded panel, an optional groove border and a pattern inside (stipple / grooves / checkering / none), sizes in world units
 (shares of the model on the shelf), so stretching a panel never stretches its dots; `bakeShape` writes Normal and Height only,
-the engine's `DecalFrame::shape_at` / `shape_height` the same (test `shape_relief_matches_the_editor` pins them to the editor's
+the shelf shows them as one Grip texture tile, the preset picked in the layer's settings (`setGripPreset`: only pattern, cell, height and border change, never the mark's place, size or outline); Fit to faces / Fit to part (`fitDecal`) wrap the pattern alone (no border or outline) over the faces picked with Select Faces or the whole part, the faces as the layer's mask; the engine's `DecalFrame::shape_at` / `shape_height` the same (test `shape_relief_matches_the_editor` pins them to the editor's
 numbers). The shallow relief a sculpt-and-bake would give, placed and edited like any mark. Each starts 30% of the
 model tall (`DecalAsset.size`). **Outline** (`Shape.outline`, corners as shares of the half width / height, None = the
 rectangle): the Decal gizmo shows a handle per corner (drag over the decal's plane), a + per edge (adds a corner) and
@@ -258,12 +274,14 @@ Alt+click removes one; every corner is rounded by `corner` into a short arc (`fi
 Wyvill 2006): the soup welded, the triangle nearest the centre seeded flat, Dijkstra outward with each step turned into the
 reaching vertex's tangent plane and its frame carried by the least rotation between normals — so a strip bends over a
 bevel or round a back strap without stretching; the engine's `exp_map` does the same steps (test `wrap_map_unfolds_a_fold`:
-a 90° fold unfolds exactly). Edits go to the active decal; a Mirror twin is its own layer. Layer runs of 3+ decals fold into one row. View › Reference image… floats a picture over the 3D view
+a 90° fold unfolds exactly). Edits go to the active decal; a mirror is two linked layers (above). Layer runs of 3+ decals fold into one row. View › Reference image… floats a picture over the 3D view
 (`views/RefImage.tsx`, not saved). `saveProjectTo(path)` saves without the dialog (scripts). Saves write `<file>.saving` then rename;
 errors name the file and folder; autosaves are per process (`<name>-<pid>.barista`).
 Color panel on top of the dock (`panels/ColorWheel.tsx`, Affinity's): hue ring (clockwise from red at the right) round
 an HSV triangle (tip the hue, white, black), swatch, eyedropper, H S L, hex, Flow; the dock scrolls (`.paintdock`).
+Every other colour field is `ui/ColorPick.tsx` (never `<input type="color">`, which opens the OS dialog): a swatch opening Photoshop's picker as a top-layer popover (over the Scene popover) — saturation / brightness square, hue strip, hex (3 or 6 digits), R G B and H S B, the screen eyedropper, presets + the store's `recentColors`; new / original halves (click original to go back); Escape restores, Enter or a click away keeps; `onStart` takes the undo step (`beginPaintEdit`) before the first change.
 GPU composite (`src/gpucomp.ts`): any composite box of 256² or more (undo, opacity, visibility, blends, fills, generators, a stroke's commit) runs as shader passes, one per layer per channel in a float target (full-width bands, ~1024² a band), each layer's region uploaded into a reused scratch texture with `texSubImage2D` (three's update ranges only do RGBA), read back into the set's composite arrays (straight in when the box spans whole rows), so undo, save, export and every reader are unchanged; within 1 level of the CPU composite (rounding). A new viewport renderer drops its targets. Node and GPUs without float targets keep the CPU path. 2K, four PBR layers: ~300 ms in the software-GL pane vs ~3 s on the CPU.
+GPU bakes (`src/gpubake.ts`): the per-texel loops run as shader kernels on the viewport's renderer (`gpuBake`: bands of 1024² texels, float inputs per texel, one pass per output, byte or float readback into the same CPU arrays): fills tri-planar (`TRIPLANAR`, per-triangle `triFrame`) and UV (`UVFILL`), generators' coverage (`GENERATOR`), the bevel (`BEVEL`: edges and their cell grid as an open-addressed table, `cellTable`; the first of two recorded triangles that leans wins), and the bake's AO (`AO`: 32 views' depth maps a chunk in one float atlas) and edge distances (`EDGES`). The CPU keeps rasterising (`raster`: same seam / crease coverage) and only records each texel's point and triangle; its loops stay the reference and Node's path. The generators' noise lattice hash is integer (`hashu`, the same in paint.ts, the shader and the engine's `layers::hashu`, pinned in `paint.check.ts` and `hashu_matches_the_editor`); the grip stipple keeps the old sin hash. Within 1 level of the CPU (AO within 0.03); RTX 4070 at 2K: bevel 6.3 s → 0.4 s, generators 0.7 → 0.25 s, UV fill 0.7 → 0.16 s, tri-planar 2.5 → 0.5 s, the bake 10 s → 1 s. A tri-planar fill's normal is the face normal plus each plane's detail along that plane's tangent / bitangent (UDN), so a flat map bakes (0, 0, 1) and the mesh's smooth / weighted shading survives; summing the planes' whole normals bent non-axis faces up to ~20° into facets (`paint.check.ts`: a flat map keeps a tilted face; engine `fill_at` the same). Check: open `/src/gpubake.check.html` on the dev server in a browser with a GPU (title ends ok / FAIL). Still CPU: decal and grip-shape bakes (footprint-sized), selection grow, the stroke replay, the engine's export.
 GPU brush (`src/gpupaint.ts`): a live stroke is stamped into a render target the model shows directly, then replayed on the CPU on release; it takes the plain brush, strokes inside a selection (the mask as a texture) and the eraser on the bottom colour layer (painted toward the unpainted base), and the texture view reads it back shrunk to 512 on the GPU. Fill / decal masks, blends, layers above and atlas strokes stay on the CPU.
 Brush cursor (Substance's): on the model two rings on the face under the mouse (`BrushCursor`: dashed = the dab's
 reach, solid = hardness), in the texture view CSS rings at the mouse. Bake (`src/bake.ts`, Mesh Maps panel, every visible part,
@@ -271,7 +289,7 @@ every part occluding the others): AO the GPU way, the model's depth from 96 dire
 renderer), per texel the cosine-weighted share of its sky seen (texel point + face normal from `surfaceOf`, lifted 1.5
 depth texels); edge maps = distance to the nearest sharp (> 20°) convex / concave edge over its strength, each edge a
 whole segment in a reach-sized grid (not sampled points: an Edge Wear band narrower than the old reach/8 sampling beaded
-into dots). Material view (Substance's, `src/matview.ts`; Shift+right-drag turns the light, `turnLight`, its own `lightRev` so the document stays saved; a floor catches the sun's shadow; Background › World shows the plate): in Studio lighting with no plate, Van Gogh lights the model by a bundled
+into dots). Material view (Substance's, `src/matview.ts`; Shift+right-drag turns the light, `turnLight`, its own `lightRev` so the document stays saved; a floor catches the sun's shadow, Shading › Shadow (`scene.paintShadow`) turns that cast shadow and the floor off; Shading › **Lift** (`scene.paintLift`, on = 0.4, off = 0 and the true PBR material) lets the base colour light itself under the key, so a black paint job's texture still reads on its shadow side while off shows the material and shadow exactly; Background › World shows the plate): in Studio lighting with no plate, Van Gogh lights the model by a bundled
 plate (`PAINT_HDRI`, Dramatic studio) plus a shadow-casting key (`PaintStudio`; Canvas `shadows`), no lamps, no tone curve
 (Substance's Legacy sRGB), and draws the real PBR material (`meshStandardMaterial`: the set's roughness / metallic, or
 Substance's defaults 0.5 / 0.3 / 0 from its `lib-sampler`), smooth shaded within Sharp edges; Show AO puts the baked AO in
@@ -294,16 +312,42 @@ Browse is nine visible **Material** chips (Metal, Wood, Stone & Masonry, Tile & 
 Concrete & Ground, Fabric & Leather, Polymer & Carbon, Organic & Food, Other) plus search, infinite scroll and **All parts**;
 tiles (811) have their own **Tiles** tab instead, chips by kind from the name (`TILE_KINDS`: Hex, Roof, Terracotta…);
 search and chips stay sticky over the grid (`.matsticky`); the precise source category stays in the tile tooltip and search text. The core/pack switch, role filter and
-smart-finish rows were removed; the smart-material recipes were deleted. Cerakote and Anodized Metal head the shelf as plain
-materials (`FINISHES` in `materials.ts`: the pack's painted / silver metal PBR maps under the finish's name, no tint).
+smart-finish rows were removed; the smart-material recipes were deleted. Cerakote and Anodized Metal head the shelf
+(`FINISHES` in `materials.ts`: the pack's painted / silver metal PBR maps under the finish's name). Cerakote is `colorless`:
+no base colour map, only the coating's roughness / normal / height, so its colour is the fill's tint on white (a new one
+starts in the paint colour; grey tile). A fill with no colour map (solid or colorless) is white × tint, editor and engine (`fill_at`).
 The Layers bar's Metal sheen (`addMetalLayer`) adds a layer filling the selection with Metallic 1 / Roughness 0.25 only. `src/decals.ts` +
-`public/decals/` hold 20 original CC0 transparent marks; the Decals tab arms one and the Decal tool D places it. A
-decal is a `PaintLayer.decal` (`bakeDecal` in `paint.ts`): a tangent projector at the clicked point, front-facing and
-depth-limited, baked to BaseColor/Roughness/Metallic so masks, blend modes and export behave like any layer; drag it
-on the model to move (it turns to face each triangle it crosses, `moveDecal`), or use Size/Rotate/Ink/Rough/Metal under Layers.
-With the Decal tool the active decal has a gizmo (`DecalGizmo`, Viewport3D): frame, corner handles scale, the knob rotates
-(Shift 15°); Flip H / Flip V (`Decal.flipH/flipV`, mirrored in the engine's `DecalFrame`) and ±90° in the options bar and
-under Layers. Live edits re-bake once a frame (`laterRebake`). Bucket / Wand hover and a material dragged from the shelf
+`public/decals/` hold 20 original CC0 transparent marks, plus the grip shapes. A decal is a `PaintLayer.decal`
+(`bakeDecal` in `paint.ts`): a tangent projector at its point, front-facing and depth-limited, baked to
+BaseColor/Roughness/Metallic so masks, blend modes and export behave like any layer. The Decal tool **selects and
+transforms**, it does not stamp: `paint.decalMode` is `edit` (the tool and D) — a click picks the mark under that point
+(`decalUnder`, the top layer, its own facing): anywhere inside its own outline and the projector's depth, not only the
+projector's rectangle — a curved grip's panel lies tens of units behind the tangent plane, where a rectangle/0.4% test
+made most of the mark unclickable — and a click on bare surface (or the empty view) deselects
+(`paint.decalSel`, so the gizmo and the Decal actions go) — or `place`, which
+one click puts the armed mark there and then returns to edit (a tile clicked in the Decals tab arms one; Alt+click always
+places, and a tile dragged onto the model places it too). The active mark's frame is always drawn (`DecalGizmo`), with
+handles while the Decal tool is on, all sized in screen pixels (`px` from the camera distance) and billboarded so each
+glyph faces the view (a square is a square from any angle, never a foreshortened sliver): the middle disc slides
+it over the surface, corner squares scale, the side bars stretch one axis (the `aspect` the engine already reads), the
+knob turns it (Shift 15°), and a grip shape's outline has its own corner + / Alt+click handles. A shape's boundary is
+that outline: it is drawn on the part's surface (`surfaceProjector`: a ray along the projector's normal, or the nearest
+surface point when the ray misses) and the projector's rectangle is not drawn beside it — on a curved grip the two did
+not agree, which read as a second, misfitting outline; the knob and the scale square sit on the outline's own box, and a
+corner drag moves by the pointer's delta so a dot on the surface does not jump. The handles are picked
+in screen space before the canvas sees the pointerdown (`decalHandles.hit`, captured on the canvas's parent), so a
+corner whose pad sits behind the surface still scales instead of starting a slide of the whole mark; the one being
+dragged turns blue with the frame (`GRAB`). A drag keeps the
+projector's own plane while the pointer stays on one face and only turns onto a new one when the surface turns more
+than 15° (`dragDecal`) — re-deriving it from every triangle made the mark spin and jump; Shift snaps it onto the model's
+middle across the face it lies on (`snapMiddle`, and the Center button), Face turns it onto the surface under it
+(`alignDecal`). The keys: arrows nudge across its plane (Shift far, Alt fine), `[` `]` size, `,` `.` turn 5°, Ctrl+J
+duplicates it nudged (`duplicateDecal`), and Width / Height / Rotate are typed fields as well as sliders. Flip H / Flip V
+(`Decal.flipH/flipV`, mirrored in the engine's `DecalFrame`) and ±90° sit in the options bar and under Layers. The bake
+works only inside the mark's texel footprint: `projectedUVBox` clips each triangle to the projector's box and carries it
+back through its barycentrics, so a live drag re-inks its own box, clears last bake's box and recomposites just that
+(`footprints`; `composite(..., pad=false)` during a drag, one full pass 160 ms after it stops, `settleDecal`). Bucket /
+Wand hover and a material dragged from the shelf
 onto the model tint and outline what they'd take (`paintHover`, `paintHoverAt`: Face / Island / Part); the drop fills it
 masked to that (`assignMaterial(id, false, onto)`). The shelf drag is a pointer drag (`holdTile` in VanGogh.tsx: the ball
 follows the pointer as `.matghost`, Esc cancels, a press that doesn't move stays a click), not HTML drag-and-drop, which
@@ -317,6 +361,10 @@ the way, flipped to GL at build; the Mapping scale as `scale`, a new fill's tili
 maps; opacity), then `tools/build-pack.py` caches 1K maps
 and writes the pack manifest; `tools/pack-thumbs.py` renders the lit PBR sphere previews, and infinite scroll (an IntersectionObserver sentinel) handles the size. `node
 src/paint.check.ts` covers projection, finish overrides and old-footprint clearing, per-channel blends and their defaults,
-undo/redo, and the height stack; `node src/paintundo.check.ts` drives the store's own undo against a stroke that starts
+undo/redo, and the height stack; `node src/decal.check.ts` the Decal tool's pick: a click on a mark selects it, bare surface
+deselects it (layer untouched) and Delete takes the layer out; `node src/pick.check.ts` the Eyedropper's Material grab and apply
+(fills, solids, generators and bevel held on the cursor, applied whole-part or masked to an island, decals and hand paint left
+behind, one undo step each, Esc dropping it); `node
+src/paintundo.check.ts` drives the store's own undo against a stroke that starts
 before the banded composite finishes. Next: layer masks, groups / passthrough, normal / height (and baking from a high poly),
 packed exports (Unreal ORM, Unity mask map).

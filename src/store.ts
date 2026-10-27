@@ -12,9 +12,9 @@ import { clearRecentFiles, forgetRecent, pickWithHandle, recentFiles, remember, 
 import { carryNormals, dissolve, dissolveFaces, limitedDissolve, link, outNormals, ownPolygons, topoOfSoup, triangulate, trisToQuads, type Polys } from './polyedit';
 import { bake } from './bake';
 import { resetLight } from './matview';
-import { CHANNELS, composite, dab, dabUV, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, growSelection, keep as keepPaint, SOLID, maskPolygon, maskTris, newLayer, requestComposite, restoreSet, setIfAny, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, bakeShape, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
+import { CHANNELS, composite, dab, dabUV, disposeSet, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, growSelection, keep as keepPaint, SOLID, maskPolygon, maskTris, newLayer, requestComposite, restoreSet, setIfAny, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, bakeShape, bakeBevel, type Bevel, decalFrame, withoutMirror, shapeHeight, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type Shape, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
 import { gpuBegin, gpuDab, gpuFinish, gpuTake } from './gpupaint';
-import { FILL_CHANNELS, loadMaterialLibrary, mapUrl, materialFromFiles, materialPixels, type MaterialAsset, type MaterialPixels } from './materials';
+import { FILL_CHANNELS, loadMaterialLibrary, mapUrl, materialFromFiles, materialPixels, thumbUrl, type MaterialAsset, type MaterialPixels } from './materials';
 import { decalFromFile, decalPixels, decalUrl, loadDecalLibrary, type DecalAsset } from './decals';
 import { addLoops, connect as connectPolys, gridFill, loopCut, loopOf, members, merge as mergeVerts, meshCheck, moveOnSurface, poles, relax, rotateEdge, shapeLoop, slide, subdivide, surfaceOf, type Done, type Geo, type Sel as SoupSel } from './polygeo';
 
@@ -69,6 +69,12 @@ export interface Scene {
   xrayAlpha: number;
   shadow: boolean;
   shadowAmount: number;
+  /** Van Gogh's material view: the key light casts a shadow onto the floor and between the parts. Off, the model is lit
+   *  evenly with no cast shadow, so decals on the side turned away from the key stay readable. */
+  paintShadow: boolean;
+  /** Van Gogh's material view: how much of the base colour shines on its own, added under the key and the environment.
+   *  A black paint job's texture is still there in shadow — 0.4 reads it; 0 is the true PBR material. */
+  paintLift: number;
   /** Cavity, Blender's Workbench passes: valleys darker, ridges lighter (each 0…2). World = screen-space AO over
    *  `cavityDistance` (in halves of the model, Blender's 0.2 on its default cube), Screen = curvature (crisp lines on
    *  every edge, from the normals a pixel apart), Both. */
@@ -261,7 +267,7 @@ export interface State {
   triangulate: boolean;
   /** Van Gogh's tool and brush: a value per channel and which channels it paints (`on`); size is % of the model (on the
    *  model) or of the texture (in the texture view); Wand and Bucket take a face, an island or the whole part (`by`). */
-  paint: { tool: PaintTool; color: string; rough: number; metal: number; on: Record<Channel, boolean>; size: number; flow: number; hardness: number; tip: BrushTip; by: FillBy; angle: number; decalMirror: boolean; decalAsset: string; decalTint: string; decalSize: number; decalRotation: number; fillBlend: BlendMode };
+  paint: { tool: PaintTool; pickMode: PickMode; grab: MaterialGrab | null; color: string; rough: number; metal: number; on: Record<Channel, boolean>; size: number; flow: number; hardness: number; tip: BrushTip; by: FillBy; angle: number; decalMode: DecalMode; decalSel: boolean; decalMirror: boolean; decalAsset: string; decalTint: string; decalSize: number; decalRotation: number; fillBlend: BlendMode };
   /** Parts expanded in Van Gogh's Parts tree. */
   paintOpen: number[];
   /** The channel the UV view shows (picked under the part in Parts). */
@@ -289,7 +295,8 @@ export interface State {
   decalsLoading: boolean;
   decalsError: string | null;
   /** Which Van Gogh dock tab is open: layers, materials, decals or maps. Color is permanently above the tabs. */
-  paintTab: 'layers' | 'materials' | 'tiles' | 'decals' | 'maps';
+  paintTab: 'layers' | 'assets' | 'maps';
+  assetTab: 'materials' | 'tiles' | 'decals' | 'geometry';
   /** The engine preset the Maps tab's export button uses. */
   texturePreset: TexturePreset;
   /** The size the engine renders exported textures at (to 16K; the editor paints at `textureResolution`). */
@@ -324,6 +331,27 @@ export type Ask =
   | { kind: 'unsaved'; name: string; done: (a: 'save' | 'discard' | null) => void };
 export type Workspace = 'uv' | 'doc' | 'paint';
 export type PaintTool = 'marquee' | 'lasso' | 'wand' | 'decal' | 'brush' | 'erase' | 'bucket' | 'picker';
+/** What the Eyedropper takes: the material layers of the part it clicks (fills, solids, generators, bevels — not
+ *  decals or hand paint), or the base colour / roughness / metallic under the pointer. */
+export type PickMode = 'material' | 'color';
+/** A material stack held on the cursor: the source part's material layers as settings (the pixels are baked again on
+ *  every target), with the name and picture the cursor shows. */
+export interface MaterialGrab {
+  from: number;
+  fromName: string;
+  /** The top fill's material name, or its layer's name for a solid. */
+  name: string;
+  layers: GrabbedLayer[];
+  /** The top fill's material preview (a shelf thumbnail); null for a solid, whose `tint` is drawn instead. */
+  thumb: string | null;
+  tint: string | null;
+  count: number;
+}
+export type GrabbedLayer = Pick<PaintLayer, 'name' | 'visible' | 'opacity' | 'blend'> & { fill?: Fill; gen?: Gen; bevel?: Bevel };
+/** What a click on the model does with the Decal tool: `edit` selects the mark under it (and drags it), `place`
+ *  puts a copy of the armed mark there. The tool stays in `edit`; a tile clicked in the Decals tab arms one
+ *  placement, so a click meant to move a mark can never leave another one behind. */
+export type DecalMode = 'edit' | 'place';
 export type FillBy = 'face' | 'surface' | 'island' | 'part';
 export type DocView = 'wire' | 'smooth' | 'health';
 interface DocMove { part: number; verts: number[]; base: Geo; normals?: Float32Array; marked: number[]; mouse: [number, number] | null; pivot: [number, number, number]; axis: 0 | 1 | 2 | null; snap: (p: [number, number, number]) => [number, number, number]; reselect: { faces?: number[]; verts?: number[]; edges?: [number, number][] }; moved: boolean }
@@ -348,10 +376,10 @@ export const useApp = create<State>(() => ({
   source: null, unit: 100, parts: [], params: { sharp: 45, tol: 0.08, seam_weight: 0.1, join: true, atlas: 0, one_atlas: false }, symPlane: null, symEdit: null, activePart: 0, layerSel: [], layerAnchor: 0, uvScope: 'part', result: null, uvs: [], uvRev: 0, edited: false,
   rev: 0, past: [], future: [], partsPast: [], partsFuture: [], selected: [], selectMode: 'face', csel: null, viewReq: { view: '3d', op: 'all', n: 0 }, menu: null, boxArmed: false, xform: null, liveUnwrap: true, afterAlign: saved('afterAlign', 1, 0, 1) === 1, afterPack: saved('afterPack', 1, 0, 1) === 1, pins: {}, shapeClipboard: null, mode: 'checker', textureResolution: 1024, uvMap: 'checker', recentColors: [],
   scene: { background: '#111111', ...WORK_LIGHT, hdriUrl: null, hdriId: '', hdriName: '', hdriBackground: false, hdriStrength: 1, hdriRotation: 0, hdriBlur: 0, wireframe: false, showEdges: true, showVertices: true, showSeams: true, showGrid: false, showAxes: false,
-    lighting: 'studio', matcap: 'clay', bg: 'theme', backface: false, outline: false, specular: true, xray: false, xrayAlpha: 0.5, shadow: false, shadowAmount: 0.4, cavity: false, cavityType: 'both', cavityDistance: 0.2, ridge: 1, valley: 1 }, unfold: 0,
+    lighting: 'studio', matcap: 'clay', bg: 'theme', backface: false, outline: false, specular: true, xray: false, xrayAlpha: 0.5, shadow: false, shadowAmount: 0.4, paintShadow: true, paintLift: 0.4, cavity: false, cavityType: 'both', cavityDistance: 0.2, ridge: 1, valley: 1 }, unfold: 0,
   busy: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 300, 260, 420), viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, project: null, saved: true, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, moveOnSurface: true,
-  paint: { tool: 'brush', color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: false, metal: false, normal: false, height: false }, size: 3, flow: 0.6, hardness: 0.5, tip: 'round' as BrushTip, by: 'island' as FillBy, angle: 30, decalMirror: false, decalAsset: 'garuda-mark', decalTint: '#ffffff', decalSize: 14, decalRotation: 0, fillBlend: 'normal' as BlendMode }, paintChannel: 'material', paintRev: 0, paintPanel: 0, paintLive: 0, lightRev: 0, paintOpen: [0], paintAO: true, linkSets: false, refImage: null,
-  materials: [], materialsLoading: false, materialsError: null, decals: [], decalsLoading: false, decalsError: null, paintTab: 'layers', texturePreset: 'generic', exportSize: saved('exportSize', 4096, 256, 16384),
+  paint: { tool: 'brush', pickMode: 'material' as PickMode, grab: null, color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: false, metal: false, normal: false, height: false }, size: 3, flow: 0.6, hardness: 0.5, tip: 'round' as BrushTip, by: 'island' as FillBy, angle: 30, decalMode: 'edit' as DecalMode, decalSel: true, decalMirror: false, decalAsset: 'garuda-mark', decalTint: '#ffffff', decalSize: 14, decalRotation: 0, fillBlend: 'normal' as BlendMode }, paintChannel: 'material', paintRev: 0, paintPanel: 0, paintLive: 0, lightRev: 0, paintOpen: [0], paintAO: true, linkSets: false, refImage: null,
+  materials: [], materialsLoading: false, materialsError: null, decals: [], decalsLoading: false, decalsError: null, paintTab: 'layers', assetTab: 'materials', texturePreset: 'generic', exportSize: saved('exportSize', 4096, 256, 16384),
   exportOpen: false, exportKind: savedStr('exportKind', 'textures', ['textures', 'model'] as const), exportModel: savedStr('exportModel', 'fbx', ['fbx', 'obj'] as const),
   exportScope: savedStr('exportScope', 'visible', ['visible', 'selected', 'all'] as const), exportFbx: saved('exportFbx', 0, 0, 1) === 1, exportPadding: saved('exportPadding', 0, 0, 512),
   paintHover: null, ask: null, askOnOpen: saved('askOnOpen', 1, 0, 1) === 1, openOpts: savedOpen(),
@@ -359,6 +387,8 @@ export const useApp = create<State>(() => ({
 }));
 const set = useApp.setState, get = useApp.getState;
 export const updateScene = (scene: Partial<Scene>) => set((s) => ({ scene: { ...s.scene, ...scene } }));
+/** Van Gogh's base-colour lift: a view setting, so it redraws both the model and the texture view's material. */
+export const setPaintLift = (paintLift: number) => set((s) => ({ scene: { ...s.scene, paintLift }, lightRev: s.lightRev + 1 }));
 const SCENE0 = get().scene;
 /** Shading › Reset: every viewport setting (lighting, lamps, map, background, options, overlays) back to the default,
  *  and Van Gogh's light turned back to the front-left. */
@@ -782,13 +812,22 @@ export const openProject = async (path?: string, recover = false) => (await conf
     setModelSize(state.parts.map((p) => p.soup));
     resetPaintHistory();
     set((s) => ({ ...state, project: recover ? null : head.path, saved: !recover, rev: s.rev + 1, uvRev: s.uvRev + 1, edited: false, loading: null,
+      // the Unfold slider is a view of the old model's UVs: a project opens on the model itself
+      unfold: 0,
       past: [], future: [], partsPast: [], partsFuture: [], csel: null, selected: [], layerSel: state.parts.length ? [state.activePart] : [], layerAnchor: state.activePart,
       uvScope: state.params.one_atlas ? 'all' : 'part', fixNote: null, paintOpen: [state.activePart] }));
     sets.forEach((saved, i) => { if (saved && state.parts[i]) restoreSet(state.parts[i].soup, saved, pixels(i, saved.size)); });
     repaint();
   } finally { restoring = false; }
   if (!recover) { await rememberProject(head.path); await listRecent(); }
-  if (!state.result && state.parts.length) { if (get().workspace === 'doc') meshOnly(); else await solve(); }
+  // a project can hold parts Poly Doc left mesh-only (opened without an unwrap, or edited there and saved before
+  // switching): the bare mesh would come back with every UV at 0, which reads as an untextured/blank model in UV
+  // Magician and Van Gogh. UV / paint open those parts now, as entering the workspace does; Poly Doc keeps its mesh.
+  if (state.parts.length && (!state.result || state.parts.some((p) => p.stale))) {
+    if (get().workspace === 'doc') { if (!state.result) meshOnly(); }
+    else if (state.result) await unwrapChanged();
+    else await solve();
+  }
 });
 // Anything that changes the document marks it unsaved (the title's dot).
 useApp.subscribe((s, p) => {
@@ -2438,8 +2477,14 @@ const restorePart = (s: State, p: PartSnap) => ({ parts: p.parts, result: p.resu
   activePart: p.activePart, uvScope: p.uvScope, past: p.past, future: p.future, uvRev: s.uvRev + 1 });
 
 // ---- Van Gogh: painting textures ----
-export const setPaint = (p: Partial<State['paint']>) => set((s) => ({ paint: { ...s.paint, ...p } }));
+export const setPaint = (p: Partial<State['paint']>) => set((s) => {
+  const paint = { ...s.paint, ...p };
+  // the stack held on the Eyedropper belongs to it: switching tool (or to Color) lets it go
+  if (paint.grab && (paint.tool !== 'picker' || paint.pickMode !== 'material')) paint.grab = null;
+  return { paint };
+});
 export const setPaintTab = (paintTab: State['paintTab']) => set({ paintTab });
+export const setAssetTab = (assetTab: State['assetTab']) => set({ assetTab, paintTab: 'assets' });
 /** Part `i`'s texture set (Base Color and one empty layer, at the texture resolution, the first time). */
 export const texSet = (i: number) => setOf(get().parts[i].soup, get().textureResolution);
 const repaint = () => set((s) => ({ paintRev: s.paintRev + 1 }));
@@ -2541,8 +2586,10 @@ function trisBy(i: number, tri: number) {
   return pid[tri] < 0 ? [tri] : Array.from(pid).flatMap((p, t) => (p === pid[tri] ? [t] : []));
 }
 let hoverKey = '';
-// another tool (or workspace) has no hover target
-useApp.subscribe((s, p) => { if (s.paintHover && (s.paint.tool !== p.paint.tool || s.workspace !== p.workspace)) paintHoverAt(-1); });
+// another tool (or workspace), or letting go of the held material, leaves no hover target
+useApp.subscribe((s, p) => {
+  if (s.paintHover && (s.paint.tool !== p.paint.tool || s.workspace !== p.workspace || (!s.paint.grab && !!p.paint.grab))) paintHoverAt(-1);
+});
 /** The pointer is over triangle `tri` of part `i` (off the model: no tri): the face, island or part (options bar's
  *  Face / Island / Part) a Bucket / Wand click or a dropped material would take, kept in `paintHover` for the outline. */
 export function paintHoverAt(i: number, tri = -1) {
@@ -2626,7 +2673,128 @@ export function pickPaintPart(i: number) {
   set((s) => ({ activePart: i, paintOpen: s.paintOpen.includes(i) ? s.paintOpen : [...s.paintOpen, i] }));
 }
 export const togglePaintOpen = (i: number) => set((s) => ({ paintOpen: s.paintOpen.includes(i) ? s.paintOpen.filter((x) => x !== i) : [...s.paintOpen, i] }));
-let last: { part: number; at: number[]; uv: boolean; fill: boolean; decal: boolean; pressure: number; gpu: boolean; mates?: number[] } | null = null;
+/** The layers that make up a part's materials: fills (a material or a solid), generators and bevels. A decal is a
+ *  placed mark, and hand paint lives in its own part's UVs, so neither would mean the same thing on another part. */
+const isMaterialLayer = (l: PaintLayer) => !l.decal && !!(l.fill || l.gen || l.bevel);
+/** Eyedropper › Materials: lift part `from`'s material layers onto the cursor (settings only: their pixels are baked
+ *  again on each target). A click on a part, an island or a face then applies them; Esc drops them. */
+export function grabMaterials(from: number) {
+  const st = get();
+  if (st.busy || !st.parts[from] || !st.result?.parts[from] || !st.uvs[from]) return;
+  const layers = texSet(from).layers.filter(isMaterialLayer);
+  if (!layers.length) {
+    set({ notice: `${st.parts[from].name} has no materials to pick up (a fill, a solid, a generator or a bevel).` });
+    return;
+  }
+  const grabbed: GrabbedLayer[] = layers.map((l) => ({
+    name: l.name, visible: l.visible, opacity: l.opacity,
+    ...(l.blend ? { blend: { ...l.blend } } : {}),
+    ...(l.fill ? { fill: { ...l.fill, channels: [...l.fill.channels], offset: [...l.fill.offset] as [number, number] } } : {}),
+    ...(l.gen ? { gen: { ...l.gen, clip: null } } : {}),
+    ...(l.bevel ? { bevel: { ...l.bevel } } : {}),
+  }));
+  const topLayer = [...layers].reverse().find((l) => l.fill), top = topLayer?.fill;
+  const asset = top && top.asset !== SOLID ? materialOf(top.asset) : null;
+  const grab: MaterialGrab = {
+    from, fromName: st.parts[from].name, name: asset?.name ?? topLayer?.name ?? layers[layers.length - 1].name,
+    layers: grabbed, thumb: asset ? thumbUrl(asset) || null : null, tint: top?.tint ?? null, count: grabbed.length,
+  };
+  setPaint({ grab });
+  // the shelf may not have been opened yet: read its manifest so the cursor chip shows the material, not a checker
+  if (top && top.asset !== SOLID && !asset) {
+    void loadMaterialLibrary().then((shelf) => {
+      const a = shelf.find((m) => m.id === top.asset), held = get().paint.grab;
+      if (a && held && held.from === from && held.layers.some((l) => l.fill?.asset === top.asset)) setPaint({ grab: { ...held, thumb: thumbUrl(a) || null, name: a.name } });
+    }).catch(() => { /* the chip keeps its checker; applying loads the maps itself */ });
+  }
+  set({ notice: `Picked up ${grab.count} material layer${grab.count === 1 ? '' : 's'} from ${grab.fromName} — click a part, island or face to apply, Esc drops.` });
+}
+
+/** Let the materials held on the Eyedropper go (Esc). */
+export const dropMaterials = () => { if (get().paint.grab) setPaint({ grab: null }); };
+
+/** Put the held material stack on part `i` at triangle `tri`: Whole Part replaces the part's material layers (its
+ *  decals and hand paint stay), a face / island / surface adds them masked to that region. The stack is kept for the
+ *  next target; Esc drops it. One undo step each. */
+export function applyGrab(i: number, tri: number): Promise<void> {
+  const st = get(), res = st.result, grab = st.paint.grab, out = res?.parts[i], uv = st.uvs[i];
+  if (st.busy || !grab || !st.parts[i] || !res || !out || !uv) return Promise.resolve();
+  const whole = st.paint.by === 'part';
+  if (!whole && tri < 0) {
+    set({ notice: 'Click a face on the model (or in the UV view) to apply there, or switch the target to Part.' });
+    return Promise.resolve();
+  }
+  if (whole && i === grab.from) {
+    set({ notice: 'That is where those materials came from — click another part, an island or a face.' });
+    return Promise.resolve();
+  }
+  const tris = whole ? null : trisBy(i, tri);
+  const targetName = st.parts[i].name;
+  pickPaintPart(i);
+  const job = () => task(`Applying materials to ${targetName}…`, async () => {
+    // a fill's maps load before anything changes; a missing one still applies, in its tint on white
+    const ids = [...new Set(grab.layers.flatMap((l) => (l.fill && l.fill.asset !== SOLID ? [l.fill.asset] : [])))];
+    const maps = new Map<string, MaterialPixels>();
+    if (ids.length) {
+      // the shelf is read on demand (a project's fills can be applied before the Materials tab was ever opened)
+      const loaded = get().materials, known = new Set(loaded.map((m) => m.id));
+      const shelf = ids.every((id) => known.has(id)) ? loaded : [...loaded, ...(await loadMaterialLibrary())];
+      for (const id of ids) {
+        const a = shelf.find((m) => m.id === id);
+        if (!a) continue;
+        try { maps.set(id, await materialPixels(a)); } catch { /* the fill still applies, in its tint on white */ }
+      }
+    }
+    const now = get();
+    // the model was re-opened or re-unwrapped while the maps loaded: these layers no longer describe this part
+    if (now.result !== res) return;
+    const target = now.result.parts[i], tuv = now.uvs[i];
+    if (!target || !tuv) return;
+    const ts = texSet(i), span = modelSize(now.result), mask = tris ? maskTris(ts, target.positions, tuv, tris) : undefined;
+    step(ts);
+    const wanted = new Set<Channel>(ts.channels);
+    for (const l of grab.layers) {
+      if (l.fill) for (const ch of l.fill.channels) wanted.add(ch);
+      if (l.bevel) wanted.add('normal');
+      if (l.gen) { wanted.add('color'); wanted.add('rough'); wanted.add('metal'); }
+    }
+    ts.channels = FILL_CHANNELS.filter((ch) => wanted.has(ch));
+    const copies = grab.layers.map((src) => {
+      const layer: PaintLayer = {
+        ...newLayer(0), name: src.name, visible: src.visible, opacity: src.opacity,
+        ...(src.blend ? { blend: { ...src.blend } } : {}),
+        ...(src.fill ? { fill: { ...src.fill, channels: [...src.fill.channels], offset: [...src.fill.offset] as [number, number] } } : {}),
+        // a generator's clip is its mask (the composite applies the layer's mask as well: one of them, not both)
+        ...(src.gen ? { gen: { ...src.gen, clip: mask ?? null } } : {}),
+        ...(src.bevel ? { bevel: { ...src.bevel } } : {}),
+        ...(mask && !src.gen ? { mask } : {}),
+      };
+      if (layer.fill) bakeFill(ts, layer, maps.get(layer.fill.asset) ?? {}, target.positions, tuv, span);
+      else if (layer.gen) generate(ts, layer);
+      else if (layer.bevel) bakeBevel(ts, layer, target.positions, tuv);
+      return layer;
+    });
+    if (whole) {
+      // the part keeps its own paint and decals; only its material layers are replaced
+      ts.layers = ts.layers.filter((l) => !isMaterialLayer(l));
+      ts.layers.unshift(...copies);
+      ts.active = copies.length - 1;
+    } else {
+      // above the part's material stack, under the paint and decals that were made over it
+      const at = ts.layers.reduce((a, l, k) => (isMaterialLayer(l) ? k + 1 : a), 0);
+      ts.layers.splice(at, 0, ...copies);
+      ts.active = at + copies.length - 1;
+    }
+    composite(ts);
+    set((s) => ({ paintChannel: 'material', paint: s.paint.decalSel ? { ...s.paint, decalSel: false } : s.paint }));
+    repaint();
+    set({ notice: `Applied ${grab.count} material layer${grab.count === 1 ? '' : 's'} from ${grab.fromName} to ${whole ? targetName : `${targetName} (${st.paint.by})`}.` });
+  });
+  // a generator needs the target's own baked maps: bake first, then apply (two tasks, so neither hides the other's line)
+  const raw = grab.layers.some((l) => l.gen) && !texSet(i).bake ? [i] : [];
+  return raw.length ? bakePaint(raw).then(job) : job();
+}
+let last: { part: number; at: number[]; uv: boolean; fill: boolean; decal: boolean; moved?: boolean; pressure: number; gpu: boolean; mates?: number[] } | null = null;
 /** The other parts drawn in part `i`'s square of the texture view (a shared atlas): a stroke there paints them too. */
 const atlasMates = (i: number) => {
   const at = uvTiles().at, o = at[i], uvs = get().uvs;
@@ -2658,15 +2826,32 @@ export function paintPress(i: number, tri: number, at: [number, number, number] 
   if (!out || !uvs[i] || get().busy) return false;
   if (committing) return false;
   if (mods.ctrl) { pickPaintPart(i); return false; }
+  // The Eyedropper: Material copies the clicked part's material layers (fills, solids, generators, bevels — not decals,
+  // not hand paint) onto the part the panels show; Color takes the surface's colour, roughness and metallic.
+  if (paint.tool === 'picker') {
+    if (paint.pickMode === 'material') {
+      // first click lifts the part's materials onto the cursor, the next applies them where you click
+      if (paint.grab) void applyGrab(i, tri); else grabMaterials(i);
+      return false;
+    }
+    if (get().activePart !== i) pickPaintPart(i);
+    const ts = texSet(i), v = sample(ts, uv[0], uv[1]);
+    setPaint(ts.channels.length > 1 ? v : { color: v.color });
+    return false;
+  }
   // the part being worked on is the one the panels show (its layers); the texture view's Part / All stays as it is
   if (get().activePart !== i) pickPaintPart(i);
   const s = texSet(i);
   if (paint.tool === 'decal') {
     if (!at) return false;
-    const current = s.layers[s.active]?.decal;
-    // A click inside the active decal moves it; a click elsewhere adds another. The Decal tab arms the asset.
-    if (current && insideDecal(current, at, modelSize(result!))) {
-      step(s);
+    // Edit (the default): a click picks the mark under it and a drag slides it; a click on bare surface clears the
+    // pick, so the frame and the Decal actions go and the next Delete clears paint rather than removing the layer.
+    // Place: one click puts the armed mark there (Alt too).
+    if (paint.decalMode !== 'place' && !mods.alt) {
+      const j = decalUnder(i, at, tri);
+      if (j < 0) { deselectDecal(); return false; }
+      if (j !== s.active || !paint.decalSel) selectDecal(i, j); else repaintPanel();
+      beginPaintEdit();
       last = { part: i, at: at.slice(), uv: false, fill: false, decal: true, pressure: 1, gpu: false };
       return true;
     }
@@ -2674,8 +2859,8 @@ export function paintPress(i: number, tri: number, at: [number, number, number] 
     last = { part: i, at: at.slice(), uv: false, fill: false, decal: true, pressure: 1, gpu: false };
     return true;
   }
-  // the Eyedropper, or Alt+click with a painting tool (Photoshop's): take the colour (and roughness, metallic) under it
-  if (paint.tool === 'picker' || (mods.alt && (paint.tool === 'brush' || paint.tool === 'bucket'))) {
+  // Alt+click with a painting tool (Photoshop's): take the colour (and roughness, metallic) under it
+  if (mods.alt && (paint.tool === 'brush' || paint.tool === 'bucket')) {
     const v = sample(s, uv[0], uv[1]);
     setPaint(s.channels.length > 1 ? v : { color: v.color });
     return false;
@@ -2725,13 +2910,13 @@ export const brushRadius = () => { const r = get().result; return r ? brushOf(r)
 const uvRadius = (s: TexSet, pressure = 1) => Math.max(0.5, (get().paint.size / 100) * s.size * (0.3 + 0.7 * pressure));
 /** The drag went on to world point `at` (or UV `uv` in the texture view): dabs every quarter radius along the way, so a
  *  fast stroke has no gaps. */
-export function paintDrag(i: number, at: [number, number, number] | null, uv: [number, number], pressure?: number, tri?: number) {
+export function paintDrag(i: number, at: [number, number, number] | null, uv: [number, number], pressure?: number, tri?: number, snap = false) {
   const { result, uvs } = get(), out = result?.parts[i];
   if (!out || !uvs[i] || !last || last.part !== i || last.uv === !!at) return;
   if (pressure != null) last.pressure = Math.max(0.08, Math.min(1, pressure));
   const b = brushOf(result!, last.pressure), s = texSet(i), from = last.at, to = at ?? uv;
   if (last.decal) {
-    if (at) moveDecal(at, tri);
+    if (at && to.some((x, k) => x !== from[k])) { dragDecal(at, tri, snap, false); last.moved = true; }
     last.at = to;
     repaintLive();
     return;
@@ -2762,7 +2947,7 @@ export function paintDrag(i: number, at: [number, number, number] | null, uv: [n
 // ponytail: the texture view and panel catch up when the stroke ends, not per dab (a 1K redraw per mouse move)
 export const paintEnd = () => {
   if (!last) return;
-  if (last.decal) { last = null; repaint(); return; }
+  if (last.decal) { const moved = last.moved; last = null; if (moved) finishDecalEdit(); repaint(); return; }
   if (last.gpu) {
     const part = last.part, s = texSet(part), points = gpuTake(), { result, uvs } = get(), pos = result?.parts[part]?.positions, uv = uvs[part];
     last = null;
@@ -2840,8 +3025,12 @@ export function redoPaint() {
     if (r) void requestComposite(s, r.rect, repaint);
   }
 }
-/** A new document (or a resolution change) makes the old steps meaningless: their sets are another model's. */
+/** A new document (or a resolution change) makes the old steps meaningless: their sets are another model's. Its
+ *  texture sets go too: their WebGL textures stay allocated until disposed, and a session that opens several projects
+ *  would otherwise lose the context to them (the model then does not draw). */
 export function resetPaintHistory() {
+  gpuFinish();
+  for (const p of get().parts) { const s = setIfAny(p.soup); if (s) disposeSet(s); }
   painted.length = 0;
   paintRedo.length = 0;
   sliderStep = null;
@@ -2881,17 +3070,28 @@ export const addMetalLayer = () => layers((s) => {
   fillAll(s, { radius: 0, flow: 1, hardness: 1, erase: false, values: { rough: [0.25 * 255], metal: [255] } });
 });
 export const addPaintLayer = () => layers((s) => { s.layers.splice(s.active + 1, 0, newLayer(s.layers.length + 1)); s.active++; });
-export const deletePaintLayer = () => layers((s) => { if (s.layers.length > 1) { s.layers.splice(s.active, 1); s.active = Math.min(s.active, s.layers.length - 1); } });
-/** Ctrl+J: a copy of the active layer above it. */
+export const deletePaintLayer = () => layers((s) => {
+  if (s.layers.length <= 1) return;
+  // a mark deleted out of a mirror pair leaves its partner standing on its own
+  const l = s.layers[s.active], mark = !!l?.decal, mate = l?.decal ? mirrorMate(s, l) : null;
+  if (mate?.decal) mate.decal = withoutMirror(mate.decal);
+  s.layers.splice(s.active, 1);
+  s.active = Math.min(s.active, s.layers.length - 1);
+  // a mark goes off the model with its layer: the layer below is active in the panel, not picked as a mark
+  if (mark) set((st) => ({ paint: { ...st.paint, decalSel: false } }));
+});
+/** Ctrl+J: a copy of the active layer above it. A copy of a half of a mirror pair is its own mark, not a third side. */
 export const duplicatePaintLayer = () => layers((s) => {
   const l = s.layers[s.active];
   s.layers.splice(s.active + 1, 0, {
     ...newLayer(0), name: `${l.name} copy`, opacity: l.opacity, blend: l.blend ? { ...l.blend } : undefined, px: Object.fromEntries(Object.entries(l.px).map(([c, a]) => [c, a!.slice()])),
     ...(l.fill ? { fill: { ...l.fill, channels: [...l.fill.channels], offset: [...l.fill.offset] as [number, number] } } : {}),
-    ...(l.decal ? { decal: { ...l.decal, center: [...l.decal.center] as [number, number, number], normal: [...l.decal.normal] as [number, number, number], up: [...l.decal.up] as [number, number, number], channels: [...l.decal.channels] } } : {}),
+    ...(l.decal ? { decal: withoutMirror({ ...l.decal, center: [...l.decal.center] as [number, number, number], normal: [...l.decal.normal] as [number, number, number], up: [...l.decal.up] as [number, number, number], channels: [...l.decal.channels] }) } : {}),
     ...(l.mask ? { mask: l.mask.slice() } : {}),
   });
   s.active++;
+  // a copy of a mark is picked like a placed one, so its gizmo is there to drag (not a mark with no handles)
+  if (l.decal) set((st) => ({ paint: { ...st.paint, decalSel: true } }));
 });
 /** Layer `from` dragged to stack position `to` (0 = bottom), Photoshop's drag in the Layers panel; it stays the active one. */
 export const movePaintLayerTo = (from: number, to: number) => layers((s) => {
@@ -2912,6 +3112,17 @@ export function editPaintLayer(j: number, l: Partial<Pick<PaintLayer, 'name' | '
   if (undoable) step(s, ...mates); else ensureStep(s, ...mates);
   s.layers[j] = { ...s.layers[j], ...l };
   for (const t of mates) t.layers[t.active] = { ...t.layers[t.active], ...l };
+  // one half of a mirror pair is the same mark: hide it, fade it or change its blend and both sides follow. A rename
+  // keeps the "(mirror)" suffix so the stack still reads as a pair.
+  const twin = was.decal ? mirrorMate(s, was) : null;
+  if (twin) {
+    if (l.name) { if (twin.name === `${was.name} (mirror)`) twin.name = `${l.name} (mirror)`; }
+    else {
+      if (l.visible !== undefined) twin.visible = l.visible;
+      if (l.opacity !== undefined) twin.opacity = l.opacity;
+      if (l.blend !== undefined) twin.blend = { ...l.blend };
+    }
+  }
   for (const t of [s, ...mates]) scheduleComposite(t);
   repaintPanel();
 }
@@ -2961,7 +3172,7 @@ const targetParts = () => { const a = get().activePart; return [a, ...(get().lin
 function matesOf(l: PaintLayer): TexSet[] {
   if (!get().linkSets) return [];
   return visibleParts().filter((j) => j !== get().activePart).flatMap((j) => {
-    const t = texSet(j), k = t.layers.findIndex((x) => x !== l && x.name === l.name && !x.fill === !l.fill && !x.gen === !l.gen && !x.decal === !l.decal);
+    const t = texSet(j), k = t.layers.findIndex((x) => x !== l && x.name === l.name && !x.fill === !l.fill && !x.gen === !l.gen && !x.decal === !l.decal && !x.bevel === !l.bevel);
     if (k < 0) return [];
     t.active = k;
     return [t];
@@ -2970,7 +3181,14 @@ function matesOf(l: PaintLayer): TexSet[] {
 /** Where a new fill, solid, decal or sheen goes: above the active layer, but under the generators stacked over it,
  *  so Edge Wear and Dirt stay on top of what is added later (as Substance stacks them). */
 function insertAt(s: TexSet) { let a = s.active; while (a >= 0 && s.layers[a]?.gen) a--; return a + 1; }
-export const pickPaintLayer = (j: number) => { texSet(get().activePart).active = j; repaint(); };
+/** A click in the Layers panel: the layer becomes the active one, and picking a mark also picks it on the model, so a
+ *  mark found in the stack gets its frame back after a click on bare surface cleared it. */
+export const pickPaintLayer = (j: number) => {
+  const s = texSet(get().activePart);
+  s.active = j;
+  if (s.layers[j]?.decal && !get().paint.decalSel) set((st) => ({ paint: { ...st.paint, decalSel: true } }));
+  repaint();
+};
 /** Part `i` gets Roughness, Metallic, Normal and Height channels (PBR, glTF's metal/rough plus a normal map),
  *  or loses them. */
 export function setPbr(i: number, on: boolean) {
@@ -3006,26 +3224,27 @@ export function loadDecals() {
   loadDecalLibrary()
     .then((decals) => set((s) => ({
       decals, decalsLoading: false,
-      paint: !s.paint.decalAsset && decals.length ? { ...s.paint, decalAsset: decals[0].id } : s.paint,
+      paint: !s.paint.decalAsset && decals.length ? { ...s.paint, decalAsset: (decals.find((d) => !d.shape) ?? decals[0]).id } : s.paint,
     })))
     .catch((e) => set({ decalsLoading: false, decalsError: e instanceof Error ? e.message : String(e) }));
 }
 const decalOf = (id: string) => get().decals.find((d) => d.id === id) ?? null;
-/** Arm a mark for placement: its ink becomes the starting tint and the Decal tool is selected. */
+/** Arm a mark for placement: its ink becomes the starting tint, the Decal tool is selected and the next click on the
+ *  model places one (after that the tool is back in edit mode, where a click selects a mark). */
 export function pickDecal(id: string) {
   const a = decalOf(id);
   if (!a) return;
   set((s) => ({
-    paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? '#ffffff', ...(a.size ? { decalSize: a.size } : {}) },
-    paintTab: 'decals', error: null,
+    paint: { ...s.paint, tool: 'decal', decalMode: 'place', decalAsset: id, decalTint: s.paint.color, ...(a.size ? { decalSize: a.size } : {}) },
+    paintTab: 'assets', assetTab: a.shape ? 'geometry' : 'decals', error: null,
   }));
 }
 export const importDecal = (file: File) => task('Importing a decal…', async () => {
   const a = await decalFromFile(file);
   set((s) => ({
     decals: [a, ...s.decals.filter((x) => x.id !== a.id)],
-    paint: { ...s.paint, tool: 'decal', decalAsset: a.id, decalTint: a.tint ?? '#ffffff' },
-    paintTab: 'decals', error: null,
+    paint: { ...s.paint, tool: 'decal', decalAsset: a.id, decalTint: s.paint.color },
+    paintTab: 'assets', assetTab: 'decals', error: null,
   }));
 });
 
@@ -3050,31 +3269,98 @@ function decalUp(n: [number, number, number]): [number, number, number] {
   const l = Math.hypot(x, y, z) || 1;
   return [x / l, y / l, z / l];
 }
+/** Is `at` (a point on the surface) on the mark itself? A mark is its footprint, not the ink: a sparse stencil or a
+ *  groove-only grip panel is as easy to click as a solid one, and a shape is its outline (which may reach past the
+ *  projector's rectangle). Only the projector's depth limits it, so the whole mark can be grabbed from any face it was
+ *  wrapped over — a curved grip puts the panel's flanks tens of units behind the tangent plane, where a strict
+ *  "inside the rectangle" test used to make most of the mark unclickable. */
 function insideDecal(d: Decal, at: [number, number, number], span: number) {
-  const dx = at[0] - d.center[0], dy = at[1] - d.center[1], dz = at[2] - d.center[2];
-  const along = dx * d.normal[0] + dy * d.normal[1] + dz * d.normal[2];
-  if (Math.abs(along) > Math.max(d.width * 0.3, span * 0.012)) return false;
-  const h = d.width / Math.max(d.aspect, 0.01);
-  return Math.hypot(dx, dy, dz) <= Math.max(d.width, h) * 0.62;
+  const f = decalFrame(d, span), dx = at[0] - f.cx, dy = at[1] - f.cy, dz = at[2] - f.cz;
+  const along = dx * f.nx + dy * f.ny + dz * f.nz;
+  if (Math.abs(along) > f.depth) return false;
+  const hw = f.width / 2, hh = f.height / 2;
+  // the bake flips the pattern, so the outline the mark was shaped with is flipped in its own frame too
+  const a = (dx * f.uxr + dy * f.uyr + dz * f.uzr) * (d.flipH ? -1 : 1);
+  const b = (dx * f.vxr + dy * f.vyr + dz * f.vzr) * (d.flipV ? -1 : 1);
+  const sh = d.shape;
+  // no outline: the projector's rectangle is the mark (a little past its edge, so the frame itself can be grabbed)
+  if (!sh?.outline) return Math.abs(a) <= hw * 1.06 && Math.abs(b) <= hh * 1.06;
+  const m = Math.max(sh.cell, Math.min(hw, hh) * 0.03);
+  // a free outline: the outline itself says where the mark is, even where it reaches past the projector's rectangle
+  return shapeHeight(sh, a, b, hw, hh) !== null
+    || shapeHeight(sh, a + m, b, hw, hh) !== null || shapeHeight(sh, a - m, b, hw, hh) !== null
+    || shapeHeight(sh, a, b + m, hw, hh) !== null || shapeHeight(sh, a, b - m, hw, hh) !== null;
 }
-/** Bake one decal layer from its current projector. */
-function rebakeDecal(i: number, layer: PaintLayer) {
+/** The decal layer of part `i` under a point on its surface, topmost first, or -1. A click picks the mark itself, not
+ *  the texels it inks, so a sparse stencil is as easy to grab as a solid one; a triangle facing away from the mark's
+ *  projector is not where its ink is (the mark on the far side of a slide is not the one being clicked). */
+export function decalUnder(i: number, at: [number, number, number], tri?: number): number {
+  const st = get(), s = st.parts[i] ? setIfAny(st.parts[i].soup) : null, out = st.result?.parts[i];
+  if (!s || !out) return -1;
+  const span = modelSize(st.result!), n = tri != null && tri >= 0 ? faceNormal(out, tri) : null;
+  for (let j = s.layers.length - 1; j >= 0; j--) {
+    const d = s.layers[j].decal;
+    if (!d) continue;
+    // only a face turned clearly away is not where this mark's ink is; a mark dragged over a curved panel is still
+    // picked on the flanks the projector's facing no longer matches
+    if (n && n[0] * d.normal[0] + n[1] * d.normal[1] + n[2] * d.normal[2] < -0.05) continue;
+    if (insideDecal(d, at, span)) return j;
+  }
+  return -1;
+}
+/** Select the mark on part `i` whose layer is `j` (a click on the model): the part is opened and the gizmo moves there. */
+export function selectDecal(i: number, j: number) {
+  if (!get().parts[i] || !texSet(i).layers[j]?.decal) return;
+  set((s) => ({ activePart: i, paint: { ...s.paint, decalSel: true } }));
+  texSet(i).active = j;
+  repaintPanel();
+}
+/** Nothing is picked any more (a click on bare surface or the empty view): the frame, its handles and the Decal
+ *  actions go. The layer stays the active one in the Layers panel, so its settings and opacity are still there. */
+export function deselectDecal() {
+  const st = get(), s = st.parts[st.activePart] ? texSet(st.activePart) : null;
+  if (!st.paint.decalSel || !s?.layers[s.active]?.decal) return;
+  set({ paint: { ...st.paint, decalSel: false } });
+  repaintPanel();
+}
+/** Bake one decal layer from its current projector. `live` is a drag or slider still in motion: the bake then
+ *  recomposites only the box it changed and the full pass waits for the drag to stop. */
+function rebakeDecal(i: number, layer: PaintLayer, live = false) {
   const st = get(), out = st.result?.parts[i], uv = st.uvs[i];
   if (!out || !uv) return;
-  const span = modelSize(st.result!);
+  const span = modelSize(st.result!), s = texSet(i);
   // a shape is its own relief: no image to load
-  if (layer.decal?.shape) { bakeShape(texSet(i), layer, out.positions, uv, span); composite(texSet(i)); repaint(); return; }
+  if (layer.decal?.shape) { bakeShape(s, layer, out.positions, uv, span); composite(s); repaint(); return; }
   const a = layer.decal && decalOf(layer.decal.asset);
   if (!a) return;
   void decalPixels(a).then((px) => {
     const now = get();
     if (!now.result?.parts[i] || now.uvs[i] !== uv || !texSet(i).layers.includes(layer)) return;
-    bakeDecal(texSet(i), layer, px, out.positions, uv, span);
-    composite(texSet(i));
-    repaint();
+    const box = bakeDecal(s, layer, px, out.positions, uv, span);
+    if (live && box) {
+      composite(s, box[0], box[1], box[2], box[3], undefined, false);
+      repaintLive();
+      settleDecal(i);
+    } else {
+      composite(s);
+      repaint();
+    }
   }).catch((e) => set({ error: e instanceof Error ? e.message : String(e) }));
 }
-/** Add a decal layer at a hit on part `i`, of the armed mark (`paint.decalAsset`). */
+/** After the last live bake of a drag: one full composite, for the mip padding and the panel's readout. */
+let decalSettle: ReturnType<typeof setTimeout> | undefined;
+function settleDecal(i: number) {
+  clearTimeout(decalSettle);
+  decalSettle = setTimeout(() => {
+    if (!get().parts[i] || !get().result?.parts[i]) return;
+    composite(texSet(i));
+    repaint();
+  }, 160);
+}
+/** A grip texture's sizes are shares of the model on the shelf, world units on the model. */
+const shapeAt = (sh: Shape, span: number): Shape => ({ ...sh, corner: sh.corner * span, border: sh.border * span, depth: sh.depth * span, cell: sh.cell * span, amount: sh.amount * span });
+/** Add a decal layer at a hit on part `i`, of the armed mark (`paint.decalAsset`). One click places: the tool is back
+ *  in edit mode afterwards, so the next click selects the mark that was just made. */
 function placeDecal(i: number, tri: number, at: [number, number, number]) {
   const st = get(), out = st.result?.parts[i], uv = st.uvs[i], a = decalOf(st.paint.decalAsset) ?? st.decals[0];
   if (!out || !uv || !a) {
@@ -3087,8 +3373,7 @@ function placeDecal(i: number, tri: number, at: [number, number, number]) {
     width: Math.max(span * st.paint.decalSize / 100, span * 0.01), rotation: st.paint.decalRotation,
     aspect: a.width / a.height, tint: st.paint.decalTint, roughness: 0.55, metallic: 0,
     channels: a.shape ? ['normal', 'height'] : ['color', 'rough', 'metal'],
-    // a grip texture's sizes are shares of the model on the shelf, world units on the model
-    ...(a.shape ? { shape: { ...a.shape, corner: a.shape.corner * span, border: a.shape.border * span, depth: a.shape.depth * span, cell: a.shape.cell * span, amount: a.shape.amount * span } } : {}),
+    ...(a.shape ? { shape: shapeAt(a.shape, span) } : {}),
   };
   step(s);
   if (a.shape && !s.channels.includes('normal')) s.channels = [...FILL_CHANNELS];
@@ -3097,80 +3382,220 @@ function placeDecal(i: number, tri: number, at: [number, number, number]) {
   s.layers.splice(at0, 0, layer);
   s.active = at0;
   // Mirror: the same mark on the far side of the model, across the middle of the axis the face looks along (a gun's
-  // two flanks), so both sides take one click and read the right way round from outside.
-  const twin = st.paint.decalMirror ? mirrorHit(st.result!, i, at, normal) : null;
+  // two flanks), so both sides take one click and read the right way round from outside. The pair is linked: moving
+  // or restyling either half takes the other with it.
+  const axis = mirrorAxis(normal);
+  const twin = st.paint.decalMirror ? mirrorFrame(st.result!, i, at, normal, axis) : null;
   if (twin) {
-    const n2 = faceNormal(out, twin.tri);
-    const other: PaintLayer = { ...newLayer(s.layers.length + 1), name: `${a.name} (mirror)`, decal: { ...decal, center: twin.at, normal: n2, up: decalUp(n2) } };
+    const other: PaintLayer = { ...newLayer(s.layers.length + 1), name: `${a.name} (mirror)`, decal: { ...decal, center: twin.at, normal: twin.normal, up: twin.up, mirror: { of: layer.id, axis } } };
+    layer.decal = { ...decal, mirror: { of: other.id, axis } };
     s.layers.splice(at0, 0, other);
     s.active = at0 + 1;
     rebakeDecal(i, other);
   }
-  set({ activePart: i, paintChannel: 'material', error: null });
+  set((now) => ({ activePart: i, paintChannel: 'material', error: null, paint: { ...now.paint, decalMode: 'edit', decalSel: true } }));
   rebakeDecal(i, layer);
   repaintPanel();
   return true;
 }
-/** Where `at` on part `i` lands mirrored across the model's middle on the axis `normal` mostly points along: the nearest
- *  triangle of the same part facing the other way, and the point on it. */
-function mirrorHit(r: Output, i: number, at: [number, number, number], normal: [number, number, number]) {
-  const ax = [0, 1, 2].reduce((m, k) => (Math.abs(normal[k]) > Math.abs(normal[m]) ? k : m), 0);
+/** Where `at` on part `i` lands mirrored across the model's middle on `axis`: the nearest triangle of the same part
+ *  facing the other way, the point on it, its upright frame. The axis is stored with the pair, so an edit keeps the
+ *  same plane even when the mark's own facing drifts. */
+function mirrorFrame(r: Output, i: number, at: [number, number, number], normal: [number, number, number], axis: 0 | 1 | 2) {
   let lo = Infinity, hi = -Infinity;
-  for (const p of r.parts) for (let k = ax; k < p.positions.length; k += 3) { lo = Math.min(lo, p.positions[k]); hi = Math.max(hi, p.positions[k]); }
-  const want = [...at] as [number, number, number];
-  want[ax] = lo + hi - at[ax];
+  for (const p of r.parts) for (let k = axis; k < p.positions.length; k += 3) { const v = p.positions[k]; if (v < lo) lo = v; if (v > hi) hi = v; }
+  const want: [number, number, number] = [...at] as [number, number, number];
+  want[axis] = lo + hi - at[axis];
   const pos = r.parts[i].positions;
-  let best = -1, bestD = Infinity;
+  let best = -1, bestD = Infinity, bn: [number, number, number] = [0, 0, 0];
   for (let t = 0; t < pos.length / 9; t++) {
-    if (faceNormal(r.parts[i], t)[ax] * normal[ax] > -0.5) continue;
-    const c = [0, 1, 2].map((d) => (pos[t * 9 + d] + pos[t * 9 + 3 + d] + pos[t * 9 + 6 + d]) / 3);
-    const dd = (c[0] - want[0]) ** 2 + (c[1] - want[1]) ** 2 + (c[2] - want[2]) ** 2;
-    if (dd < bestD) { bestD = dd; best = t; }
+    const o = t * 9;
+    const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+    const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+    let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+    const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+    const nax = axis === 0 ? nx : axis === 1 ? ny : nz;
+    if (nax * normal[axis] > -0.5) continue; // must face the other way, or it is the same side's back
+    const cx = (pos[o] + pos[o + 3] + pos[o + 6]) / 3, cy = (pos[o + 1] + pos[o + 4] + pos[o + 7]) / 3, cz = (pos[o + 2] + pos[o + 5] + pos[o + 8]) / 3;
+    const dd = (cx - want[0]) ** 2 + (cy - want[1]) ** 2 + (cz - want[2]) ** 2;
+    if (dd < bestD) { bestD = dd; best = t; bn = [nx, ny, nz]; }
   }
   if (best < 0) return null;
-  // onto that triangle's plane
-  const n = faceNormal(r.parts[i], best), o = best * 9;
-  const off = (want[0] - pos[o]) * n[0] + (want[1] - pos[o + 1]) * n[1] + (want[2] - pos[o + 2]) * n[2];
-  return { tri: best, at: [want[0] - n[0] * off, want[1] - n[1] * off, want[2] - n[2] * off] as [number, number, number] };
+  const o = best * 9, [nx, ny, nz] = bn;
+  const off = (want[0] - pos[o]) * nx + (want[1] - pos[o + 1]) * ny + (want[2] - pos[o + 2]) * nz;
+  const at2: [number, number, number] = [want[0] - nx * off, want[1] - ny * off, want[2] - nz * off];
+  return { tri: best, at: at2, normal: bn, up: decalUp(bn) };
+}
+/** The model axis a mark faces along, which is also the one it mirrors across. */
+function mirrorAxis(n: [number, number, number]): 0 | 1 | 2 {
+  return [0, 1, 2].reduce((m, k) => (Math.abs(n[k]) > Math.abs(n[m]) ? k : m), 0) as 0 | 1 | 2;
+}
+/** The other half of a linked mirror pair, if this layer has one. */
+function mirrorMate(s: TexSet, l: PaintLayer): PaintLayer | null {
+  const of = l.decal?.mirror?.of;
+  if (of != null) return s.layers.find((x) => x.id === of) ?? null;
+  return s.layers.find((x) => x.decal?.mirror?.of === l.id) ?? null;
+}
+/** After `edited` changed, keep its mirror partner on the other side with the same look (and bake it again). The pair
+ *  is symmetric, so editing either half works: the frame is mirrored across the stored axis both ways. */
+function syncMirror(i: number, s: TexSet, edited: PaintLayer, live: boolean, bake = true) {
+  const mate = mirrorMate(s, edited);
+  if (!mate?.decal || !edited.decal) return false;
+  const axis = edited.decal.mirror?.axis ?? mate.decal.mirror?.axis;
+  const r = get().result;
+  if (axis == null || !r?.parts[i]) return false;
+  const m = mirrorFrame(r, i, edited.decal.center, edited.decal.normal, axis);
+  // no face opposite it right now: the partner stays where it was and catches up once there is one again
+  if (!m) return false;
+  mate.decal = { ...edited.decal, center: m.at, normal: m.normal, up: m.up, mirror: { of: edited.id, axis } };
+  if (bake) { if (live) laterRebake(i, mate); else rebakeDecal(i, mate); }
+  return true;
+}
+/** Mirror the active mark onto the other side of the model as a linked pair: moving, scaling, turning or re-inking
+ *  either half moves both. One undo step. */
+export function mirrorDecal() {
+  const st = get(), i = st.activePart, s = texSet(i), r = st.result, l = s.layers[s.active];
+  if (!l?.decal || !r?.parts[i]) return;
+  if (mirrorMate(s, l)) { set({ error: 'This mark is already mirrored — Unlink it first.' }); return; }
+  const axis = mirrorAxis(l.decal.normal);
+  const m = mirrorFrame(r, i, l.decal.center, l.decal.normal, axis);
+  if (!m) { set({ error: 'No face on the other side of this part to mirror onto.' }); return; }
+  step(s);
+  // the step swaps the active layer for its copy: edit that one
+  const cur = s.layers[s.active], at = s.active;
+  const twin: PaintLayer = { ...newLayer(s.layers.length + 1), name: `${cur.name} (mirror)`, decal: { ...cur.decal!, center: m.at, normal: m.normal, up: m.up, mirror: { of: cur.id, axis } } };
+  cur.decal = { ...cur.decal!, mirror: { of: twin.id, axis } };
+  s.layers.splice(at + 1, 0, twin);
+  set({ error: null });
+  rebakeDecal(i, twin);
+  repaintPanel();
+}
+/** Break a link: both marks stay where they are and become independent. */
+export function unlinkDecal() {
+  const i = get().activePart, s = texSet(i), l = s.layers[s.active];
+  const mate = l?.decal ? mirrorMate(s, l) : null;
+  if (!l?.decal || !mate?.decal) return;
+  const a = l.id, b = mate.id;
+  step(s);
+  // the step may have swapped the active layer: find both again by id
+  const live = s.layers.find((x) => x.id === a), other = s.layers.find((x) => x.id === b);
+  if (live?.decal) live.decal = withoutMirror(live.decal);
+  if (other?.decal) other.decal = withoutMirror(other.decal);
+  repaintPanel();
 }
 /** A mark dragged from the shelf and let go on part `i` at `at` (triangle `tri`): armed and placed there, as a click
  *  with the Decal tool would, so its gizmo is ready. */
 export function dropDecal(id: string, i: number, tri: number, at: [number, number, number]) {
   if (get().busy || !decalOf(id)) return;
   const a = decalOf(id)!;
-  set((s) => ({ paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? '#ffffff', ...(a.size ? { decalSize: a.size } : {}) } }));
+  set((s) => ({ paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: s.paint.color, ...(a.size ? { decalSize: a.size } : {}) } }));
   placeDecal(i, tri, at);
 }
-/** Drag an existing decal to a new point. Over triangle `tri` the projector turns to face it (Substance's: the mark
- *  rides over the surface like an object on it), its up carried over so the rotation doesn't jump. */
-function moveDecal(at: [number, number, number], tri?: number) {
-  const i = get().activePart, s = texSet(i), l = s.layers[s.active], out = get().result?.parts[i];
-  if (!l?.decal) return;
-  let { normal, up } = l.decal;
-  if (out && tri != null && tri >= 0) {
-    normal = faceNormal(out, tri);
-    const d = up[0] * normal[0] + up[1] * normal[1] + up[2] * normal[2], x = up[0] - normal[0] * d, y = up[1] - normal[1] * d, z = up[2] - normal[2] * d, len = Math.hypot(x, y, z);
-    up = len > 0.2 ? [x / len, y / len, z / len] : decalUp(normal);
+/** `up` carried onto a new facing: its part along that plane, or the upright stand-in when it would vanish. */
+function carryUp(up: [number, number, number], normal: [number, number, number]): [number, number, number] {
+  const d = up[0] * normal[0] + up[1] * normal[1] + up[2] * normal[2];
+  const x = up[0] - normal[0] * d, y = up[1] - normal[1] * d, z = up[2] - normal[2] * d, len = Math.hypot(x, y, z);
+  return len > 0.2 ? [x / len, y / len, z / len] : decalUp(normal);
+}
+/** Shift while moving a mark (and the panel's Center): put it on the model's middle across the axis the mark faces
+ *  along — a gun's two flanks, a scope's bore — so a marking lines up with the one opposite without eyeballing it.
+ *  Only when it is near: a drag across the model should not be yanked to its centre. */
+function snapMiddle(c: [number, number, number], normal: [number, number, number], force = false): boolean {
+  const r = get().result;
+  if (!r) return false;
+  const ax = [0, 1, 2].reduce((m, k) => (Math.abs(normal[k]) > Math.abs(normal[m]) ? k : m), 0);
+  let lo = Infinity, hi = -Infinity;
+  for (const p of r.parts) for (let k = ax; k < p.positions.length; k += 3) { if (p.positions[k] < lo) lo = p.positions[k]; if (p.positions[k] > hi) hi = p.positions[k]; }
+  const mid = (lo + hi) / 2;
+  if (!force && Math.abs(c[ax] - mid) > modelSize(r) * 0.05) return false;
+  if (c[ax] === mid) return false;
+  c[ax] = mid;
+  return true;
+}
+/** Slide the active mark to a point on the surface. Its own plane is kept while the pointer stays on one smooth face
+ *  (re-deriving the facing from every triangle it crossed made the mark spin and jump); it turns onto a new face only
+ *  when the surface really turns away, more than 15°. `snap` (Shift) catches the model's middle. */
+export function dragDecal(at: [number, number, number], tri?: number, snap = false, bake = true) {
+  const i = get().activePart, s = texSet(i), out = get().result?.parts[i];
+  if (!out || !s.layers[s.active]?.decal) return;
+  ensureStep(s);
+  // the step swaps the active layer for its copy: edit that one, not the one the undo keeps
+  const l = s.layers[s.active];
+  let { normal, up } = l.decal!;
+  if (tri != null && tri >= 0) {
+    const n2 = faceNormal(out, tri);
+    if (n2[0] * normal[0] + n2[1] * normal[1] + n2[2] * normal[2] < 0.966) { normal = n2; up = carryUp(up, normal); }
   }
-  l.decal = { ...l.decal, center: [...at] as [number, number, number], normal, up };
-  laterRebake(i, l);
+  const c: [number, number, number] = [...at] as [number, number, number];
+  if (snap) snapMiddle(c, normal);
+  l.decal = { ...l.decal!, center: c, normal, up };
+  if (bake) laterRebake(i, l); else repaintLive();
+  if (bake) syncMirror(i, s, l, true);
 }
 /** A live edit (drag, gizmo, slider) re-bakes at most once a frame. */
-let decalFrame = 0;
+let decalRaf = 0;
 function laterRebake(i: number, l: PaintLayer) {
   repaintLive();
-  if (decalFrame) return;
-  const run = () => { decalFrame = 0; const now = get(); if (now.parts[i] && texSet(i).layers.includes(l)) rebakeDecal(i, l); };
-  decalFrame = typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame(run) : setTimeout(run, 16) as unknown as number;
+  if (decalRaf) return;
+  const run = () => { decalRaf = 0; const now = get(); if (now.parts[i] && texSet(i).layers.includes(l)) rebakeDecal(i, l, true); };
+  decalRaf = typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame(run) : setTimeout(run, 16) as unknown as number;
 }
-/** The active layer's decal and its part, for the 3D gizmo (null when the active layer isn't one). */
+/** The active layer's decal and its part, for the 3D gizmo (null when the active layer isn't one, or none is picked). */
 export function activeDecal() {
   const s = get(), i = s.activePart, ts = s.parts[i] && s.result?.parts[i] ? setIfAny(s.parts[i].soup) : null;
   const d = ts?.layers[ts.active]?.decal;
-  return d ? { part: i, decal: d } : null;
+  return d && s.paint.decalSel ? { part: i, decal: d } : null;
+}
+/** Edit / Place: what a click on the model does with the Decal tool (the tile in the Decals tab arms one placement). */
+export const setDecalMode = (decalMode: DecalMode) => set((s) => ({ paint: { ...s.paint, decalMode } }));
+/** Arrow keys: move the mark across its own plane, `du` / `dv` steps of 0.4% of the model. */
+export function nudgeDecal(du: number, dv: number, undoable = true) {
+  const a = activeDecal();
+  if (!a) return;
+  const f = decalFrame(a.decal, modelDiagonal()), k = modelDiagonal() * 0.004;
+  updateDecal({ center: [
+    a.decal.center[0] + (f.uxr * du + f.vxr * dv) * k,
+    a.decal.center[1] + (f.uyr * du + f.vyr * dv) * k,
+    a.decal.center[2] + (f.uzr * du + f.vzr * dv) * k,
+  ] }, undoable);
+}
+/** Put the mark back on the model's middle across the axis it faces (whatever the pointer last did). */
+export function centerDecal() {
+  const a = activeDecal();
+  if (!a) return;
+  const c: [number, number, number] = [...a.decal.center] as [number, number, number];
+  if (snapMiddle(c, a.decal.normal, true)) updateDecal({ center: c });
+}
+/** Turn the projector onto the surface under the mark: the faces round its centre, by how near they are. A mark
+ *  dragged over a bevel keeps its old lean until this is asked for (or the surface turns away by more than 15°). */
+export function alignDecal() {
+  const a = activeDecal(), out = get().result?.parts[get().activePart];
+  if (!a || !out) return;
+  const { center, width, aspect } = a.decal, r = Math.max(width, width / Math.max(aspect, 1e-3)) * 0.6;
+  let sx = 0, sy = 0, sz = 0, wsum = 0;
+  const pos = out.positions;
+  for (let t = 0; t < pos.length / 9; t++) {
+    const o = t * 9;
+    const dx = (pos[o] + pos[o + 3] + pos[o + 6]) / 3 - center[0], dy = (pos[o + 1] + pos[o + 4] + pos[o + 7]) / 3 - center[1], dz = (pos[o + 2] + pos[o + 5] + pos[o + 8]) / 3 - center[2];
+    const dd = dx * dx + dy * dy + dz * dz;
+    if (dd > r * r) continue;
+    const n = faceNormal(out, t), w = 1 / (1 + 4 * dd / (r * r));
+    sx += n[0] * w; sy += n[1] * w; sz += n[2] * w; wsum += w;
+  }
+  const nl = Math.hypot(sx, sy, sz);
+  if (wsum <= 0 || nl < 1e-6) return;
+  const normal: [number, number, number] = [sx / nl, sy / nl, sz / nl];
+  updateDecal({ normal, up: carryUp(a.decal.up, normal) });
+}
+/** Ctrl+D for a mark: a copy above it, nudged a tenth of its width along U so both are visible and can be dragged apart. */
+export function duplicateDecal() {
+  const a = activeDecal();
+  if (!a) return;
+  duplicatePaintLayer();
+  nudgeDecal(0.5, 0, false); // part of the duplicate's own undo step
 }
 /** Change the active decal's size, rotation, tint, finish or placed asset. */
-export function updateDecal(patch: Partial<Decal>, undoable = true) {
+export function updateDecal(patch: Partial<Decal>, undoable = true, bake = true) {
   if (get().busy) return;
   const i = get().activePart, s = texSet(i);
   if (!s.layers[s.active]?.decal) return;
@@ -3180,9 +3605,63 @@ export function updateDecal(patch: Partial<Decal>, undoable = true) {
   l.decal = next;
   if (patch.asset) {
     const a = decalOf(patch.asset);
-    if (a) { l.name = a.name; next.aspect = a.width / a.height; }
+    // a grip preset is only the relief: the mark keeps its proportions
+    if (a) { l.name = a.name; if (!a.shape) next.aspect = a.width / a.height; }
   }
-  if (undoable) rebakeDecal(i, l); else laterRebake(i, l);
+  if (undoable) rebakeDecal(i, l); else if (bake) laterRebake(i, l);
+  if (bake) syncMirror(i, s, l, !undoable);
+  repaintPanel();
+}
+/** Finish a decal edit whose expensive texture bake was deferred during direct manipulation. */
+export function finishDecalEdit() {
+  const s = get(), i = s.activePart, ts = s.parts[i] ? texSet(i) : null, l = ts?.layers[ts.active];
+  if (!ts || !l?.decal) return;
+  rebakeDecal(i, l);
+  syncMirror(i, ts, l, false);
+}
+/** Swap the active grip texture's relief for a preset's (pattern, cell, height, border): its place, size, outline and
+ *  corners stay as they are. */
+export function setGripPreset(id: string) {
+  const a = decalOf(id), d = activeDecal()?.decal, r = get().result;
+  if (!a?.shape || !d?.shape || !r) return;
+  const { pattern, cell, amount, border, depth } = shapeAt(a.shape, modelSize(r));
+  updateDecal({ asset: id, shape: { ...d.shape, pattern, cell, amount, border, depth } });
+}
+/** Fit the active grip texture to the selected faces (Select Faces, W) or the whole part: the pattern alone (no outline
+ *  or groove border) wrapped round the surface from their middle, on a panel big enough to reach every corner, and the
+ *  faces' texels as the layer's mask so it stops at their edges. A mirror pair is unlinked first, by hand. */
+export function fitDecal(to: 'faces' | 'part') {
+  const st = get(), i = st.activePart, out = st.result?.parts[i], uv = st.uvs[i], d = activeDecal()?.decal;
+  if (st.busy || !out || !uv || !d?.shape || d.mirror) return;
+  const s = texSet(i), pos = out.positions, n = s.size, tris: number[] = [];
+  for (let t = 0; t < pos.length / 9; t++) {
+    // a face is in when the texel under its UV middle is selected
+    const x = Math.floor(((uv[t * 6] + uv[t * 6 + 2] + uv[t * 6 + 4]) / 3) * n), y = Math.floor(((uv[t * 6 + 1] + uv[t * 6 + 3] + uv[t * 6 + 5]) / 3) * n);
+    if (to === 'part' || (s.sel && s.sel[Math.min(n - 1, Math.max(0, y)) * n + Math.min(n - 1, Math.max(0, x))] >= 128)) tris.push(t);
+  }
+  if (!tris.length) { set({ error: 'Select the faces to fit to first (Select Faces, W).' }); return; }
+  let sx = 0, sy = 0, sz = 0, cx = 0, cy = 0, cz = 0, area = 0;
+  for (const t of tris) {
+    const o = t * 9;
+    const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+    const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+    const fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x, w = Math.hypot(fx, fy, fz);
+    sx += fx; sy += fy; sz += fz; area += w;
+    cx += (w * (pos[o] + pos[o + 3] + pos[o + 6])) / 3; cy += (w * (pos[o + 1] + pos[o + 4] + pos[o + 7])) / 3; cz += (w * (pos[o + 2] + pos[o + 5] + pos[o + 8])) / 3;
+  }
+  if (area <= 0) return;
+  const center: [number, number, number] = [cx / area, cy / area, cz / area], nl = Math.hypot(sx, sy, sz);
+  // a closed part faces every way at once: keep the mark's own facing there
+  const normal: [number, number, number] = nl > area * 0.05 ? [sx / nl, sy / nl, sz / nl] : d.normal;
+  let reach = 0;
+  for (const t of tris) for (let k = 0; k < 9; k += 3) reach = Math.max(reach, Math.hypot(pos[t * 9 + k] - center[0], pos[t * 9 + k + 1] - center[1], pos[t * 9 + k + 2] - center[2]));
+  // the wrap walks the surface, which is longer than the straight line: 2.5× covers half way round a sphere
+  const half = reach * 2.5 + d.shape.cell;
+  step(s);
+  const l = s.layers[s.active];
+  l.decal = { ...d, center, normal, up: carryUp(d.up, normal), width: half * 2, aspect: 1, wrap: true, shape: { ...d.shape, border: 0, corner: 0, outline: undefined } };
+  if (to === 'faces') l.mask = maskTris(s, pos, uv, tris); else delete l.mask;
+  rebakeDecal(i, l);
   repaintPanel();
 }
 
@@ -3213,7 +3692,7 @@ export function assignMaterial(id: string, all = false, onto?: { part: number; t
       // Multiply tints it): choosing once should not mean switching every texture that follows. The first fill still
       // comes in Normal, so a material is a material, not a darkening.
       const over = ts.layers.some((x) => x.visible && (x.fill || x.decal || x.gen || Object.keys(x.px).length > 0));
-      const fill: Fill = { asset: id, projection: 'triplanar', tiling: asset.scale ?? 1, tiles: 4, rotation: 0, offset: [0, 0], normalStrength: 1, tint: '#ffffff', channels: [...FILL_CHANNELS] };
+      const fill: Fill = { asset: id, projection: 'triplanar', tiling: asset.scale ?? 1, tiles: 4, rotation: 0, offset: [0, 0], normalStrength: 1, tint: asset.colorless ? st.paint.color : '#ffffff', channels: [...FILL_CHANNELS] };
       const layer: PaintLayer = { ...newLayer(ts.layers.length + 1), name: asset.name, fill, ...(over && st.paint.fillBlend !== 'normal' ? { blend: { color: st.paint.fillBlend } } : {}), ...(onto ? { mask: maskTris(ts, out.positions, uv, onto.tris) } : ts.sel ? { mask: ts.sel.slice() } : {}) };
       const at = insertAt(ts);
       ts.layers.splice(at, 0, layer);
@@ -3250,6 +3729,8 @@ function refill(i: number, ts: TexSet, patch: Partial<Fill>, seq: number) {
   if (i < 0 || (f.asset !== SOLID && !asset)) return;
   l.fill = f;
   void (asset ? materialPixels(asset) : Promise.resolve<MaterialPixels>({}))
+    // a task later, so a slider's queued moves have all taken their seq and only the newest bakes
+    .then((maps) => new Promise<MaterialPixels>((done) => setTimeout(() => done(maps))))
     .then((maps) => {
       if (seq !== fillSeq) return;
       const st = get(), out = st.result?.parts[i];
@@ -3340,6 +3821,54 @@ export async function addGenerator(kind: GenKind) {
     s.active++;
     scheduleComposite(s);
   }
+  repaintPanel();
+}
+/** Bevel: a layer on each target part writing rounded-edge normals (paint.ts `bakeBevel`); no bake needed first. */
+export function addBevel() {
+  const st = get();
+  if (st.busy || !st.result) return;
+  const targets = targetParts().filter((i) => st.result!.parts[i] && st.uvs[i]);
+  if (!targets.length) return;
+  const sets = targets.map(texSet), b: Bevel = { radius: modelSize(st.result) * 0.004, profile: 'round', angle: 30, concave: false };
+  step(...sets);
+  for (const [k, i] of targets.entries()) {
+    const ts = sets[k], l: PaintLayer = { ...newLayer(0), name: 'Bevel', bevel: b };
+    if (!ts.channels.includes('normal')) ts.channels = [...FILL_CHANNELS];
+    bakeBevel(ts, l, st.result.parts[i].positions, st.uvs[i]);
+    const at = insertAt(ts);
+    ts.layers.splice(at, 0, l);
+    ts.active = at;
+    scheduleComposite(ts);
+  }
+  set({ paintChannel: 'material' });
+  repaintPanel();
+}
+let bevelLater: ReturnType<typeof setTimeout> | undefined;
+/** The active bevel layer's settings changed (and the same-named one on each linked set). A slider drag
+ *  (`undoable` false) shares one step and bakes once it pauses: a whole part's edges take a moment. */
+export function editBevel(b: Partial<Bevel>, undoable = true) {
+  const st = get(), i = st.activePart;
+  if (!st.parts[i] || !st.result) return;
+  const s = texSet(i), l0 = s.layers[s.active];
+  if (!l0?.bevel) return;
+  const mates = matesOf(l0).filter((t) => t.layers[t.active].bevel);
+  if (undoable) step(s, ...mates); else ensureStep(s, ...mates);
+  const jobs = [s, ...mates].map((t) => {
+    const l = t.layers[t.active];
+    l.bevel = { ...l.bevel!, ...b };
+    return [t, l] as const;
+  });
+  const run = () => {
+    const now = get();
+    for (const [t, l] of jobs) {
+      const j = now.parts.findIndex((p) => setIfAny(p.soup) === t), out = now.result?.parts[j], uv = now.uvs[j];
+      if (!out || !uv || !t.layers.includes(l)) continue;
+      bakeBevel(t, l, out.positions, uv);
+      scheduleComposite(t);
+    }
+  };
+  clearTimeout(bevelLater);
+  if (undoable) run(); else bevelLater = setTimeout(run, 150);
   repaintPanel();
 }
 /** The active generator layer's settings changed: made again (`undoable` false: inside a slider drag's step). */

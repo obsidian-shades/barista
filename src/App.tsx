@@ -18,7 +18,8 @@ import {
   answerAsk, confirmDiscard, armBox, cancelDocMove, cancelXform, cancelSymPlane, closeExport, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, flipSel, invertSelection, openExport, pickFile, saveProject, pinSelected, pointer, redo, repack,
   applySymPlane, setSymMode,
   pieMenu, scaleSel, cutSelection, stitchSelection, selectAll, selectAllPaint, selectLinked, selectLinkedUnder, setSelectMode, startXform, undo, unwrap, unwrapSelected, useApp, viewOp, viewPie, xformKey, xformSnap, openFile, type SelectMode,
-  type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, growPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, fillPaintSelection, type PaintTool,
+  activeDecal, duplicateDecal, mirrorDecal, nudgeDecal, updateDecal,
+  type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, growPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, deletePaintLayer, fillPaintSelection, dropMaterials, type PaintTool,
 } from './store';
 import { Tooltip } from './ui/Tooltip';
 
@@ -62,6 +63,11 @@ function onKey(e: KeyboardEvent) {
   if (useApp.getState().exportOpen) { if (k === 'escape') return run(closeExport); return; }
   // A menu at the pointer is modal: every other key belongs to the pie/list until it closes.
   if (useApp.getState().menu) return;
+  // Space: recenter the view under the pointer, in every workspace. Mid-transform it still confirms instead.
+  const spaceNow = useApp.getState();
+  if (k === ' ' && !ctrl && !e.altKey && !e.shiftKey && !spaceNow.xform && !spaceNow.docMove) {
+    return run(() => viewOp(pointer.view, 'all'));
+  }
   // Placing the mirror plane: G / R switch the gizmo, Enter applies it, Esc puts it back; every other key still works.
   if (useApp.getState().symEdit) {
     if (k === 'escape') return run(cancelSymPlane);
@@ -85,6 +91,8 @@ function onKey(e: KeyboardEvent) {
   // Delete clear; Ctrl+J duplicate, Ctrl+Shift+N new layer, Ctrl+[ ] move it; [ ] brush size) and the view keys
   if (useApp.getState().workspace === 'paint') {
     const p = useApp.getState().paint;
+    // Esc lets go of the materials held on the Eyedropper (they stay under Ctrl+Z if applied)
+    if (k === 'escape' && p.grab) return run(dropMaterials);
     if (ctrl) {
       if (k === 'z') return run(e.shiftKey ? redoPaint : undoPaint);
       if (k === 'y') return run(redoPaint);
@@ -92,13 +100,27 @@ function onKey(e: KeyboardEvent) {
       if (k === 'd') return run(deselectPaint);
       if (k === 'i') return run(invertPaintSelection);
       if (e.shiftKey && (k === '=' || k === '+' || k === '-' || k === '_')) return run(() => growPaintSelection(k === '-' || k === '_' ? -4 : 4));
-      if (k === 'j') return run(duplicatePaintLayer);
+      if (k === 'j') return run(() => (activeDecal() ? duplicateDecal() : duplicatePaintLayer()));
+      if (k === 'm') return run(mirrorDecal);
       if (k === 'n' && e.shiftKey) return run(addPaintLayer);
       if (k === '[' || k === ']') return run(() => movePaintLayer(k === ']' ? 1 : -1));
     } else {
-      if (PAINT_KEYS[k]) return run(() => setPaint({ tool: PAINT_KEYS[k] }));
+      // With a mark selected, the Decal tool's keys are the mark's: arrows slide it across its own plane (Shift: far,
+      // Alt: fine), [ ] size it, , . turn it — Blender's feel for the object under the gizmo.
+      const mark = p.tool === 'decal' ? activeDecal() : null;
+      if (mark) {
+        if (k === 'arrowleft' || k === 'arrowright' || k === 'arrowup' || k === 'arrowdown') {
+          const s = e.shiftKey ? 8 : e.altKey ? 0.25 : 2;
+          return run(() => nudgeDecal(k === 'arrowleft' ? -s : k === 'arrowright' ? s : 0, k === 'arrowdown' ? -s : k === 'arrowup' ? s : 0));
+        }
+        if (k === '[' || k === ']') return run(() => updateDecal({ width: Math.max(1e-5, mark.decal.width * (k === ']' ? 1.1 : 1 / 1.1)) }));
+        if (k === ',' || k === '.') return run(() => updateDecal({ rotation: ((((mark.decal.rotation + (k === '.' ? 5 : -5) + 180) % 360) + 360) % 360) - 180 }));
+      }
+      if (PAINT_KEYS[k]) return run(() => setPaint(k === 'd' ? { tool: 'decal', decalMode: 'edit' } : { tool: PAINT_KEYS[k] }));
       if (k === 'backspace' && e.altKey) return run(() => fillPaintSelection());
-      if (k === 'delete') return run(() => fillPaintSelection(true));
+      // Delete clears paint, but a mark picked with the Decal tool goes off the model with its layer: deleting a decal
+      // must not leave an empty decal row behind in the stack.
+      if (k === 'delete') return run(() => (p.tool === 'decal' && activeDecal() ? deletePaintLayer() : fillPaintSelection(true)));
       if (k === '[' || k === ']') return run(() => setPaint({ size: Math.min(20, Math.max(0.2, +(p.size * (k === ']' ? 1.2 : 1 / 1.2)).toFixed(1))) }));
     }
     if (!NUMPAD[e.code] && e.code !== 'NumpadDecimal' && k !== 'home' && !(ctrl && k === 'o')) return;
@@ -135,7 +157,7 @@ function onKey(e: KeyboardEvent) {
     return;
   }
   if (NUMPAD[e.code]) return run(() => viewOp('3d', NUMPAD[e.code][ctrl && NUMPAD[e.code][1] ? 1 : 0]!));
-  if (e.code === 'NumpadDecimal' || k === ' ') return run(() => viewOp(pointer.view, 'selected'));
+  if (e.code === 'NumpadDecimal') return run(() => viewOp(pointer.view, 'selected'));
   if (k === 'home') return run(() => viewOp(pointer.view, 'all'));
   if (ctrl) {
     if (k === 'o') run(pickFile);

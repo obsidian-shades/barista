@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 
 /** The 3D view's background in Theme mode. */
-export const THEME_BG = '#1f2124';
+export const THEME_BG = '#1a1c1f';
 
 type RGB = [number, number, number];
 interface Matcap { label: string; base: RGB; amb: number; dif: number; spec: number; shine: number; rim: number; rimColor?: RGB; kind?: 'chrome' | 'toon' | 'normals' }

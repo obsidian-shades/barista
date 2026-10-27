@@ -71,28 +71,79 @@ function sunOf(tex: THREE.Texture) {
   return { sun: new THREE.Vector3(Math.cos(theta) * Math.cos(lat), Math.max(0.25, Math.sin(lat)), Math.sin(theta) * Math.cos(lat)).normalize(), mean: area ? sum / area : 0 };
 }
 
-// one renderer for every part's layout (browsers allow few WebGL contexts), with the environment filtered for it
+// one renderer for every part's layout and picture (browsers allow few WebGL contexts), with the environment filtered for it
 let gl: THREE.WebGLRenderer | null = null, pmrem: { from: THREE.Texture; tex: THREE.Texture } | null = null;
+function rendererOf(n: number) {
+  gl ??= new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: false });
+  gl.setPixelRatio(1); gl.setSize(n, n, false);
+  gl.toneMapping = THREE.NoToneMapping; gl.outputColorSpace = THREE.SRGBColorSpace;
+  return gl;
+}
+function pmremOf(r: THREE.WebGLRenderer, from: THREE.Texture) {
+  if (pmrem?.from !== from) {
+    pmrem?.tex.dispose();
+    const g = new THREE.PMREMGenerator(r);
+    pmrem = { from, tex: g.fromEquirectangular(from).texture };
+    g.dispose();
+  }
+  return pmrem.tex;
+}
+/** The set's PBR material, as the 3D view draws it. `lift`: how much of its base colour shines on its own (the same
+ *  store setting the 3D view uses), so the 2D view matches a dark model's lifted texture. */
+function materialOf(s: TexSet, ao: boolean, lift = 0) {
+  const pbr = s.channels.includes('rough'), normal = s.channels.includes('normal');
+  return new THREE.MeshStandardMaterial({
+    map: s.color, side: THREE.DoubleSide, aoMap: ao && s.aoTex ? s.aoTex : null,
+    ...(pbr ? { roughnessMap: s.orm, metalnessMap: s.orm, roughness: 1, metalness: 1 } : { roughness: 0.3, metalness: 0 }),
+    ...(normal ? { normalMap: s.normal } : {}),
+    emissiveMap: s.color, emissive: lift > 0 ? '#ffffff' : '#000000', emissiveIntensity: lift,
+  });
+}
+/** `mesh` in the shared light and environment, on the empty-texture ground. */
+function sceneOf(pm: THREE.Texture, mesh: THREE.Mesh) {
+  const scene = new THREE.Scene(), sun = new THREE.DirectionalLight('#ffffff', look.sun);
+  scene.background = new THREE.Color(EMPTY);
+  scene.environment = pm;
+  scene.environmentIntensity = env.scale;
+  scene.environmentRotation.copy(env.rot);
+  sun.position.copy(env.sun);
+  scene.add(mesh, sun);
+  return scene;
+}
+
+const pics = new WeakMap<TexSet, { key: string; url: string }>();
+/** A texture set's picture for the Parts list: the part itself in its material and the shared light, seen from the
+ *  front-right above, `n` px square. Null until the environment has loaded; kept until the paint or the light change. */
+export function partShot(s: TexSet, positions: ArrayLike<number>, uvs: ArrayLike<number>, lift = 0, n = 96) {
+  if (!env.tex) return null;
+  const key = `${s.ver}|${env.ver}|${s.channels.length}|${lift}`, hit = pics.get(s);
+  if (hit?.key === key) return hit.url;
+  const r = rendererOf(n), pm = pmremOf(r, env.tex), geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(positions), 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(Float32Array.from(uvs), 2));
+  geo.computeVertexNormals(); // unindexed: flat faces
+  geo.computeBoundingSphere();
+  const { center: c, radius } = geo.boundingSphere!, mat = materialOf(s, false, lift), scene = sceneOf(pm, new THREE.Mesh(geo, mat));
+  const cam = new THREE.PerspectiveCamera(30, 1, radius * 0.05, radius * 10), dist = (radius / Math.sin(Math.PI / 12)) * 1.02;
+  cam.position.copy(new THREE.Vector3(1, 0.7, 1.3).normalize().multiplyScalar(dist).add(c));
+  cam.lookAt(c);
+  r.render(scene, cam);
+  geo.dispose(); mat.dispose();
+  const url = r.domElement.toDataURL();
+  pics.set(s, { key, url });
+  return url;
+}
 const shots = new WeakMap<TexSet, { key: string; uvs: ArrayLike<number>; cv: HTMLCanvasElement }>();
 
 /** Part set `s`'s UV layout drawn in its material and the shared light, `s.size` square (top row v = 1); null until the
  *  environment has loaded. Kept until the paint, the UVs, the AO or the light change. */
-export function materialCanvas(s: TexSet, positions: ArrayLike<number>, uvs: ArrayLike<number>, ao: boolean) {
+export function materialCanvas(s: TexSet, positions: ArrayLike<number>, uvs: ArrayLike<number>, ao: boolean, lift = 0) {
   if (!env.tex) return null;
-  const pbr = s.channels.includes('rough'), normal = s.channels.includes('normal'), key = `${s.ver}|${env.ver}|${ao}|${pbr}|${normal}`, hit = shots.get(s);
+  const key = `${s.ver}|${env.ver}|${ao}|${s.channels.length}|${lift}`, hit = shots.get(s);
   if (hit && hit.key === key && hit.uvs === uvs) return hit.cv;
   // The texture view shows this at roughly screen size; rendering a 4K offscreen image only to scale it
   // down to a 500 px square was most of the pause after a stroke. Cap the preview at 1K.
-  const n = Math.min(s.size, 1024);
-  gl ??= new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: false });
-  gl.setPixelRatio(1); gl.setSize(n, n, false);
-  gl.toneMapping = THREE.NoToneMapping; gl.outputColorSpace = THREE.SRGBColorSpace;
-  if (pmrem?.from !== env.tex) {
-    pmrem?.tex.dispose();
-    const g = new THREE.PMREMGenerator(gl);
-    pmrem = { from: env.tex, tex: g.fromEquirectangular(env.tex).texture };
-    g.dispose();
-  }
+  const n = Math.min(s.size, 1024), gl = rendererOf(n), pm = pmremOf(gl, env.tex);
   // the layout as geometry: each corner at its UV, carrying its face's normal on the model and its UV for the textures
   const tris = positions.length / 9, xyz = new Float32Array(tris * 9), nrm = new Float32Array(tris * 9), uv = new Float32Array(tris * 6);
   // ponytail: flat face normals (the 3D view smooths within Sharp edges); share its normals if a curve looks stepped here
@@ -111,18 +162,7 @@ export function materialCanvas(s: TexSet, positions: ArrayLike<number>, uvs: Arr
   geo.setAttribute('position', new THREE.BufferAttribute(xyz, 3));
   geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  const mat = new THREE.MeshStandardMaterial({
-    map: s.color, side: THREE.DoubleSide, aoMap: ao && s.aoTex ? s.aoTex : null,
-    ...(pbr ? { roughnessMap: s.orm, metalnessMap: s.orm, roughness: 1, metalness: 1 } : { roughness: 0.3, metalness: 0 }),
-    ...(normal ? { normalMap: s.normal } : {}),
-  });
-  const scene = new THREE.Scene(), sun = new THREE.DirectionalLight('#ffffff', look.sun);
-  scene.background = new THREE.Color(EMPTY);
-  scene.environment = pmrem.tex;
-  scene.environmentIntensity = env.scale;
-  scene.environmentRotation.copy(env.rot);
-  sun.position.copy(env.sun);
-  scene.add(new THREE.Mesh(geo, mat), sun);
+  const mat = materialOf(s, ao, lift), scene = sceneOf(pm, new THREE.Mesh(geo, mat));
   // looking straight down at the UV square; the camera's frame is the world's, so the normals light as on the model
   const cam = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
   cam.position.set(0, 0, 0.5);

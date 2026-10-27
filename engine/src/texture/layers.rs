@@ -2,7 +2,7 @@
 //! on the surface, and what each kind of layer puts there: a fill's material (tri-planar or UV), a decal's ink, a
 //! generator's mask, or the working-resolution pixels upsampled.
 use super::bake::{at, cross, dot, norm, sub, V3};
-use super::{Decal, Fill, Gen, Shape};
+use super::{Bevel, Decal, Fill, Gen, Shape};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -229,7 +229,8 @@ pub fn fill_at(f: &Fill, m: &Material, mesh: &Mesh, t: usize, p: V3, x: usize, y
     let height_v = |u: f32, v: f32| m.height.as_ref().map(|r| sample_map(r, u, v)[0]).unwrap_or(128.0);
     let tinted = |q: [f32; 4]| [0, 1, 2].map(|c| (q[c] * tint[c] / 255.0).min(255.0));
     // a solid fill (`SOLID` in paint.ts) has no maps: its colour is the tint itself; a material missing its colour map is unpainted grey
-    let plain = if f.asset == "solid" { 255.0 } else { 188.0 };
+    // no colour map (a solid fill, a colorless finish such as Cerakote): the tint is the colour, on white (paint.ts)
+    let plain = 255.0;
     let mut out = Texel::default();
     if f.projection == "uv" {
         let rad = f.rotation.to_radians();
@@ -278,17 +279,18 @@ pub fn fill_at(f: &Fill, m: &Material, mesh: &Mesh, t: usize, p: V3, x: usize, y
     if has("normal") {
         let n3 = match &m.normal {
             Some(nm) if w[0] + w[1] + w[2] > 0.0 => {
-                let mut wn = [0f32; 3];
+                // the face's normal plus each plane's detail along its tangent / bitangent (UDN, as paint.ts): a flat
+                // map keeps the face, so the mesh's own smooth / weighted shading survives the fill
+                let mut wn = nn;
                 for k in 0..3 {
                     let wt = w[k] / ws;
                     if wt <= 0.0 { continue; }
                     let q = sample_map(nm, uvs[k].0, uvs[k].1);
                     let (dx, dy) = ((q[0] / 127.5 - 1.0) * f.normal_strength, (q[1] / 127.5 - 1.0) * f.normal_strength);
-                    let dz = (1.0 - dx * dx - dy * dy).max(0.0).sqrt();
                     let sign = if nn[k] >= 0.0 { 1.0 } else { -1.0 };
                     let (pn, pt): (V3, V3) = match k { 0 => ([sign, 0.0, 0.0], [0.0, 0.0, 1.0]), 1 => ([0.0, sign, 0.0], [1.0, 0.0, 0.0]), _ => ([0.0, 0.0, sign], [1.0, 0.0, 0.0]) };
                     let pb = cross(pn, pt);
-                    for c in 0..3 { wn[c] += (pt[c] * dx + pb[c] * dy + pn[c] * dz) * wt; }
+                    for c in 0..3 { wn[c] += (pt[c] * dx + pb[c] * dy) * wt; }
                 }
                 let wn = norm(wn);
                 let d = norm([dot(wn, tv), dot(wn, bv), dot(wn, nn)]);
@@ -427,6 +429,104 @@ impl<'a> ShapeSrc<'a> {
             out.normal = Some(([(-gx * k * 0.5 + 0.5) * 255.0, (-gy * k * 0.5 + 0.5) * 255.0, (k * 0.5 + 0.5) * 255.0], 1.0));
         }
         if has("height") { out.height = Some((128.0 + 127.0 * (h / sh.depth.max(sh.amount).max(1e-9) as f64).clamp(-1.0, 1.0) as f32, 1.0)); }
+        out
+    }
+}
+
+/// A whole-part bevel in the normal map (paint.ts `bevelEdges` / `bevelNormal` / `bakeBevel`, the same steps): the
+/// edges sharper than `angle` with both faces' normals, in a grid of `radius` cells; per texel the normal leaned toward
+/// the far face of every edge within reach, by a fillet's angle (round) or the halfway turn (chamfer).
+pub struct BevelSrc { segs: Vec<[f32; 12]>, grid: HashMap<(i32, i32, i32), Vec<u32>>, r: f32, round: bool }
+
+impl BevelSrc {
+    pub fn new(b: &Bevel, pos: &[f32]) -> BevelSrc {
+        let tris = pos.len() / 9;
+        let fnrm: Vec<V3> = (0..tris).map(|t| norm(cross(sub(at(pos, t * 3 + 1), at(pos, t * 3)), sub(at(pos, t * 3 + 2), at(pos, t * 3))))).collect();
+        let fc: Vec<V3> = (0..tris).map(|t| { let (a, b, c) = (at(pos, t * 3), at(pos, t * 3 + 1), at(pos, t * 3 + 2)); [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0] }).collect();
+        let next = |c: usize| c - c % 3 + (c + 1) % 3;
+        let key = |c: usize| (pos[c * 3].to_bits(), pos[c * 3 + 1].to_bits(), pos[c * 3 + 2].to_bits());
+        // corners per welded edge, in corner order (the editor's Map keeps insertion order: the same first corner)
+        let mut order: Vec<_> = Vec::new();
+        let mut on: HashMap<_, Vec<usize>> = HashMap::new();
+        for c in 0..tris * 3 {
+            let (ka, kb) = (key(c), key(next(c)));
+            let k = if ka < kb { (ka, kb) } else { (kb, ka) };
+            on.entry(k).or_insert_with(|| { order.push(k); vec![] }).push(c);
+        }
+        let (r, cos) = (b.radius.max(1e-9), b.angle.to_radians().cos());
+        let cell = |p: V3| ((p[0] / r).floor() as i32, (p[1] / r).floor() as i32, (p[2] / r).floor() as i32);
+        let (mut segs, mut grid) = (Vec::new(), HashMap::<(i32, i32, i32), Vec<u32>>::new());
+        for k in &order {
+            let cs = &on[k];
+            if cs.len() != 2 { continue; }
+            let (c, ta, tb) = (cs[0], cs[0] / 3, cs[1] / 3);
+            if dot(fnrm[ta], fnrm[tb]) > cos { continue; }
+            // concave when b's centre lies in front of a's plane
+            let (a, e) = (at(pos, c), at(pos, next(c)));
+            if dot(sub(fc[tb], a), fnrm[ta]) > 0.0 && !b.concave { continue; }
+            let id = segs.len() as u32;
+            let (na, nb) = (fnrm[ta], fnrm[tb]);
+            segs.push([a[0], a[1], a[2], e[0], e[1], e[2], na[0], na[1], na[2], nb[0], nb[1], nb[2]]);
+            let steps = ((dot(sub(e, a), sub(e, a)).sqrt() / (r / 8.0)).ceil() as usize).max(1);
+            let mut seen = Vec::new();
+            for s in 0..=steps {
+                let f = s as f32 / steps as f32;
+                let q = cell([a[0] + (e[0] - a[0]) * f, a[1] + (e[1] - a[1]) * f, a[2] + (e[2] - a[2]) * f]);
+                if seen.contains(&q) { continue; }
+                seen.push(q);
+                grid.entry(q).or_default().push(id);
+            }
+        }
+        BevelSrc { segs, grid, r, round: b.profile != "chamfer" }
+    }
+
+    /// The bevelled normal at p on a face of normal f; None outside every edge's band.
+    pub fn normal(&self, p: V3, f: V3) -> Option<V3> {
+        let r = self.r;
+        let (cx, cy, cz) = ((p[0] / r).floor() as i32, (p[1] / r).floor() as i32, (p[2] / r).floor() as i32);
+        let (mut lean, mut any, mut seen) = ([0f32; 3], false, Vec::<u32>::new());
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let Some(list) = self.grid.get(&(cx + dx, cy + dy, cz + dz)) else { continue };
+                    for &id in list {
+                        if seen.contains(&id) { continue; }
+                        seen.push(id);
+                        let s = &self.segs[id as usize];
+                        let (ab, ap) = ([s[3] - s[0], s[4] - s[1], s[5] - s[2]], [p[0] - s[0], p[1] - s[1], p[2] - s[2]]);
+                        let ee = dot(ab, ab);
+                        let t = if ee > 1e-20 { (dot(ap, ab) / ee).clamp(0.0, 1.0) } else { 0.0 };
+                        let q = [ap[0] - ab[0] * t, ap[1] - ab[1] * t, ap[2] - ab[2] * t];
+                        let d = dot(q, q).sqrt();
+                        if d >= r { continue; }
+                        let (na, nb) = ([s[6], s[7], s[8]], [s[9], s[10], s[11]]);
+                        let (sa, sb) = (dot(f, na), dot(f, nb));
+                        let half = dot(na, nb).clamp(-1.0, 1.0).acos() / 2.0;
+                        // a face of another edge (a box's top beside a side's corner)
+                        if sa.max(sb) <= half.cos() { continue; }
+                        let (o, so) = if sa >= sb { (nb, sb) } else { (na, sa) };
+                        let u = [o[0] - f[0] * so, o[1] - f[1] * so, o[2] - f[2] * so];
+                        let ul = dot(u, u).sqrt();
+                        if ul < 1e-6 { continue; }
+                        let phi = if self.round { half.min(((1.0 - d / r) * half.tan()).min(1.0).asin()) } else { half };
+                        let w = phi.tan() / ul;
+                        for k in 0..3 { lean[k] += u[k] * w; }
+                        any = true;
+                    }
+                }
+            }
+        }
+        any.then(|| norm([f[0] + lean[0], f[1] + lean[1], f[2] + lean[2]]))
+    }
+
+    /// The layer's texel: the bevelled normal in the triangle's tangent space, nothing where no edge leans it.
+    pub fn at(&self, mesh: &Mesh, t: usize, p: V3) -> Texel {
+        let mut out = Texel::default();
+        let f = mesh.nrm[t];
+        if let Some(w) = self.normal(p, f) {
+            let (tv, bv) = mesh.tan[t];
+            out.normal = Some(([(dot(w, tv) * 0.5 + 0.5) * 255.0, (dot(w, bv) * 0.5 + 0.5) * 255.0, (dot(w, f) * 0.5 + 0.5) * 255.0], 1.0));
+        }
         out
     }
 }
@@ -618,6 +718,15 @@ fn relief(sh: &Shape, poly: Option<&[f64]>, x: f64, y: f64, hw: f64, hh: f64) ->
 }
 
 /// Value noise in 3D, 0..1, three octaves (paint.ts `noise`, f64 like JavaScript so the grunge matches).
+/// An integer hash of lattice point (x, y, z): the editor's `hashu` (paint.ts) and its shader's (gpubake.ts), bit for bit.
+pub fn hashu(x: i32, y: i32, z: i32) -> u32 {
+    let mut h = (x as u32).wrapping_mul(0x8da6_b343) ^ (y as u32).wrapping_mul(0xd816_3841) ^ (z as u32).wrapping_mul(0xcb1a_b31f);
+    h ^= h >> 16; h = h.wrapping_mul(0x7feb_352d); h ^= h >> 15; h = h.wrapping_mul(0x846c_a68b); h ^= h >> 16;
+    h
+}
+/// The generators' lattice hash (the editor bakes their noise on the GPU too, so it is the integer one).
+fn lattice_hash(x: f64, y: f64, z: f64) -> f64 { hashu(x as i32, y as i32, z as i32) as f64 / 4294967296.0 }
+/// The grip stipple's jitter, as the editor's `hash` (CPU only, kept so placed grips keep their dots).
 fn hash(x: f64, y: f64, z: f64) -> f64 { let h = (x * 127.1 + y * 311.7 + z * 74.7).sin() * 43758.5453; h - h.floor() }
 fn noise(x: f64, y: f64, z: f64) -> f64 {
     let (mut sum, mut amp, mut f) = (0.0, 0.5, 1.0);
@@ -627,7 +736,7 @@ fn noise(x: f64, y: f64, z: f64) -> f64 {
         let (fx, fy, fz) = (xx - ix, yy - iy, zz - iz);
         let (sx, sy, sz) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy), fz * fz * (3.0 - 2.0 * fz));
         let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
-        let plane = |k: f64| lerp(lerp(hash(ix, iy, k), hash(ix + 1.0, iy, k), sx), lerp(hash(ix, iy + 1.0, k), hash(ix + 1.0, iy + 1.0, k), sx), sy);
+        let plane = |k: f64| lerp(lerp(lattice_hash(ix, iy, k), lattice_hash(ix + 1.0, iy, k), sx), lerp(lattice_hash(ix, iy + 1.0, k), lattice_hash(ix + 1.0, iy + 1.0, k), sx), sy);
         sum += amp * lerp(plane(iz), plane(iz + 1.0), sz);
         amp /= 2.0;
         f *= 2.0;
@@ -643,4 +752,13 @@ pub fn gen_at(g: &Gen, ao: f32, convex: f32, concave: f32, p: V3, span: f32) -> 
     let nz = if g.grunge != 0.0 { noise(p[0] as f64 * k, p[1] as f64 * k, p[2] as f64 * k) as f32 } else { 0.5 };
     let broken = v * (1.0 + g.grunge * (2.0 * nz - 1.0) * 1.5);
     ((broken - (1.0 - g.amount)) / g.soft.max(0.02) + 0.5).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod hash_tests {
+    #[test]
+    fn hashu_matches_the_editor() {
+        // paint.check.ts pins the same values (and gpubake.ts's shader computes them): one grunge pattern everywhere
+        assert_eq!([super::hashu(1, 2, 3), super::hashu(-5, 7, -9), super::hashu(0, 0, 0)], [72785788, 2634903715, 0]);
+    }
 }

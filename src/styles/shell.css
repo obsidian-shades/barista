@@ -1,88 +1,135 @@
-.caps, .csec, .mlabel, .dock-tabs [role="tab"] { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.mc { background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-s); }
+.caps, .csec, .mlabel, .dock-tabs [role="tab"] { font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.mc { background: var(--raise); border: 1px solid var(--float-line); border-radius: var(--r-s); box-shadow: var(--shadow-pop); }
+/* A submenu is an extension of the menu it opens from, not a second floating card: no shadow, flush against the parent,
+   and the corners on the joined side are square so the two read as one surface. */
+.mc.submenu { box-shadow: none; }
+.mc.submenu[data-side="right"] { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.mc.submenu[data-side="left"] { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.mc.submenu[data-side="top"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.mc.submenu[data-side="bottom"] { border-top-left-radius: 0; border-top-right-radius: 0; }
 
 /* The app frame: menu bar, workspace tabs, the views and dock, status bar. */
-.app { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.app { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; background: var(--app); }
 
-/* Workspaces: square tabs, Photoshop/Affinity dense, not a floating pill. The file name lives on the right. */
-.apptabs { display: flex; align-items: center; gap: 12px; height: 32px; padding: 0 8px; background: var(--chrome); border-bottom: 1px solid var(--line); }
-.personas { display: flex; height: 28px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); overflow: hidden; }
-.personas button { min-height: 0; height: 100%; padding: 0 12px; gap: 7px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: none; color: var(--muted); font-weight: 600; }
-.personas button:last-child { border-right: 0; }
-.personas button[aria-selected="true"] { background: var(--panel); color: var(--fg); box-shadow: inset 0 -2px var(--accent); }
-.personas button:hover:not([aria-selected="true"]) { color: var(--fg); }
-.docid { margin-left: auto; display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--muted); font-size: var(--fs-s); }
+/* Workspaces: full-height square tabs standing on the options bar, not a floating pill. The file name lives on the right.
+   The selected tab fills with the options bar's own surface and interrupts the seam below it, so the tab reads as a piece
+   of the bar lifted up; the accent strip is its only marker. */
+.apptabs { display: flex; align-items: stretch; gap: 12px; height: 36px; padding-left: 8px; background: linear-gradient(to bottom, var(--panel-inset) calc(100% - 1px), var(--line) 0); }
+.personas { display: flex; height: 100%; }
+.personas button { min-height: 0; height: 100%; gap: 8px; padding: 0 16px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: none; color: var(--muted); font-size: 12px; font-weight: 600; }
+.personas button:first-child { border-left: 1px solid var(--line); }
+.personas button:hover:not([aria-selected="true"]) { background: var(--hover); color: var(--fg); }
+.personas button[aria-selected="true"] { background: var(--chrome); color: var(--fg); box-shadow: inset 0 2px var(--accent); }
+.personas .ico .i-a { stroke: var(--accent); }
+.personas .ico .i-A { fill: var(--accent); }
+.personas button[aria-selected="true"] .ico { color: var(--fg); }
+.personas button[aria-selected="true"] .ico .i-a { stroke: var(--accent-hover); }
+.docid { align-self: center; margin-left: auto; margin-right: 12px; display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: var(--fs-s); }
 .docid .file { max-width: min(38vw, 420px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 .docid .dirty { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-.docid .dirty:not(.on) { background: var(--hair); }
+.docid .dirty:not(.on) { background: var(--faint); }
 
 /* Menu bar */
-.menubar { display: flex; align-items: center; height: 28px; background: var(--chrome); border-bottom: 1px solid var(--line); }
-.brand { width: 28px; height: 28px; padding: 4px 6px; object-fit: contain; flex: 0 0 auto; }
-.brandname { font-size: 12px; font-weight: 600; letter-spacing: .02em; padding: 0 10px 0 2px; color: var(--fg); }
-.mroot { display: flex; }
-.mt { padding: 3px 9px; min-height: 0; font-size: var(--fs-s); border-radius: var(--r-s); }
-.mt[data-state="open"] { background: var(--hair); }
-.mc { min-width: 230px; padding: 4px; font: var(--fs) var(--ui); color: var(--fg); z-index: 60; }
-.mi { position: relative; display: flex; align-items: center; min-height: 24px; padding: 2px 12px 2px 24px; border-radius: var(--r-s); outline: none; cursor: default; font-size: var(--fs-s); }
+.menubar { display: flex; align-items: center; height: 30px; padding-right: 8px; background: var(--panel-inset); border-bottom: 1px solid var(--line); }
+.brand { width: 30px; height: 30px; padding: 5px 6px; object-fit: contain; flex: 0 0 auto; color: var(--icon); }
+.brandname { font-size: 12px; font-weight: 600; letter-spacing: .02em; padding: 0 12px 0 4px; color: var(--fg); }
+.mroot { display: flex; height: 100%; }
+.mt { height: 100%; padding: 0 10px; min-height: 0; font-size: 12px; color: var(--fg); border: 0; border-radius: 0; }
+.mt:hover, .mt[data-state="open"] { background: var(--hover); }
+.mt:focus-visible { outline: none; }
+.mt[data-state="open"] { box-shadow: inset 0 -2px var(--accent); }
+.mc { min-width: 240px; padding: 4px; font: var(--fs) var(--ui); color: var(--fg); z-index: 60; }
+.mi { position: relative; display: flex; align-items: center; min-height: 26px; padding: 2px 12px 2px 24px; border-radius: 3px; outline: none; cursor: default; font-size: var(--fs-s); }
 .mi[data-highlighted] { background: var(--accent); color: var(--accent-ink); }
 .mi[data-highlighted] kbd, .mi[data-highlighted] .item-meta { color: inherit; }
-.mi[data-disabled] { opacity: .45; }
+.mi[data-disabled] { opacity: .4; }
 .item-meta { margin-left: auto; padding-left: 16px; font: 10px var(--num); color: var(--muted); }
 .check { position: absolute; left: 8px; }
-.msep { height: 1px; background: var(--hair); margin: 4px 2px; }
-.subtrigger[data-state="open"] { background: var(--hair); }
+.msep { height: 1px; background: var(--hair); margin: 5px 2px; }
+.subtrigger[data-state="open"] { background: var(--hover); }
 .subarrow { margin-left: auto; padding-left: 16px; display: inline-flex; color: var(--muted); transform: rotate(-90deg); }
-.mlabel { padding: 6px 12px 2px 24px; }
+.mlabel { padding: 7px 12px 3px 24px; }
 
-button.primary { background: var(--accent); color: var(--accent-ink); padding: 2px 12px; font-weight: 600; }
-button.primary:hover:not(:disabled) { background: var(--accent-hover); }
-button.primary kbd { color: var(--accent-ink)fffb0; padding-left: 12px; }
+button.primary { background: var(--accent); color: var(--accent-ink); padding: 2px 12px; font-weight: 600; border-color: var(--accent); }
+button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.primary kbd { color: var(--accent-ink); padding-left: 12px; }
 
 /* Workspace: 3D | UV | dock */
-.work { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 300px; min-height: 0; border-bottom: 1px solid var(--line); }
+.work { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 300px; min-height: 0; }
 .space { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; } /* the options bar may wrap instead of clipping */
 
 /* The dividers (espresso's dock resizer): a 6 px strip; a hairline of accent on hover, not a blue bar. */
-.dock-resizer { cursor: col-resize; touch-action: none; background: var(--chrome); border-left: 1px solid var(--line); }
-.dock-resizer:hover, .dock-resizer:focus-visible { background: var(--accent-soft); border-left-color: var(--accent); outline: none; }
+.dock-resizer { cursor: col-resize; touch-action: none; background: var(--panel-inset); }
+.dock-resizer:hover, .dock-resizer:focus-visible { background: var(--accent-soft); outline: none; }
 
 /* The tool strips and the options bar (Photoshop's left strip, options on top) */
-.tools { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; background: var(--chrome); border-right: 1px solid var(--line); overflow-y: auto; }
-.tools .tgroup { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--hair); }
+.tools { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; background: var(--panel-inset); border-right: 1px solid var(--line); overflow-y: auto; }
+.tools .tgroup { display: flex; flex-direction: column; align-items: center; gap: 2px; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--line-2); }
 .tools .tgroup:last-child { border-bottom: 0; }
 .tools .toolslot { display: flex; }
-.tools button { width: 32px; height: 32px; min-height: 0; padding: 0; justify-content: center; color: var(--icon); }
-.tools button[aria-pressed="true"] { background: var(--hair); color: var(--accent-ink); box-shadow: inset 2px 0 var(--accent); }
-.tools button:disabled { opacity: .45; }
+.tools button { width: 30px; height: 30px; min-height: 0; padding: 0; justify-content: center; color: var(--icon); border-color: transparent; }
+.tools button:hover:not(:disabled) { background: var(--plate); border-color: var(--plate-line); color: var(--fg); }
+.tools button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--fg); }
+.tools button:disabled { opacity: .35; }
+.tools button:disabled .ico { filter: grayscale(1); }
 /* at the 640 px minimum window the Poly Doc strip would scroll: tighten it rather than hide tools */
-@media (max-height: 760px) { .tools button { width: 30px; height: 30px; } .tools { padding: 3px 0; } .tools .tgroup { padding-bottom: 4px; margin-bottom: 2px; } }
-@media (max-height: 680px) { .tools button { width: 28px; height: 28px; } .tools { gap: 1px; padding: 2px 0; } }
-.options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-height: var(--bar); box-sizing: border-box; padding: 3px 8px; background: var(--chrome); border-bottom: 1px solid var(--line); min-width: 0; }
+@media (max-height: 760px) { .tools button { width: 28px; height: 28px; } .tools { padding: 3px 0; } .tools .tgroup { padding-bottom: 4px; margin-bottom: 2px; } }
+@media (max-height: 680px) { .tools button { width: 26px; height: 26px; } .tools { gap: 1px; padding: 2px 0; } }
+
+/* Photoshop's options bar: one raised strip of full-height cells. A control occupies the bar's whole height and is
+   separated by the same 1 px seam as a tab, so nothing floats: the 3D view below is the only thing that is recessed. */
+.options { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0; min-height: 38px; box-sizing: border-box; padding: 0 4px; background: var(--chrome); border-bottom: 1px solid var(--line); min-width: 0; }
+.options > button, .options > label, .options .plate {
+  min-height: 38px; height: 38px; padding: 0 12px; background: transparent; border: 0; border-right: 1px solid var(--line); border-radius: 0; color: var(--muted); white-space: nowrap;
+}
+.options > button { color: var(--fg); }
+.options > button:hover:not(:disabled), .options > label:hover { background: var(--plate); }
+.options > button.on { background: var(--accent); color: var(--accent-ink); }
+.options > button:disabled { background: transparent; }
+.options label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.options label input[type="number"] { width: 54px; height: 22px; border: 1px solid var(--line); border-radius: 3px; background: var(--well); padding: 0 4px; text-align: right; }
+.options label input[type="number"]:hover { border-color: var(--hair); }
+.options label input[type="number"]:focus { border-color: var(--accent); }
+.options label input[type="range"] { margin: 0 2px; }
+.options > .hint, .options > .note { display: flex; align-items: center; height: 38px; padding: 0 12px; border-right: 1px solid var(--line); font-size: var(--fs-s); }
 .options .hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 60px; max-width: 48ch; }
-.options .note { color: var(--fg); }
-.toolname { display: flex; align-items: center; gap: 6px; font-weight: 600; padding-right: 10px; border-right: 1px solid var(--hair); white-space: nowrap; }
-.options label { display: flex; align-items: center; gap: 5px; color: var(--muted); white-space: nowrap; }
-.options .inc { width: 64px; }
-.options button { min-height: var(--ctl); padding: 0 8px; white-space: nowrap; }
-/* The same three controls close every options bar: selection | display | Shading. Auto margin keeps them pinned right
-   whatever the tool settings do in front of them. */
-.options .viewcontrols { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
-.options .viewcontrols .modes { margin-left: 0; }
-.options .viewcontrols .sep { flex: 0 0 1px; width: 1px; height: 18px; background: var(--hair); }
-.options .scene-btn { min-height: var(--ctl); padding: 0 8px; font-size: var(--fs-s); color: var(--icon); border: 1px solid var(--hair); }
-.options .scene-btn[aria-expanded="true"] { background: var(--hair); color: var(--accent-ink); }
+.options .note, .options .fixnote { color: var(--fg); }
+.options > .hint.note { min-width: 0; background: transparent; box-shadow: inset 2px 0 var(--accent); }
+.options > .maskbadge { align-self: center; margin: 0 12px; }
+.options .toolname { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px; border-right: 1px solid var(--line); font-weight: 600; color: var(--fg); white-space: nowrap; }
+.options .toolname svg { margin-right: 0; }
+.options .swatch { width: 18px; height: 18px; border: 1px solid var(--edge-hi); border-radius: 3px; }
+.options .inc { width: 56px; }
+/* Selection granularity: the first group of every options bar, right after the tool. The modes are the label: no
+   second "Select" caption repeating the tool name. */
+.selectgroup { display: flex; align-items: stretch; height: 38px; flex: 0 0 auto; border-right: 1px solid var(--line); }
+.selectgroup .seg { height: 100%; border: 0; border-radius: 0; background: transparent; }
+.selectgroup .seg button { height: 100%; padding: 0 11px; border-radius: 0; }
+.selectgroup .seg button + button { border-left: 1px solid var(--line-2); }
+.selectgroup > label { display: flex; align-items: center; gap: 5px; padding: 0 10px; border-left: 1px solid var(--line-2); color: var(--muted); white-space: nowrap; }
 .options input[type="range"] { width: 96px; }
-/* Keep the tool settings and the fixed selection | display | Shading cluster on one row on a laptop, rather than letting
-   the cluster wrap to a second line and move out from under the Shading button. */
+.options .readout { color: var(--fg); }
+/* On a laptop the selection modes tighten before the tool settings do. */
 @media (max-width: 1200px) {
   .options input[type="range"] { width: 72px; }
-  .options .viewcontrols { gap: 6px; }
-  .options .modes button { padding: 0 7px; }
+  .selectgroup .seg button { padding: 0 8px; }
 }
 
+/* One segmented control everywhere: a recessed tray, full-height segments, the chosen one filled in accent. */
+.seg { display: inline-flex; align-items: stretch; height: var(--ctl); border: 1px solid var(--plate-line); border-radius: var(--r-s); overflow: hidden; background: var(--well); }
+.seg button { min-height: 0; height: 100%; padding: 0 9px; border: 0; border-radius: 0; background: none; color: var(--muted); font-size: var(--fs-s); white-space: nowrap; }
+.seg button + button { border-left: 1px solid var(--line-2); }
+.seg button:hover:not(:disabled):not([aria-pressed="true"]):not(.on) { background: var(--hover); color: var(--fg); }
+.seg button[aria-pressed="true"], .seg button.on { background: var(--accent); color: var(--accent-ink); }
+.seg button:disabled { opacity: .35; }
+.seg.compact .mlab { display: none; }
+.seg.compact button { padding: 0 8px; }
+.options > .seg { height: 38px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: transparent; }
+.options > .seg button { height: 100%; padding: 0 12px; border-radius: 0; }
+.modes { height: 26px; }
+
 /* Status bar: document state only; tool tips live in the options bar, not here. */
-.status { display: flex; flex-wrap: nowrap; align-items: center; gap: 14px; min-height: var(--ctl); padding: 2px 8px; font-size: var(--fs-xs); color: var(--muted); background: var(--chrome); white-space: nowrap; overflow: hidden; }
+.status { display: flex; flex-wrap: nowrap; align-items: center; gap: 16px; min-height: 26px; padding: 0 10px; font-size: var(--fs-xs); color: var(--muted); background: var(--panel-inset); border-top: 1px solid var(--line); white-space: nowrap; overflow: hidden; }
 .status .num { color: var(--fg); }
 .status .build { margin-left: auto; color: var(--muted); }
 .status .busy { color: var(--accent); }
@@ -92,24 +139,21 @@ button.primary kbd { color: var(--accent-ink)fffb0; padding-left: 12px; }
 .dot.down::before { background: var(--bad); }
 
 /* Blender's select mode buttons (now in the options bar), and the menu at the pointer: a list or a pie. */
-.modes { display: flex; border: 1px solid var(--hair); border-radius: var(--r-s); overflow: hidden; }
-.modes button { border-radius: 0; min-height: var(--ctl-sm); padding: 0 9px; font-size: var(--fs-s); }
-.modes button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 .popup-scrim { position: fixed; inset: 0; z-index: 50; }
-.popup { position: fixed; min-width: 160px; padding: 4px; background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-s); box-shadow: var(--shadow-pop); display: grid; transform: translate(-12px, -14px); }
+.popup { position: fixed; min-width: 160px; padding: 4px; background: var(--raise); border: 1px solid var(--float-line); border-radius: var(--r-s); box-shadow: var(--shadow-pop); display: grid; transform: translate(-12px, -14px); }
 .popup { max-height: calc(100vh - 16px); overflow-y: auto; max-width: 320px; }
-.popup-head { padding: 6px 8px 2px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
-.popup-info { display: flex; align-items: baseline; gap: 7px; padding: 3px 8px; font-size: var(--fs-s); color: var(--fg); cursor: default; }
+.popup-head { padding: 7px 8px 3px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.popup-info { display: flex; align-items: baseline; gap: 7px; padding: 4px 8px; font-size: var(--fs-s); color: var(--fg); cursor: default; }
 .popup-info .dot { flex: 0 0 8px; height: 8px; border-radius: 50%; transform: translateY(1px); }
-.popup-title { padding: 3px 8px 5px; color: var(--muted); font-size: var(--fs-xs); border-bottom: 1px solid var(--hair); margin-bottom: 3px; }
-.popup button { display: flex; text-align: left; padding: 4px 8px; background: none; border: 0; }
+.popup-title { padding: 4px 8px 6px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; border-bottom: 1px solid var(--hair); margin-bottom: 4px; }
+.popup button { display: flex; text-align: left; padding: 4px 8px; min-height: 26px; background: none; border: 0; border-radius: 3px; }
 .popup button:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--accent); color: var(--accent-ink); }
 .popup button:hover:not(:disabled):not([aria-disabled="true"]) kbd { color: inherit; }
 .popup button:disabled, .popup button[aria-disabled="true"], .pie button:disabled { opacity: .4; }
 .pie { position: fixed; width: 0; height: 0; }
 .pie-hub { position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--accent); background: #0006; }
-.pie-title { position: absolute; left: 0; top: 18px; transform: translateX(-50%); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); white-space: nowrap; pointer-events: none; }
-.pie button { position: absolute; transform: translate(-50%, -50%); min-width: 104px; justify-content: center; padding: 5px 12px; background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-s); box-shadow: var(--shadow-pop); white-space: nowrap; animation: pie-in .12s ease-out both; }
+.pie-title { position: absolute; left: 0; top: 18px; transform: translateX(-50%); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); white-space: nowrap; pointer-events: none; }
+.pie button { position: absolute; transform: translate(-50%, -50%); min-width: 104px; justify-content: center; padding: 5px 12px; background: var(--raise); border: 1px solid var(--float-line); border-radius: var(--r-s); box-shadow: var(--shadow-pop); white-space: nowrap; animation: pie-in .12s ease-out both; }
 .pie button:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .pie button[data-current] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .pie button[data-current]:hover:not(:disabled) { box-shadow: none; }
@@ -117,31 +161,33 @@ button.primary kbd { color: var(--accent-ink)fffb0; padding-left: 12px; }
 
 /* File › Export: a modal over the whole shell, Photoshop's dialog weight. Textures leave through the engine (a
    folder picker), models through the browser's downloads, so the footer says which. */
-.exp-scrim { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px; background: #000000a8; }
+.exp-scrim { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px; background: #0000009c; }
 .exp-dialog { width: min(780px, calc(100vw - 48px)); max-height: min(800px, calc(100vh - 48px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
-  background: var(--raise); border: 1px solid var(--edge-hi); border-radius: var(--r-m); box-shadow: 0 24px 80px #000b; }
-.exp-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px 10px; border-bottom: 1px solid var(--line); }
+  background: var(--window); border: 1px solid var(--float-line); border-radius: var(--r-m); box-shadow: 0 32px 100px #000c, 0 4px 16px #0008, inset 0 1px 0 #ffffff0d; }
+.exp-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px 12px; background: var(--chrome); border-bottom: 1px solid var(--line); border-radius: var(--r-m) var(--r-m) 0 0; box-shadow: inset 0 1px 0 #ffffff0d; }
 .exp-head > div { display: grid; gap: 2px; min-width: 0; }
 .exp-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .exp-head .hint { font-size: var(--fs-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .exp-close { margin-left: auto; width: 26px; height: 26px; min-height: 0; padding: 0; justify-content: center; font-size: 18px; line-height: 1; color: var(--muted); }
-.exp-tabs { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--line); }
-.exp-tabs button { min-height: 30px; padding: 0 12px; border: 0; border-radius: 0; color: var(--muted); font-weight: 600; font-size: var(--fs-s); }
-.exp-tabs button[aria-selected="true"] { background: none; color: var(--fg); box-shadow: inset 0 -2px var(--accent); }
-.exp-body { display: grid; align-content: start; gap: 12px; padding: 14px 16px; overflow-y: auto; }
-.exp-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.exp-preset { display: grid; gap: 2px; align-content: start; text-align: left; padding: 7px 10px; min-height: 0; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--panel); }
-.exp-preset:hover:not(:disabled) { background: var(--panel); border-color: var(--hair-hi); }
+.exp-close:hover { color: var(--fg); background: var(--hover); }
+.exp-tabs { display: flex; gap: 0; padding: 0 16px; background: linear-gradient(to bottom, var(--panel-inset) calc(100% - 1px), var(--line) 0); }
+.exp-tabs button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 0; color: var(--muted); font-weight: 600; font-size: var(--fs-s); }
+.exp-tabs button:hover:not([aria-selected="true"]) { background: var(--hover); color: var(--fg); }
+.exp-tabs button[aria-selected="true"] { background: var(--window); color: var(--fg); box-shadow: inset 0 2px var(--accent); }
+.exp-body { display: grid; align-content: start; gap: 14px; padding: 16px; overflow-y: auto; }
+.exp-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.exp-preset { display: grid; gap: 3px; align-content: start; text-align: left; padding: 8px 10px; min-height: 0; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--panel-raised); }
+.exp-preset:hover:not(:disabled) { background: var(--panel-raised); border-color: var(--hair); }
 .exp-preset[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .exp-preset-head { display: flex; align-items: baseline; gap: 8px; }
 .exp-preset-head b { font-size: var(--fs-s); }
 .exp-preset .target { font-size: var(--fs-xs); color: var(--muted); margin-left: auto; white-space: nowrap; }
-.exp-preset .what { font-size: var(--fs-xs); color: var(--muted); line-height: 1.3; }
+.exp-preset .what { font-size: var(--fs-xs); color: var(--muted); line-height: 1.35; }
 .exp-preset[aria-checked="true"] .what { color: var(--fg); }
-.exp-detail { margin: 0; color: var(--muted); font-size: var(--fs-s); line-height: 1.4; }
+.exp-detail { margin: 0; color: var(--muted); font-size: var(--fs-s); line-height: 1.45; }
 .exp-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .exp-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.exp-grid label, .exp-field { display: grid; gap: 4px; align-content: start; font-size: var(--fs-s); color: var(--muted); }
+.exp-grid label, .exp-field { display: grid; gap: 5px; align-content: start; font-size: var(--fs-s); color: var(--muted); }
 .exp-grid select, .exp-grid input, .exp-field select { width: 100%; }
 .exp-files { display: grid; gap: 6px; padding: 8px 10px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
 .exp-files ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
@@ -149,9 +195,12 @@ button.primary kbd { color: var(--accent-ink)fffb0; padding-left: 12px; }
 .exp-files li .fn { flex: 0 0 160px; font-family: var(--num); color: var(--fg); }
 .exp-files li span:last-child { color: var(--muted); }
 .exp-files .hint { font-size: var(--fs-xs); line-height: 1.4; }
-.exp-foot { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); }
+.exp-foot { display: flex; align-items: center; gap: 8px; padding: 12px 16px; background: var(--chrome); border-top: 1px solid var(--line); border-radius: 0 0 var(--r-m) var(--r-m); }
 .exp-foot .hint { margin-right: auto; font-size: var(--fs-xs); }
-.exp-foot button { min-width: 82px; justify-content: center; }
+.exp-foot button { min-width: 82px; justify-content: center; background: var(--plate); border: 1px solid var(--plate-line); }
+.exp-foot button:hover:not(:disabled) { background: var(--plate-hi); border-color: var(--edge-hi); }
+.exp-foot button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.exp-foot button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 .ask-dialog { width: min(440px, calc(100vw - 48px)); grid-template-rows: auto minmax(0, 1fr) auto; }
 .ask-dialog label.toggle { display: flex; align-items: center; gap: 6px; font-size: var(--fs-s); }
 @media (max-width: 720px) { .exp-presets, .exp-grid, .exp-grid.two { grid-template-columns: 1fr 1fr; } }
@@ -159,4 +208,16 @@ button.primary kbd { color: var(--accent-ink)fffb0; padding-left: 12px; }
 .matghost { position: fixed; left: 0; top: 0; z-index: 100; width: 56px; height: 56px; margin: -28px 0 0 -28px; border-radius: 50%;
   pointer-events: none; opacity: 0.8; box-shadow: 0 6px 18px #000a; transition: opacity 0.1s; }
 .matghost.over { opacity: 1; outline: 2px solid var(--accent); outline-offset: 2px; }
-.matghost.decalghost { border-radius: 4px; object-fit: contain; background: #0006; }
+.matghost.decalghost { border-radius: var(--r-s); object-fit: contain; background: #0006; }
+/* The material stack held on the Eyedropper: a round chip of its preview follows the pointer; the ring lights up over
+   a part, island or face a click would put it on, and the + says the click applies it. */
+.grabcursor { position: fixed; left: 0; top: 0; z-index: 100; width: 48px; height: 48px; border-radius: 50%; visibility: hidden;
+  display: grid; place-items: center; pointer-events: none; background: #202126; border: 2px solid #d4d8df;
+  box-shadow: 0 6px 18px #000a; }
+.grabcursor > img, .grabcursor > i { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+.grabcursor > i.any { background: repeating-conic-gradient(#5a5f68 0 25%, #383c43 0 50%) 0 0 / 12px 12px; }
+.grabcursor.over { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), 0 6px 18px #000a; }
+.grabcursor .grabplus { position: absolute; right: -5px; bottom: -5px; width: 19px; height: 19px; border-radius: 50%;
+  background: var(--accent); color: #14161a; font-size: 14px; font-weight: 700; line-height: 18px; text-align: center; }
+.grabcursor b { position: absolute; left: -5px; top: -5px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
+  background: var(--raise); border: 1px solid var(--edge-hi); color: var(--fg); font-size: 10px; line-height: 16px; text-align: center; }

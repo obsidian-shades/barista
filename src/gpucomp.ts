@@ -24,6 +24,9 @@ export function setCompRenderer(r: THREE.WebGLRenderer) {
   gl = r; failed = false;
 }
 
+/** The viewport's renderer (gpubake.ts bakes on it too). */
+export const compRenderer = () => gl;
+
 /** Texels a pass covers: full-width bands (n wide, TILE² / n rows), so a whole-width box reads straight back into the
  *  set's own arrays, and the float targets stay at 1024² worth (16 MB) whatever the size. */
 const TILE = 1024;

@@ -48,7 +48,7 @@ export function MenuBar() {
           <M.Sub>
             <M.SubTrigger className="mi subtrigger">Open Recent<span className="subarrow" aria-hidden="true"><Icon name="chevron" size={12} /></span></M.SubTrigger>
             <M.Portal>
-              <M.SubContent className="mc" sideOffset={4} alignOffset={-4}>
+              <M.SubContent className="mc submenu" sideOffset={0} alignOffset={-4}>
                 {recent.length ? recent.map((r) => <Item key={r.name} onSelect={() => void openRecent(r.name)} meta={ago(r.time)}>{r.name}</Item>)
                   : <M.Item className="mi" disabled>No recent files</M.Item>}
                 <Sep />
@@ -64,7 +64,7 @@ export function MenuBar() {
           <M.Sub>
             <M.SubTrigger className="mi subtrigger">New from Shape<span className="subarrow" aria-hidden="true"><Icon name="chevron" size={12} /></span></M.SubTrigger>
             <M.Portal>
-              <M.SubContent className="mc" sideOffset={4} alignOffset={-4}>
+              <M.SubContent className="mc submenu" sideOffset={0} alignOffset={-4}>
                 {shapes.length ? shapes.map((s) => <Item key={s} onSelect={() => void loadShape(s)}>{s}</Item>) : <M.Item className="mi" disabled>No test shapes</M.Item>}
               </M.SubContent>
             </M.Portal>
@@ -73,7 +73,7 @@ export function MenuBar() {
           <M.Sub>
             <M.SubTrigger className="mi subtrigger">Export<span className="subarrow" aria-hidden="true"><Icon name="chevron" size={12} /></span></M.SubTrigger>
             <M.Portal>
-              <M.SubContent className="mc" sideOffset={4} alignOffset={-4}>
+              <M.SubContent className="mc submenu" sideOffset={0} alignOffset={-4}>
                 <Item onSelect={() => openExport()} kbd="Ctrl+Shift+E" title="The export dialog: textures or a model, with every setting">Export…</Item>
                 <Sep />
                 <Item onSelect={() => openExport({ kind: 'model', model: 'fbx' })} disabled={!has} title="One binary FBX, one material per texture set, UVs and the file's own normals: what Blender and Substance Painter read">Model › FBX (one file)…</Item>
@@ -162,8 +162,8 @@ export function MenuBar() {
             ))}
           </M.RadioGroup>
           <Sep />
-          <Item onSelect={() => viewOp(pointer.view, 'all')} kbd="Home">Frame all</Item>
-          {!paint && <Item onSelect={() => viewOp(pointer.view, 'selected')} disabled={none} kbd="Space">Frame selected</Item>}
+          <Item onSelect={() => viewOp(pointer.view, 'all')} kbd="Home / Space">Frame all</Item>
+          {!paint && <Item onSelect={() => viewOp(pointer.view, 'selected')} disabled={none} kbd="Numpad .">Frame selected</Item>}
           <Item onSelect={() => viewOp('3d', 'front')} kbd="Numpad 1">Front</Item>
           <Item onSelect={() => viewOp('3d', 'right')} kbd="Numpad 3">Right</Item>
           <Item onSelect={() => viewOp('3d', 'top')} kbd="Numpad 7">Top</Item>

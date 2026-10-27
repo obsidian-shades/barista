@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { islandsOf } from '../islands';
 import { CHANNELS, type Channel, type Shown } from '../paint';
 import { Icon } from '../ui/Icon';
+import { partShot } from '../matview';
 import {
   alignSeamsSel, averageScalesSel, circleBoundarySel, clearSeams, clearSymPlane, copyShapeSel, editSymPlane, mergeSel, normalizeSel, offsetBoundarySel, orientSel, orientWorldSel,
   pasteShapeSel, pickPaintChannel, pickPaintPart, rectifySel, selectAll, selectFlipped, selectMirror, selectPart, partsMenu, clearAllSeams, selectSide, selectSimilar, selectZeroArea,
@@ -69,6 +70,12 @@ export const eye = (on: boolean) => <Icon name={on ? 'eye' : 'eye-off'} size={16
 const checker = (on: boolean) => <Icon name="checker" size={16} />;
 
 /** The parts list: one tree in every workspace, with the columns that workspace needs. */
+/** A texture set's picture: the part in its own paint (`partShot`), blank until the material view's light has loaded. */
+function PartPic({ i }: { i: number }) {
+  const out = useApp((s) => s.result?.parts[i]), uv = useApp((s) => s.uvs[i]), lift = useApp((s) => (s.workspace === 'paint' ? s.scene.paintLift ?? 0.4 : 0));
+  const url = out && uv ? partShot(texSet(i), out.positions, uv, lift) : null;
+  return url ? <img className="setshot" src={url} alt="" draggable={false} /> : <span className="setshot" />;
+}
 export function Parts({ workspace = 'uv' }: { workspace?: 'uv' | 'doc' | 'paint' }) {
   const parts = useApp((s) => s.parts), result = useApp((s) => s.result), layerSel = useApp((s) => s.layerSel), activePart = useApp((s) => s.activePart);
   const paint = workspace === 'paint', doc = workspace === 'doc';
@@ -115,6 +122,7 @@ export function Parts({ workspace = 'uv' }: { workspace?: 'uv' | 'doc' | 'paint'
               </button>}
               <button aria-pressed={p.visible} title={p.visible ? 'Hide part' : 'Show part'} aria-label={`${p.visible ? 'Hide' : 'Show'} ${p.name}`} onClick={(e) => { e.stopPropagation(); setPartVisible(i, !p.visible); }}>{eye(p.visible)}</button>
               {!doc && !paint && <button aria-pressed={tex} title={tex ? 'Hide checker texture' : 'Show checker texture'} aria-label={`${tex ? 'Hide texture on' : 'Show texture on'} ${p.name}`} onClick={(e) => { e.stopPropagation(); setPartTextured(i, !tex); }}>{checker(tex)}</button>}
+              {paint && <PartPic i={i} />}
               <span className="lname">{p.name}</span>
               <span className="ltype num">{paint ? `${chs!.length > 1 ? 'PBR' : 'Base'}` : doc ? `${(p.sides?.length ?? p.soup.length / 9).toLocaleString()} poly` : `${mine.length} isl`}</span>
             </li>,

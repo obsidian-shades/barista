@@ -1,10 +1,12 @@
 import { showWorkspace, useApp, type Workspace } from '../store';
-import { glyph } from '../ui/Icon';
+import type { ReactNode } from 'react';
+import { dot, dots, ico } from '../ui/Icon';
 
-const TABS: [Workspace, string, string][] = [
-  ['doc', 'Poly Doc', 'M3 13L8 3l5 10zM5.5 8h5M6.5 11h3'],
-  ['uv', 'UV Magician', 'M2 2h12v12H2zM2 8h12M8 2v12'],
-  ['paint', 'Van Gogh', 'M9.5 2.5l4 4-6 6H4v-3.5zM8 4l4 4'],
+// Poly Doc: a mesh with the doctor's cross. UV Magician: the cube's ideal net (the Latin cross) and a spark. Van Gogh: the palette.
+const TABS: [Workspace, string, ReactNode][] = [
+  ['doc', 'Poly Doc', ico(['M8 2l6 3.5v7L8 16l-6-3.5v-7z', 'f'], 'M8 2l6 3.5v7L8 16l-6-3.5v-7zM2 5.5L8 9l6-3.5M8 9v7', ['M15.5 11.5v7M12 15h7', 'a'])],
+  ['uv', 'UV Magician', ico(['M6 2h4v4h4v4h-4v8H6v-8H2V6h4z', 'f'], 'M6 2h4v4h4v4h-4v8H6v-8H2V6h4zM6 6h4v4H6zM6 14h4', ['M16 1l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z', 'A'])],
+  ['paint', 'Van Gogh', ico(['M10 2.5c-4.4 0-8 3.2-8 7.3 0 4 3.4 7.7 7.4 7.7 1.4 0 1.9-1 1.4-2-.6-1.2.2-2.5 1.6-2.5h2.1c2.2 0 3.5-1.6 3.5-3.6 0-3.8-3.6-6.9-8-6.9z', 'f'], 'M10 2.5c-4.4 0-8 3.2-8 7.3 0 4 3.4 7.7 7.4 7.7 1.4 0 1.9-1 1.4-2-.6-1.2.2-2.5 1.6-2.5h2.1c2.2 0 3.5-1.6 3.5-3.6 0-3.8-3.6-6.9-8-6.9z', [dot(6, 9.5, 1.5), 'A'], [dots([[8.5, 6], [12.6, 6.3], [6.6, 13.4]], 1.3), 'F'])],
 ];
 
 /** The workspace switcher: square tabs in a bar, with the current file on the right. A switch never moves anything. */
@@ -16,9 +18,9 @@ export function AppTabs() {
   return (
     <header className="apptabs">
       <div className="personas" role="tablist" aria-label="Workspace">
-        {TABS.map(([id, label, d]) => (
+        {TABS.map(([id, label, icon]) => (
           <button key={id} role="tab" aria-selected={tab === id} onClick={() => showWorkspace(id)}>
-            {glyph(d)}{label}
+            {icon}{label}
           </button>
         ))}
       </div>

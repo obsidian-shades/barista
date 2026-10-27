@@ -1,14 +1,14 @@
 // Poly Doc's tool strip and options bar, laid out like Photoshop (and espresso-level-designer's shell): one icon per
 // tool down the left, the tool you last used named in the bar on top with its settings and what it just did. A click
 // runs the tool on the selection; it's off (dimmed) until the selection fits, and its tooltip says what it needs.
-// Spectrum has no mesh-editing icons, so these are line glyphs in its stroke weight, on the same 20×20 grid as the
-// filled chrome icons (`ui/Icon`).
+// Spectrum has no mesh-editing icons, so these follow Blender's and Maya's toolbars: the mesh in line, its faces faint,
+// what the tool makes or acts on lit in the blue selection accent (`ui/Icon` `ico`), on the same 20×20 grid as the chrome icons.
 import type { ReactNode } from 'react';
 import { polygonsOf, topoOf } from '../topo';
 import { healthReport, RULES, type RuleId } from '../health';
 import { ownPolygons } from '../polyedit';
-import { ViewControls } from './Chrome';
-import { glyph, Icon } from '../ui/Icon';
+import { SelectionControls } from './Chrome';
+import { dot, dots, ico, Icon, ICON } from '../ui/Icon';
 import {
   addLoopsSel, collapseShortestSel, connectSel, dissolveSel, gridFillSel, limitedDissolveSel, liveSel, loopCutSel, mergeIntoNeighbourSel, mergePolySel, openMenu, pointer,
   relaxAroundSel, relaxPolySel, rotateEdgeSel, selectElems, selectLinked, selectPolygons, selectRule, selectionCount, setDocOpt, setSelectMode, shapeLoopSel, slideSel,
@@ -91,41 +91,41 @@ export interface ToolDef { name: string; key?: string; tip: string; icon: ReactN
 export const POLY_TOOLS: Partial<Record<DocTool, ToolDef>>[] = [
   {
     dissolve: { name: 'Dissolve', key: 'Ctrl+X', tip: 'Faces: merge them into one polygon per patch. Edges: merge the polygons either side', run: dissolveSel, on: ([f, e]) => !!(f || e),
-      icon: glyph('M2 3h5v10H2zM9 3h5v10H9z', 'M7 4.5v7', [[2, 8], [14, 8]]) },
+      icon: ico(['M3 5h14v10H3z', 'f'], 'M3 5h14v10H3z', ['M10 5v10', 'ad']) },
     limited: { name: 'Limited Dissolve', tip: 'Merge the selected faces wherever neighbours meet flatter than the angle in the options bar', run: limitedDissolveSel, on: ([f]) => !!f,
-      icon: glyph('M2 4h8v8H2zM10 4h4v8h-4z', 'M10 4.5l4 7', [[10, 8]]) },
+      icon: ico(['M2 6h11v10H2z', 'f'], 'M2 6h11v10H2zM13 6l5-3v10l-5 3', ['M5.7 6v10M9.3 6v10', 'ad']) },
     quads: { name: 'Tris to Quads', key: 'Alt+J', tip: 'Pair the selected triangles into the flattest, squarest quads', run: trisToQuadsSel, on: ([f]) => !!f,
-      icon: glyph('M3 3h10v10H3z', 'M3 13L13 3', [[3, 3], [13, 3], [13, 13], [3, 13]]) },
+      icon: ico(['M4 4h12v12H4z', 'f'], 'M4 4h12v12H4z', ['M4 16L16 4', 'ad'], [dots([[4, 4], [16, 4], [16, 16], [4, 16]], 1.3), 'F']) },
     connect: { name: 'Connect', key: 'J', tip: 'Vertex mode: a new edge between two vertices of a polygon. Edge mode: cut a polygon between the middles of two of its edges', run: connectSel, on: ([, e, v]) => v >= 2 || e >= 2,
-      icon: glyph('M3 13L13 3', 'M2 2h12v12H2z', [[3, 13], [13, 3]]) },
+      icon: ico(['M6 3h8l4 7-4 7H6l-4-7z', 'f'], 'M6 3h8l4 7-4 7H6l-4-7z', ['M2 10h16', 'a'], [dots([[2, 10], [18, 10]], 1.7), 'A']) },
     merge: { name: 'Merge', key: 'M', tip: 'All selected vertices to one point at their center', run: () => mergePolySel(false), on: ([, e, v]) => v >= 2 || e >= 1,
-      icon: glyph('M3 3l4 4M13 3L9 7M3 13l4-4M13 13L9 9', '', [[8, 8]]) },
+      icon: ico('M3.5 3.5l4 4M16.5 3.5l-4 4M3.5 16.5l4-4M16.5 16.5l-4-4M5 8h2.5V5.5M15 8h-2.5V5.5M5 12h2.5v2.5M15 12h-2.5v2.5', [dot(10, 10, 2), 'A']) },
     collapse: { name: 'Collapse', tip: 'Each connected group of selected edges to its own center', run: () => mergePolySel(true), on: ([, e]) => !!e,
-      icon: glyph('M1.5 8h4M14.5 8h-4M5 5.5 7.5 8 5 10.5M11 5.5 8.5 8l2.5 2.5', '', [[8, 8]]) },
+      icon: ico('M3.5 4h13M10 7.5v5M7.8 10.5l2.2 2.2 2.2-2.2', [dots([[3.5, 4], [16.5, 4]], 1.4), 'F'], [dot(10, 16, 2), 'A']) },
     rotate: { name: 'Rotate Edge', tip: 'Turn the selected edge one step round the two polygons beside it', run: rotateEdgeSel, on: ([, e]) => !!e,
-      icon: glyph('M3 3h10v10H3z', 'M8 3L12 7M12 7l-4 4M5 3.5A7 7 0 0 0 3 9', [[8, 8]]) },
+      icon: ico(['M2.5 6h11v11h-11z', 'f'], 'M2.5 6h11v11h-11z', ['M2.5 17l11-11', 'd'], ['M2.5 6l11 11', 'a'], 'M12 2.2a5.5 5.5 0 0 1 5.8 5.8M15.8 6.3l2 1.9 1.8-2') },
     grid: { name: 'Grid Fill', tip: 'Fill an n-gon (face mode) or a hole’s border (edge mode) with a quad grid. Needs an even number of corners, 6 or more', run: gridFillSel, on: ([f, e]) => !!(f || e),
-      icon: glyph('M5 2h6l3 6-3 6H5L2 8z', 'M5 2v12M11 2v12M2 8h12') },
+      icon: ico(['M6 3h8l4 7-4 7H6l-4-7z', 'f'], ['M6 3v14M14 3v14M2 10h16M10 3v14', 'a'], 'M6 3h8l4 7-4 7H6l-4-7z') },
   },
   {
     move: { name: 'Move', key: 'G', tip: 'Drag the selected vertices with the mouse, kept on the surface (options bar); X / Y / Z lock an axis, click keeps, Esc cancels. Health updates as you go', run: () => startDocMove(), on: ([f, e, v]) => !!(f || e || v),
-      icon: glyph('M8 1.5v13M1.5 8h13M8 1.5l-2 2M8 1.5l2 2M8 14.5l-2-2M8 14.5l2-2M1.5 8l2-2M1.5 8l2 2M14.5 8l-2-2M14.5 8l-2 2') },
+      icon: ico('M10 4v12M4 10h12', ['M10 1.5l2.6 3h-5.2zM10 18.5l2.6-3h-5.2zM1.5 10l3-2.6v5.2zM18.5 10l-3-2.6v5.2z', 'F'], [dot(10, 10, 1.8), 'A']) },
     relax: { name: 'Even Out', tip: 'Spread the selected faces’ vertices out evenly without changing the shape: inside ones stay on the surface, border and crease ones slide along their line, corners stay. Rounds and Slide borders in the options bar', run: relaxPolySel, on: ([f]) => !!f,
-      icon: glyph('M1.5 9c2.2-4 4.3-4 6.5 0s4.3 4 6.5 0', '', [[1.5, 9], [4.75, 6], [8, 9], [11.25, 12], [14.5, 9]]) },
+      icon: ICON.relax },
     subdivide: { name: 'Subdivide', tip: 'Cut each selected polygon into quads at its edge midpoints and center', run: subdivideSel, on: ([f]) => !!f,
-      icon: glyph('M2 2h12v12H2zM8 2v12M2 8h12', '', [[8, 8]]) },
+      icon: ico(['M3 3h14v14H3z', 'f'], 'M3 3h14v14H3z', ['M10 3v14M3 10h14', 'a'], [dots([[10, 3], [17, 10], [10, 17], [3, 10], [10, 10]], 1.4), 'A']) },
   },
   {
     loopcut: { name: 'Loop Cut', key: 'Ctrl+R', tip: 'A new edge loop through the ring of quads the selected edge starts', run: loopCutSel, on: ([, e]) => !!e,
-      icon: glyph('M1 4h14v8H1zM1 8h14', 'M8 1.5v13', [[8, 4], [8, 12]]) },
+      icon: ico(['M3 7h10v10H3z', 'f'], 'M3 7h10v10H3zM3 7l4-4h10l-4 4M13 17l4-4V3', ['M8 17V7l4-4', 'a']) },
     slide: { name: 'Edge Slide', tip: 'Slide the selected loop along its rails; the amount and the other way are in the options bar', run: () => slideSel(useApp.getState().docOpts.slide), on: ([, e]) => !!e,
-      icon: glyph('M8 2.5v11M2.5 8h3M13.5 8h-3M4.5 6l-2 2 2 2M11.5 6l2 2-2 2') },
+      icon: ico('M2 4h16M2 16h16', ['M9 4v12', 'a'], 'M12.5 10H17M15 8l2 2-2 2M5.5 10H3M5 8l-2 2 2 2') },
     space: { name: 'Space', tip: 'Even out the vertices along the selected loop, as it runs', run: () => shapeLoopSel('space'), on: ([, e]) => e >= 2,
-      icon: glyph('M1.5 10h13', '', [[2, 10], [6, 10], [10, 10], [14, 10]]) },
+      icon: ico('M3 7.5v2M7.7 7.5v2M12.3 7.5v2M17 7.5v2', ['M3 8.5h14', 'd'], 'M2 13.5h16', [dots([[3, 13.5], [7.7, 13.5], [12.3, 13.5], [17, 13.5]], 1.6), 'A']) },
     straighten: { name: 'Straighten', tip: 'Line an open chain of edges up between its ends, laid on the surface', run: () => shapeLoopSel('straight'), on: ([, e]) => e >= 2,
-      icon: glyph('M2 11h12', 'M2 11l3-5 3 4 3-6 3 7', [[2, 11], [14, 11]]) },
+      icon: ico(['M2 13l4-6 4 5 4-7 4 8', 'd'], ['M2 13h16', 'a'], [dots([[2, 13], [18, 13]], 1.6), 'A']) },
     circle: { name: 'Circle', tip: 'Make a closed loop of edges round', run: () => shapeLoopSel('circle'), on: ([, e]) => e >= 3,
-      icon: glyph('M8 2.5a5.5 5.5 0 1 1 0 11a5.5 5.5 0 1 1 0-11', '', [[8, 2.5], [13.5, 8], [8, 13.5], [2.5, 8]]) },
+      icon: ico(['M5 4l9 1 2.5 8-6.5 5-6.5-4z', 'd'], ['M10 3.5a6.5 6.5 0 1 1 0 13a6.5 6.5 0 1 1 0-13', 'a'], [dots([[10, 3.5], [16.5, 10], [10, 16.5], [3.5, 10]], 1.4), 'A']) },
   },
 ];
 const ALL = Object.assign({}, ...POLY_TOOLS) as Record<DocTool, ToolDef>;
@@ -166,8 +166,8 @@ export function PolyToolStrip() {
   return <ToolStrip label="Poly Doc tools" groups={POLY_TOOLS} pressed={(id) => (id === 'move' ? moving : tool === id)} mode={(id) => id === 'move'} on={(t) => t.on(counts)} pick={(id) => void runTool(id)} />;
 }
 
-/** Photoshop's options bar: the current tool, its settings, and what it last did. The right end is always the same
- *  ViewControls cluster (selection | display | Shading), so it never moves between workspaces. */
+/** Photoshop's options bar: the current tool, then what it selects (the Mode group), then its settings and what it last
+ *  did. Display and Shading are view settings: they live in the 3D view header. */
 export function PolyOptionsBar() {
   const tool = useApp((s) => s.docTool), opts = useApp((s) => s.docOpts), note = useApp((s) => s.fixNote), busy = useApp((s) => !!s.loading || !!s.busy);
   const slideBorders = useApp((s) => s.slideBorders), onSurface = useApp((s) => s.moveOnSurface);
@@ -181,12 +181,13 @@ export function PolyOptionsBar() {
   return (
     <div className="options">
       <span className="toolname">{t ? <>{t.icon}{t.name}</> : <><Icon name="cursor" size={16} />Select</>}</span>
+      <SelectionControls />
       {what && <span className="hint">{what} selected</span>}
       {tool === 'slide' && (
         <>
           {num('Amount', 'slide', 0.05, 1, 0.05, '', 'How far along the rails each press slides, as a share of the rail')}
-          <button disabled={busy} title="Slide the other way" onClick={() => void slideSel(-opts.slide)}>{glyph('M12 8H4M6 6 4 8l2 2')} Slide</button>
-          <button disabled={busy} title="Slide this way" onClick={() => void slideSel(opts.slide)}>Slide {glyph('M4 8h8M10 6l2 2-2 2')}</button>
+          <button disabled={busy} title="Slide the other way" onClick={() => void slideSel(-opts.slide)}>{ICON.left} Slide</button>
+          <button disabled={busy} title="Slide this way" onClick={() => void slideSel(opts.slide)}>Slide {ICON.right}</button>
         </>
       )}
       {tool === 'limited' && num('Angle', 'angle', 0.5, 45, 0.5, '°', 'Neighbours meeting flatter than this merge')}
@@ -196,7 +197,6 @@ export function PolyOptionsBar() {
       </>}
       {tool === 'move' && <label title="Keep moved vertices on the model's surface, so the shape stays (off: they move freely in the view's plane)"><input type="checkbox" checked={onSurface} onChange={(e) => setMoveOnSurface(e.target.checked)} />On surface</label>}
       {note && <span className="hint note" role="status" title={note}>{note}</span>}
-      <ViewControls />
     </div>
   );
 }
