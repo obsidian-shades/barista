@@ -42,7 +42,7 @@
   --hair-hi: #4a4a4a;   /* the second hover step on dense grids */
   /* Semantic colour: one role per meaning, in chrome and on the model */
   --ok: #4cb85a; --warn: #f0c43a; --bad: #e2483a; --bad-ink: #ff8a80;
-  --sel: #ff8f1f; --seam: #e8402a;   /* Blender's selection orange, its seam red */
+  --sel: var(--accent); --seam: #e8402a;   /* selection blue, seam red */
   /* Plan canvas */
   --canvas: #1d1f22; --grid: #26292d; --grid-major: #383d43; --edge: #0d0d0d;
   /* Shape */

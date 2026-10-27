@@ -585,7 +585,7 @@ function bleed(s: TexSet, x0: number, y0: number, x1: number, y1: number) {
     levelEnd = tail;
   }
 }
-/** The selection's shade, as the 3D view draws a selection: a light orange tint inside with a solid orange border
+/** The selection's shade, as the 3D view draws a selection: a light blue tint inside with a solid blue border
  *  (`SEL`), black over what's outside. Darkening alone vanished on a dark material, so a click looked like nothing. */
 function shade(s: TexSet) {
   const d = s.shade.image.data as Uint8ClampedArray, m = s.sel, n = s.size;
@@ -598,7 +598,7 @@ function shade(s: TexSet) {
     const x = i % n, y = (i / n) | 0, inside = m[i] > 127;
     let edge = false;
     if (inside) for (let k = 1; k <= w && !edge; k++) edge = !on(x + k, y) || !on(x - k, y) || !on(x, y + k) || !on(x, y - k);
-    if (inside) { d[o] = 255; d[o + 1] = 143; d[o + 2] = 31; d[o + 3] = edge ? 255 : 40; }
+    if (inside) { d[o] = 63; d[o + 1] = 143; d[o + 2] = 232; d[o + 3] = edge ? 255 : 40; }
     else { d[o] = d[o + 1] = d[o + 2] = 0; d[o + 3] = 140; }
   }
   s.shade.needsUpdate = true;

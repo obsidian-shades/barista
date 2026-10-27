@@ -28,8 +28,8 @@ checker.colorSpace = THREE.SRGBColorSpace;
 checker.anisotropy = 8;
 const NORMAL_SCALE = new THREE.Vector2(1, 1);
 
-/** Blender's selection orange, and its seam red. */
-export const SEL = '#ff8f1f', SEAM = '#e8402a';
+/** Selection blue, and the seam red. */
+export const SEL = '#3f8fe8', SEAM = '#e8402a';
 
 /** Floor centre and the longest side of the model, so the grid, axes and ground shadow share one frame. */
 function layoutOf(result: Output | null) {
