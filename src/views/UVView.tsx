@@ -11,14 +11,14 @@ import {
   texSet, paintPress, paintDrag, paintEnd, painting, selectPaintInUV, deselectPaint, type PaintMods, beginEdit, cancelXform, clearSelection, confirmXform, kindOf, liveSel, nudge, pinsOf, pointer, xformMouse, repack, selectElems, selectLoop, setUvScope, setTextureResolution, setUvMap, TEXTURE_RESOLUTIONS, TILE, useApp, uvTiles, contextMenu,
   type SelOp,
 } from '../store';
-import { topoOf } from '../topo';
+import { polygonsOf, topoOf } from '../topo';
 import { canvasOf } from '../paint';
 import { materialCanvas } from '../matview';
 import { gpuPreviewCanvas } from '../gpupaint';
 import { IslandBar } from '../shell/IslandBar';
 import { DisplayModes } from '../shell/Chrome';
 import { ICON } from '../ui/Icon';
-import { SEL } from './Viewport3D';
+import { HOT, SEL } from './Viewport3D';
 
 /** The UV view's reference maps, with what each makes easiest to read. */
 const UV_MAPS: [UVMap, string, string][] = [
@@ -156,6 +156,24 @@ export function UVView() {
   const noMenu = useRef(false);
   // Van Gogh: a stroke, or a Marquee / Lasso shape (UV points in the part's own square), under way
   const stroke = useRef<{ part: number; mods: PaintMods; shape?: [number, number][] } | null>(null);
+  // the element under the mouse a click would pick (faces / islands: their triangles), drawn lighter than the selection
+  const hot = useRef<{ part: number; kind: typeof selectMode; id: number; tris: number[] } | null>(null);
+  const setHot = (h: typeof hot.current) => {
+    const o = hot.current;
+    if (o === h || (o && h && o.part === h.part && o.kind === h.kind && o.id === h.id)) return;
+    hot.current = h;
+    redraw.current();
+  };
+  const hotAt = (p: { sx: number; sy: number; u: number; v: number }) => {
+    const s = useApp.getState(), m = s.selectMode, hit = s.result && !s.loading ? under(p) : null;
+    if (!hit) return setHot(null);
+    const out = s.result!.parts[hit.part];
+    if (m === 'vert' || m === 'edge') return setHot({ part: hit.part, kind: m, id: hit.id, tris: [] });
+    // ponytail: walks every triangle when the face under the mouse changes; index polygons once if parts get huge
+    const key = m === 'island' ? out.island : polygonsOf(out.source, s.parts[hit.part]?.poly), id = key[hit.id];
+    if (hot.current?.part === hit.part && hot.current.kind === m && hot.current.id === (id < 0 ? -1 - hit.id : id)) return;
+    setHot({ part: hit.part, kind: m, id: id < 0 ? -1 - hit.id : id, tris: id < 0 ? [hit.id] : Array.from(key.keys()).filter((t) => key[t] === id) });
+  };
   // Van Gogh's brush in the texture view: rings at the mouse, the dab's size (dashed) and its hardness (solid)
   const rings = useRef<HTMLDivElement>(null);
   const showRings = (sx: number, sy: number) => {
@@ -299,6 +317,30 @@ export function UVView() {
           }
         });
       }
+      // what a click would pick, under the mouse: the vertex, the edge, or the polygon / island outlined
+      const hh = hot.current, ho = hh && tiles.at[hh.part], ha = hh && uvs[hh.part];
+      if (hh && ho && ha && result?.parts[hh.part] && !paint && !liveView && hh.kind === selectMode) {
+        const topo = topoOf(result.parts[hh.part].positions), U = (c: number) => X(ha[c * 2] + ho[0]), V = (c: number) => Y(ha[c * 2 + 1] + ho[1]);
+        const next = (c: number) => c - (c % 3) + ((c + 1) % 3);
+        x.strokeStyle = x.fillStyle = HOT;
+        if (hh.kind === 'vert') { for (let c = 0; c < topo.vid.length; c++) if (topo.vid[c] === hh.id) x.fillRect(U(c) - 3.5, V(c) - 3.5, 7, 7); }
+        else {
+          x.lineWidth = hh.kind === 'edge' ? 3 : 1.5;
+          x.beginPath();
+          if (hh.kind === 'edge') { for (let c = 0; c < topo.edge.length; c++) if (topo.edge[c] === hh.id) { x.moveTo(U(c), V(c)); x.lineTo(U(next(c)), V(next(c))); } }
+          else {
+            // the outline: edges only one of the triangles has
+            const n = new Map<number, number>();
+            for (const t of hh.tris) for (let k = 0; k < 3; k++) n.set(topo.edge[t * 3 + k], (n.get(topo.edge[t * 3 + k]) ?? 0) + 1);
+            for (const t of hh.tris) for (let c = t * 3; c < t * 3 + 3; c++) if (n.get(topo.edge[c]) === 1) { x.moveTo(U(c), V(c)); x.lineTo(U(next(c)), V(next(c))); }
+            x.stroke();
+            x.beginPath(); x.globalAlpha = 0.2;
+            for (const t of hh.tris) { const c = t * 3; x.moveTo(U(c), V(c)); x.lineTo(U(c + 1), V(c + 1)); x.lineTo(U(c + 2), V(c + 2)); x.closePath(); }
+            x.fill(); x.globalAlpha = 1; x.beginPath();
+          }
+          x.stroke(); x.lineWidth = 0.5;
+        }
+      }
       const sh = stroke.current?.shape, so = sh && tiles.at[stroke.current!.part];
       if (sh && so) {
         x.strokeStyle = '#e0e0e0'; x.fillStyle = '#ffffff10'; x.setLineDash([4, 3]);
@@ -439,8 +481,10 @@ export function UVView() {
     const s = useApp.getState(), sq = squareAt(p.u, p.v), mods = { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey, pressure: e.pressure, pen: e.pointerType === 'pen' }, tool = s.paint.tool;
     if (e.button !== 0 || !result || s.loading) return;
     if ((tool === 'marquee' || tool === 'lasso') && !mods.ctrl) { stroke.current = { part: sq?.part ?? s.activePart, mods, shape: [sq?.uv ?? [p.u, p.v]] }; return; }
+    const hit = sq && pickTri(result, s.uvs, uvTiles().at, p.u, p.v), tri = sq && hit?.part === sq.part ? hit.tri : -1;
+    // Select Faces: a click off every island drops the selection, as Marquee and Lasso's click does
+    if (tri < 0 && tool === 'wand' && !mods.shift && !mods.alt && !mods.ctrl) return deselectPaint();
     if (!sq) return;
-    const hit = pickTri(result, s.uvs, uvTiles().at, p.u, p.v), tri = hit?.part === sq.part ? hit.tri : -1;
     if (tri < 0 && (tool === 'wand' || tool === 'bucket') && !mods.ctrl) return;
     if (paintPress(sq.part, tri, null, sq.uv, mods)) stroke.current = { part: sq.part, mods };
     redraw.current();
@@ -458,7 +502,8 @@ export function UVView() {
       redraw.current();
       return;
     }
-    if (!d) return;
+    if (!d) { if (!paint && !xform && !e.buttons) hotAt(p); return; }
+    setHot(null);
     if (d.kind === 'move') {
       if (!d.moved && Math.hypot(p.sx - d.x0, p.sy - d.y0) < 3) return;
       if (!d.moved) { d.moved = true; beginEdit(); }
@@ -533,7 +578,7 @@ export function UVView() {
       </header>
       <div className="vbody uvbody" ref={box}>
         {paint && <div className="brushring" ref={rings} style={{ display: 'none' }}><div /></div>}
-        <canvas ref={cv} className={paint ? 'painting' : undefined} onPointerDown={down} onPointerMove={move} onPointerUp={up} onWheel={wheel} onPointerLeave={() => { if (rings.current) rings.current.style.display = 'none'; }}
+        <canvas ref={cv} className={paint ? 'painting' : undefined} onPointerDown={down} onPointerMove={move} onPointerUp={up} onWheel={wheel} onPointerLeave={() => { setHot(null); if (rings.current) rings.current.style.display = 'none'; }}
           onContextMenu={(e) => { e.preventDefault(); if (noMenu.current) noMenu.current = false; else if (!paint) contextMenu(); }} />
         {!paint && !xform && <IslandBar />}
         {xform && <div className="xform-info">{xform.info}<span>X / Y axis · type a value · Ctrl snaps · click or Enter keeps · Esc or right click cancels</span></div>}

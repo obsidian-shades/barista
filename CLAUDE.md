@@ -44,7 +44,11 @@ lowest-top spot (xatlas-style), one square per part unless `one_atlas` · `judge
 `edit` hand edits: relax, stitch, and `reseam` (a seam toggled in the editor re-solves only the islands it touches, each
 fit back onto where it lay at the part's texel density, never the fit's own scale, which shrinks onto a projected shell; a
 stitched edge stays stitched: if the solve would cut it open again, the piece is flattened as its seams leave it; the rest, hand
-edits and all, stays; only Unwrap/params/knife re-unwrap the whole part; the editor's Align / Pack switches, `afterAlign` /
+edits and all, stays; only Unwrap/params/knife re-unwrap the whole part; U on a selection and every island of a part seamed by hand
+(`manual`, Clear all seams) are Blender's own manual Unwrap, `abf` (a port of `uv_parametrizer.cc`: Fill Holes with polyfill +
+beautify, ABF++, angle based LSCM held by the user's pins or its own symmetry / extrema pins, average islands scale; a closed piece is
+projected), checked against Blender itself: `blender -b --factory-startup --python tools/blender-unwrap-ref.py -- ref.json`, then
+`cargo run --release --example blender_parity -- ref.json [svg dir]` (each island's shape and size within 0.1%); the editor's Align / Pack switches, `afterAlign` /
 `afterPack`, then straighten the islands it changed and fit them in, store `tidy`: `src/fitpack.ts` keeps every other island
 where it is and puts each changed one back where it lay if clear, else nudged nearby, else at the lowest free spot by its shape;
 no room or past 60 ms → the full engine pack, which Ctrl+P always is; check `node src/fitpack.check.ts`) ·
@@ -52,20 +56,53 @@ no room or past 60 ms → the full engine pack, which Ctrl+P always is; check `n
 `stroke` the Cut tool: `snap` (stroke → nearest edge path, mesh unchanged) and `knife` (cut faces along the stroke-from-eye
 plane walk, re-triangulate, new edges as seams; the editor then replaces the part's triangles).
 
-## Projects (`.barista`: `engine/src/project.rs`, `src/project.ts`)
-One SQLite file (rusqlite `bundled`): `meta` (format, app version, the document JSON) and `blob` (name → lz4 bytes). A save
-replaces the contents in one transaction (no WAL, so no side files). The editor and engine swap a project as a Pack
-(u32 JSON length, JSON, then u32 name length, name, u32 data length, data); routes `project-save` (Pack in, path out)
-and `project-open` (`{path?, recover?}` in, Pack `{path, doc}` out), Tauri commands of the same names (raw body /
-`ipc::Response`). The engine shows the Open / Save dialogs itself (`rfd`), so the browser editor and the app match.
+## Projects (`.barista`: `engine/src/project.rs`, `src/project.ts`, `src/save.ts`)
+One SQLite file (rusqlite `bundled`): `meta` (format 2, app version, the file's revision, the document JSON) and `blob`
+(name → lz4 bytes). A save is a snapshot plus only the blobs that changed: `docOf` captures the document in the tick Ctrl+S
+happened (big arrays by reference — the store replaces them on an edit — the in-place hand-edited UVs copied), then
+`save.ts` compares each blob's content key with what the file holds and names the unchanged ones in a `keep` list, making
+the bytes of the rest a few at a time and yielding between them, so a save never freezes the viewport and the tools stay
+usable while it writes (`saving` is the status line; a stroke or slider drag in progress makes the save wait for the
+pointer up). The file carries a revision that every save bumps: a save against an older revision is refused (`stale`) and
+the editor writes the whole project again, so two windows on one project can never leave it half of each. A save that
+replaces the file outright (Save As, the first save, a stale retry) is written beside it and renamed over; an incremental
+one updates the SQLite file in one transaction (no WAL, so no side files) and a crash leaves the last good save. Engines
+older than format 2 are detected (`/api/project-format`) and sent every blob. The `project-open` pack carries each blob
+**as the file stores it** (lz4, `"lz4": true` in its JSON; Gun_Low 97 MB instead of 811 MB, which alone took 3 s to move
+into the page) and the editor unpacks each tile straight into its layer (`unlz4` in project.ts, ~2.7 GB/s); it is not
+gzipped on top (the JSON routes keep their compression). `load` opens read-only, so a wrong path is never created empty;
+a new set starts as the base values (`blank` in paint.ts) instead of a composite pass the open would only redo.
+**The composite is saved too** (`SavedSet.comp`, tiles `set/<part>/0/comp_color|comp_orm|comp_normal|comp_height|comp_cov/…`):
+opening shows it as saved and composites only sets saved without one (Gun_Low on the RTX: 4.5 s → 2.2 s with the viewport).
+It is kept only when `compSettled` (made over the whole stack — a restored stack is `unlaid` until a whole composite —
+nothing queued, nothing `dirty`, no live GPU stroke); otherwise the save leaves it out and that set composites on open.
+Every write to the composite moves its tiles' stamps (`stampTiles`: composite, bleed, blank), and `docOf` copies only
+tiles whose stamp the file does not hold, in the snapshot's tick (the store passes its cache as `reuse`), so a dab saves a
+few tiles. ponytail: stamps are per tile, not per map (a colour dab resends that tile's ORM too), and a whole recomposite
+resends the set's composite even where bytes did not change (~65 MB raw per 2K part); hash tiles if saves get heavy.
+`project-format` must be a POST: sent as a GET it 405'd, so the browser editor took every engine for format 0 and every
+save (autosave too) rewrote the whole project. `project-save` takes up to 4 GB (a full save of Gun_Low is ~1.3 GB raw). Opening unpacks the sets first and lays
+each stack out with the banded `requestComposite`, so a 100 MB project composites without holding the viewport; the editor
+and engine swap a project as a
+Pack (u32 JSON length, JSON, then u32 name length, name, u32 data length, data); routes `project-save` (Pack in,
+`{path, rev, stale, written}` out) and `project-open` (`{path?, recover?}` in, Pack `{path, rev, doc}` out), Tauri commands
+of the same names (raw body / `ipc::Response`; the Pack still stages in 8 MB pieces). The engine shows the Open / Save
+dialogs itself (`rfd`), so the browser editor and the app match.
 `docOf` / `docFrom` (project.ts) are the store's document: source, unit, params, parts (soup / poly / sides / normals /
-uv as blobs, seams and flags in JSON), the engine result (`out/<i>/…`), pins, scene (a `blob:` HDRI is dropped), paint
-settings, and per part its texture set's stack (`SavedSet`, paint.ts `saveSet` / `restoreSet`) with each layer buffer
-as 256 px tiles `set/<part>/<layer id>/<channel|mask|clip>/<tx>_<ty>`, empty tiles left out. Bakes are not saved yet (bake
-again to edit a generator). Store: `project` (path) and `saved`; any change to parts, uvs, result, uvRev, paintRev,
-params or resolution clears `saved` (the title's dot, AppTabs). File › Open project… / Save (Ctrl+S) / Save as
-(Ctrl+Shift+S) / Recover autosave…; Open Recent keeps projects by path. Autosave every 2 min when unsaved: into the
-project's file, or `%APPDATA%\Barista\autosave\<name>.barista` before the first save. Questions are one modal
+uv as blobs, seams and flags in JSON), the engine result (`out/<i>/…`), pins, scene, paint settings, and per part its
+texture set's stack (`SavedSet`, paint.ts `saveSet` / `restoreSet`) with each layer buffer as 256 px tiles
+`set/<part>/<layer id>/<channel|mask|clip>/<tx>_<ty>` and the part's selection under `set/<part>/0/sel/…`, empty tiles
+left out. A buffer's content key carries its own `PaintLayer.ver` stamp, so a colour stroke writes the colour tiles and
+leaves the layer's roughness and normal alone, and `tilesOf` reuses one scratch tile so a sparse layer (a decal's
+footprint) allocates only its non-empty tiles. Format 2 also keeps the files a project brought with it: an imported material's maps
+(`asset/material/<id>/<kind>`), an imported decal (`asset/decal/<id>`), a `.hdr`/`.exr` loaded from disk (`asset/hdri`)
+and View › Reference image (`asset/ref`), so a project opens as it was saved without the folders it came from (built-in
+pack maps and shipped decals are paths, never copied). Bakes are still not saved — they are derived: the saved generator
+pixels show at once, and the first generator edit after reopening bakes the maps again in the background (`editGen`).
+Store: `project` (path) and `saved`; any change to parts, uvs, result, uvRev, paintRev, params or resolution clears
+`saved` (the title's dot, AppTabs). File › Open project… / Save (Ctrl+S) / Save as (Ctrl+Shift+S) / Recover autosave…;
+Open Recent keeps projects by path; saves run one at a time (one staged Pack). Autosave every 2 min when unsaved: into
+the project's file, or `%APPDATA%\Barista\autosave\<name>-<pid>.barista` before the first save. Questions are one modal
 (`shell/AskDialog.tsx`, store `ask` / `answerAsk`): opening a model asks paint resolution, workspace, sharp edges, One atlas, Join into nets and auto unwrap (`openOpts`, remembered in localStorage;
 File › Ask how to open models turns it off; no unwrap = mesh-only stale parts, which Unwrap then does all of), and anything
 replacing an unsaved document or closing the window asks Save / Don't save / Cancel (`confirmDiscard`; Tauri `onCloseRequested`,
@@ -74,8 +111,12 @@ environment map's arrival asks for is not a paint edit); opening frees the previ
 WebGL textures), resets Unfold, and unwraps the parts Poly Doc left mesh-only, so a reopened project never comes back
 with every UV at 0. Opening frames the model by snapping the camera to its bounds (`FitOnOpen`, not drei's animated
 `Bounds`: these models sit thousands of units from the origin, and a fit made before the canvas had a size — or one
-that only fitted its first layout — left the view pointed at empty space). Check: `node src/project.check.ts`,
-`cargo test project`.
+that only fitted its first layout — left the view pointed at empty space). Real project benchmark: with the engine
+running, `node --max-old-space-size=8192 tools/project-bench.ts C:\path\Gun_Low.barista` opens a **copy** (the original is
+never written), checks that a save with no edits writes nothing, saves a dab incrementally, and reopens the copy to compare
+every colour byte; it prints open / snapshot / prepare / write timings. Gun_Low (100 MB, 7 parts, 2K, 30 layers): open
+~0.26 s plus ~1.1 s to unpack in Node; in the editor on the RTX ~2.2 s with a saved composite (4.5 s without; 5.3 s before these changes), a no-edit save 0 blobs in ~2 ms (~60 ms in the browser editor), a dab 4 tiles / 1 MB, its write ~50–90 ms. Check:
+`node src/project.check.ts`, `cargo test project`, `tools/project-bench.ts`.
 
 ## Texture export (`engine/src/texture/`: `mod.rs`, `layers.rs`, `bake.rs`)
 The editor paints at a working resolution (the set's size); File › Export… (Ctrl+Shift+E) is one dialog for both `src/shell/ExportDialog.tsx`
@@ -260,13 +301,30 @@ metallic, editable later; the engine's `fill_at` draws it the same (`plain`). Ne
 generators above the active layer (`insertAt`). **All sets** (Layers bar, `linkSets`): adds go to every visible part and fill / generator /
 opacity edits go to the same-named layer on each (`matesOf`, made active so the undo step copies it). Generators bake a part with no
 mesh maps first. Select by **Surface** (`surfaceTris`: flood up to edges bent > angle and < 2× angle from the clicked face), Select ›
-Grow / Shrink (Ctrl+Shift+= / -, `growSelection`, texel space). **Mirror** (`mirrorFrame`): Mirror new puts each new mark on both sides, and Mirror to other side (Ctrl+M) / Unlink in its settings do the same for the selected mark. The pair is linked — `Decal.mirror {of, axis}` on both layers (editor-only: the engine bakes each half from its own frame and ignores it) — so moving, scaling, turning, re-inking, fading or hiding either half mirrors it across the stored axis and bakes the partner in the same undo step; deleting one clears the other's link, and a Ctrl+J copy is a new mark, not a third side. `mirrorFrame` mirrors the point into the model's middle on that axis and takes the nearest same-part triangle facing the other way, upright, so both sides read correctly from outside.
+Grow / Shrink (Ctrl+Shift+= / -, `growSelection`, texel space). **Mirror tool** (strip, Ctrl+M; `mirrorHover` / `mirrorPress`, `MirrorPreview`): a click on a mark picks it; hovering shows its mirrored copy's outline where a click would put it — within reach of the spot symmetric to it across the model's middle on X, Y or Z it snaps there (solid; `mirrorFrame`: the point reflected onto the nearest triangle facing the reflected way, up reflected, rotation negated, `flipH` toggled, so it is the mirror image), elsewhere it lies under the pointer (dashed); a click places it as its own layer with the same settings (nothing linked) and hands over to the Decal tool with the copy selected. `decal.check.ts` pins the snap and the reflected frame.
 **Bevel** (Maps › Generators › Bevel, `addBevel` / `editBevel`; `PaintLayer.bevel`): a whole-part bevel faked in the Normal map: within Radius of every edge sharper than Angle (concave ones when ticked) the face's normal leans toward the face across, a fillet's angle at that distance (Round) or the halfway turn (Chamfer); leans from several edges add, so corners round both ways (`bevelEdges` / `bevelNormal` / `bakeBevel`; engine `layers::BevelSrc`, rendered fresh at the export size; tests `paint.check.ts` and `bevel_matches_the_editor` pin 30° at half the radius, 45° chamfer). No bake needed; it uses the part's flat face normals, so it wants Smooth within Sharp edges. **Engrave** (`Decal.engrave`) bends the normal along the ink's edge and lowers the height, in the engine too
 (`DecalFrame::at`). **Grip textures** (Decals › Grip, `GRIP_SHAPES` in decals.ts): decals with a `Decal.shape` and no image —
 a rounded panel, an optional groove border and a pattern inside (stipple / grooves / checkering / none), sizes in world units
-(shares of the model on the shelf), so stretching a panel never stretches its dots; `bakeShape` writes Normal and Height only,
+(shares of the model on the shelf), so stretching a panel never stretches its dots; `bakeShape` writes Normal and Height, and with
+the layer's **Colour** ticked (`channels` gains color / rough / metal) also the mark's tint / roughness / metallic inside and
+`Decal.rim`'s on the border band (`onRim`; Own border, finish presets Rubber … Bare metal; engine `on_rim` the same),
 the shelf shows them as one Grip texture tile, the preset picked in the layer's settings (`setGripPreset`: only pattern, cell, height and border change, never the mark's place, size or outline); Fit to faces / Fit to part (`fitDecal`) wrap the pattern alone (no border or outline) over the faces picked with Select Faces or the whole part, the faces as the layer's mask; the engine's `DecalFrame::shape_at` / `shape_height` the same (test `shape_relief_matches_the_editor` pins them to the editor's
-numbers). The shallow relief a sculpt-and-bake would give, placed and edited like any mark. Each starts 30% of the
+numbers). The shallow relief a sculpt-and-bake would give, placed and edited like any mark. **Reliefs** (Geometry tab, `RELIEF_SHAPES`): one tile per tool, the variants
+are its settings (`RELIEF_SLIDERS`, profile / head / drive selects, VanGogh.tsx `ReliefSettings`); more `Shape.pattern`s on the
+same layer, bake and engine path (`shapeHeight` / `relief`, pinned point by point in `relief_kinds_match_the_editor`). Lines run along
+the outline as a polyline (`Shape.closed` joins it; `border` = width): `groove` (`profile` round / V / square / chamfer), `bead` (a
+weld, crescent ripples), `stitch` (slanted thread dashes in a channel), `rivets` (a head every `cell`, each turned to the line),
+`scratch` (a V with burred lips, tapered, its depth broken up by `vnoise`). `fastener`: one head (`head` dome / pan / countersunk /
+socket cap / hex bolt, `drive` slot / Phillips / Pozidriv / Torx / hex / square, `washer`). `pad`: raised or, below 0, pressed in,
+over a `profile` edge. **Draw** (`decalMode`; arming a line enters it, a pad or grip panel can too): clicks lay corners, a drag
+lays freehand points, a click on the first point closes it, Enter / a quick second click on the last point / the bar's Finish
+ends it, Backspace / Esc (`drawPress`, `finishDraw`, `undoDrawPoint`, `cancelDraw`; `DrawnLine` shows corners and a rubber band);
+`finishDraw` frames a wrapped decal at the line's middle, stores each corner where it lands on `expMap` (`mapAt`), Douglas–Peucker
+thins freehand runs; a panel or pad is always its closed outline; drawn lines aren't mirrored. `expMap` / `exp_map` seed on the
+triangle the centre lies on (`triDist`: by summed corner distance a small triangle beside a big face won and nothing baked). The
+slope is never sampled finer than half a texel of the triangle (`texelSize` / `texel_sizes`), so hard rims don't alias. Previews:
+`reliefSphere` (decals.ts) draws the relief over a lit sphere in its own coordinates — the shelf tiles and the layer's live
+`ReliefPreview`. Each starts 30% of the
 model tall (`DecalAsset.size`). **Outline** (`Shape.outline`, corners as shares of the half width / height, None = the
 rectangle): the Decal gizmo shows a handle per corner (drag over the decal's plane), a + per edge (adds a corner) and
 Alt+click removes one; every corner is rounded by `corner` into a short arc (`filleted`, then `polySd`). **Wrap**
@@ -274,9 +332,11 @@ Alt+click removes one; every corner is rounded by `corner` into a short arc (`fi
 Wyvill 2006): the soup welded, the triangle nearest the centre seeded flat, Dijkstra outward with each step turned into the
 reaching vertex's tangent plane and its frame carried by the least rotation between normals — so a strip bends over a
 bevel or round a back strap without stretching; the engine's `exp_map` does the same steps (test `wrap_map_unfolds_a_fold`:
-a 90° fold unfolds exactly). Edits go to the active decal; a mirror is two linked layers (above). Layer runs of 3+ decals fold into one row. View › Reference image… floats a picture over the 3D view
-(`views/RefImage.tsx`, not saved). `saveProjectTo(path)` saves without the dialog (scripts). Saves write `<file>.saving` then rename;
-errors name the file and folder; autosaves are per process (`<name>-<pid>.barista`).
+a 90° fold unfolds exactly). Edits go to the active decal. Layer runs of 3+ decals fold into one row. View › Reference image… floats a picture over the 3D view
+(`views/RefImage.tsx`; kept in the project as `asset/ref`). `saveProjectTo(path)` saves without the dialog (scripts). A
+save that writes the whole file (Save As, the first save, a stale retry) writes `<file>.saving` then renames; an
+incremental one updates the SQLite file in place; errors name the file and folder; autosaves are per process
+(`<name>-<pid>.barista`).
 Color panel on top of the dock (`panels/ColorWheel.tsx`, Affinity's): hue ring (clockwise from red at the right) round
 an HSV triangle (tip the hue, white, black), swatch, eyedropper, H S L, hex, Flow; the dock scrolls (`.paintdock`).
 Every other colour field is `ui/ColorPick.tsx` (never `<input type="color">`, which opens the OS dialog): a swatch opening Photoshop's picker as a top-layer popover (over the Scene popover) — saturation / brightness square, hue strip, hex (3 or 6 digits), R G B and H S B, the screen eyedropper, presets + the store's `recentColors`; new / original halves (click original to go back); Escape restores, Enter or a click away keeps; `onStart` takes the undo step (`beginPaintEdit`) before the first change.
@@ -289,7 +349,7 @@ every part occluding the others): AO the GPU way, the model's depth from 96 dire
 renderer), per texel the cosine-weighted share of its sky seen (texel point + face normal from `surfaceOf`, lifted 1.5
 depth texels); edge maps = distance to the nearest sharp (> 20°) convex / concave edge over its strength, each edge a
 whole segment in a reach-sized grid (not sampled points: an Edge Wear band narrower than the old reach/8 sampling beaded
-into dots). Material view (Substance's, `src/matview.ts`; Shift+right-drag turns the light, `turnLight`, its own `lightRev` so the document stays saved; a floor catches the sun's shadow, Shading › Shadow (`scene.paintShadow`) turns that cast shadow and the floor off; Shading › **Lift** (`scene.paintLift`, on = 0.4, off = 0 and the true PBR material) lets the base colour light itself under the key, so a black paint job's texture still reads on its shadow side while off shows the material and shadow exactly; Background › World shows the plate): in Studio lighting with no plate, Van Gogh lights the model by a bundled
+into dots). Material view (Substance's, `src/matview.ts`; Shift+right-drag turns the light, `turnLight`, its own `lightRev` so the document stays saved; a floor catches the sun's shadow, Shading › Shadow (`scene.paintShadow`) turns that cast shadow and the floor off; Shading › **Lift** (`scene.paintLift`, on = 0.4, off = 0 and the true studio) is a work light (`matview.fillOf`): a second sun opposite the key, low so tops don't clip, and the plate ×1.6, so both sides are lit and still shade by where they face (glowing the base colour instead flattened the model and washed out the lit side); Background › World shows the plate): in Studio lighting with no plate, Van Gogh lights the model by a bundled
 plate (`PAINT_HDRI`, Dramatic studio) plus a shadow-casting key (`PaintStudio`; Canvas `shadows`), no lamps, no tone curve
 (Substance's Legacy sRGB), and draws the real PBR material (`meshStandardMaterial`: the set's roughness / metallic, or
 Substance's defaults 0.5 / 0.3 / 0 from its `lib-sampler`), smooth shaded within Sharp edges; Show AO puts the baked AO in

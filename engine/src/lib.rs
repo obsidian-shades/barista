@@ -10,6 +10,7 @@
 //!    the new seam.
 //! 4. join each part's islands into nets: hang islands off each other along shared edges, never overlapping (`join`)
 //! 5. pack each part's nets into its own unit square (or all parts into one, `one_atlas`) at one texel density (`pack`)
+pub mod abf;
 pub mod chart;
 pub mod edit;
 pub mod flatten;

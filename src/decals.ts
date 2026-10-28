@@ -2,7 +2,7 @@
 // session. A decal is an image and its aspect; Van Gogh projects it onto the model in the layer stack,
 // so it paints and exports like any other layer.
 import { decodeImage, type MapPixels } from './materials';
-import { shapeHeight, type Shape } from './paint';
+import { isLine, shapeHeight, slopeStep, type Shape } from './paint';
 
 export interface DecalAsset {
   id: string;
@@ -35,27 +35,66 @@ export const GRIP_SHAPES: DecalAsset[] = [
   grip('checker-panel', 'Checkered', 60, 100, { pattern: 'checker', corner: 0.02, border: 0.006, depth: 0.003, cell: 0.008, amount: 0.0015 }, 'Diamond checkering for a textured grip panel.'),
   grip('groove-frame', 'Border only', 60, 100, { pattern: 'none', corner: 0.025, border: 0.006, depth: 0.003, cell: 0.005, amount: 0 }, 'A simple raised outline with no inner pattern.'),
 ];
+/** The hard-surface detail a sculpt-and-bake would add, in Normal and Height: one tile per tool, the variants (profile,
+ *  head, drive, washer, raised or pressed in) are its settings. Sizes are shares of the model; `size` a head's or
+ *  pad's width as a % of it (lines are drawn, so theirs is the stretch the tile shows); a line's outline here is only
+ *  the tile's sample stroke. */
+const relief = (category: string, id: string, name: string, size: number, shape: Shape, notes: string, w = 100, h = 60): DecalAsset =>
+  ({ id: `shape-${id}`, name, category, tags: ['relief', 'normal', shape.pattern, ...(isLine(shape.pattern) ? ['line', 'polyline'] : [])], notes, file: '', width: w, height: h, license: 'CC0', source: 'Barista', shape, size });
+const BEND: [number, number][] = [[-0.95, -0.55], [-0.2, -0.55], [0.35, 0.5], [0.95, 0.5]];
+const ROW: [number, number][] = [[-0.92, -0.25], [0.92, 0.25]];
+const LINE_HINT = 'Click points on the model to lay it as a polyline (drag draws freehand); click the first point to close it, Enter or double-click to finish.';
+export const RELIEF_SHAPES: DecalAsset[] = [
+  relief('Lines', 'groove', 'Groove', 8, { pattern: 'groove', profile: 'round', corner: 0, border: 0.004, depth: 0.0016, cell: 0.01, amount: 0, outline: BEND }, `A cut along a polyline: panel lines, seams, channels. Width, depth and profile (round, V, square, chamfer) are its settings. ${LINE_HINT}`),
+  relief('Lines', 'bead', 'Weld bead', 8, { pattern: 'bead', corner: 0, border: 0.007, depth: 0.0022, cell: 0.0028, amount: 0.0006, outline: BEND }, `A rippled weld seam standing on the surface. ${LINE_HINT}`),
+  relief('Lines', 'stitch', 'Stitching', 8, { pattern: 'stitch', corner: 0, border: 0.004, depth: 0.0008, cell: 0.007, amount: 0.0007, outline: BEND }, `Thread stitched along a channel: leather straps, holsters, soft grips. ${LINE_HINT}`),
+  relief('Lines', 'rivets', 'Rivet row', 8, { pattern: 'rivets', head: 'dome', drive: 'none', corner: 0, border: 0.012, depth: 0.0035, cell: 0.026, amount: 0.002, outline: ROW }, `A head every few units along a polyline, each turned to the line; any head and drive. ${LINE_HINT}`),
+  relief('Lines', 'scratch', 'Scratch', 8, { pattern: 'scratch', corner: 0, border: 0.0018, depth: 0.0007, cell: 0.008, amount: 0.0005, outline: [[-0.95, -0.4], [-0.3, 0.05], [0.4, 0.2], [0.95, 0.55]] }, `A V gouge with burred lips that tapers out at its ends and breaks up along the way. ${LINE_HINT}`),
+  relief('Fasteners', 'fastener', 'Screw / bolt', 2.5, { pattern: 'fastener', head: 'pan', drive: 'phillips', washer: false, corner: 1, border: 0, depth: 0.0035, cell: 0.01, amount: 0.0025 }, 'One head: dome, pan, countersunk, socket cap or hex bolt, with a slot, Phillips, Pozidriv, Torx, hex or square drive and an optional washer.', 1, 1),
+  relief('Pads', 'pad', 'Pad', 12, { pattern: 'pad', profile: 'round', corner: 0.01, border: 0.004, depth: 0, cell: 0.01, amount: -0.002 }, 'A panel pressed into the surface or standing out of it (its Height, either side of 0) over a soft, chamfered or stepped edge. Drag its corners, or Draw its outline as a polyline.'),
+];
 
-/** A shape's shelf picture: its relief lit from the top left, transparent outside the outline. */
+/** A relief on a lit sphere: the shelf's tiles and the layer's preview. The shape lies over the sphere's front in the
+ *  sphere's own coordinates (arc length along latitude and longitude), so it bends round it as Wrap does on the
+ *  model; its slope tilts the sphere's normal, lit by a key, a cool rim and a soft sky on dark gunmetal, with its
+ *  pits darkened. `sh`, hw and hh share one unit; the shape spans `span` radians of the sphere either way. */
+export function reliefSphere(sh: Shape, hw: number, hh: number, W: number, span = 1): string {
+  if (typeof document === 'undefined') return '';
+  const c = document.createElement('canvas'); c.width = W; c.height = W;
+  const g = c.getContext('2d')!, img = g.createImageData(W, W), S = W * 0.47, k = span / Math.max(hw, hh);
+  const e = slopeStep(sh, hw, hh), top = Math.max(sh.depth, Math.abs(sh.amount), 1e-9);
+  const at = (x: number, y: number) => shapeHeight(sh, x, y, hw, hh) ?? 0;
+  const L = [-0.48, 0.62, 0.62], Lr = [0.75, 0.15, -0.35], Hv = [L[0], L[1], L[2] + 1];
+  const hl = Math.hypot(...Hv); Hv[0] /= hl; Hv[1] /= hl; Hv[2] /= hl;
+  const lin = (v: number) => Math.round(255 * Math.min(1, Math.max(0, v)) ** (1 / 2.2));
+  for (let j = 0; j < W; j++) for (let i = 0; i < W; i++) {
+    const nx = (i + 0.5 - W / 2) / S, ny = (W / 2 - j - 0.5) / S, r2 = nx * nx + ny * ny, cover = Math.min(1, Math.max(0, (1 - Math.sqrt(r2)) * S + 0.5));
+    if (cover <= 0) continue;
+    const nz = Math.sqrt(Math.max(0, 1 - r2)), lon = Math.atan2(nx, nz), lat = Math.asin(Math.max(-1, Math.min(1, ny)));
+    const x = (lon * Math.cos(lat)) / k, y = lat / k, h = at(x, y);
+    const sx = (at(x + e, y) - at(x - e, y)) / (2 * e), sy = (at(x, y + e) - at(x, y - e)) / (2 * e);
+    // T along longitude, B along latitude
+    const cl = Math.cos(lon), sl = Math.sin(lon), ca = Math.cos(lat), sa = Math.sin(lat);
+    let px = nx - sx * cl + sy * sa * sl, py = ny - sy * ca, pz = nz + sx * sl + sy * sa * cl;
+    const pl = Math.hypot(px, py, pz) || 1; px /= pl; py /= pl; pz /= pl;
+    const dif = Math.max(0, px * L[0] + py * L[1] + pz * L[2]), spec = Math.max(0, px * Hv[0] + py * Hv[1] + pz * Hv[2]) ** 60;
+    const rim = (1 - Math.max(0, pz)) ** 2.5 * Math.max(0, px * Lr[0] + py * Lr[1] + pz * Lr[2]);
+    const occ = Math.min(1, 1 + 0.75 * Math.min(0, h) / top), sky = 0.07 + 0.06 * py;
+    const v = (0.2 * (dif * 1.15 + sky) + 0.55 * spec) * occ, o = (j * W + i) * 4;
+    img.data[o] = lin(v + 0.08 * rim); img.data[o + 1] = lin(v * 1.01 + 0.11 * rim); img.data[o + 2] = lin(v * 1.07 + 0.16 * rim); img.data[o + 3] = 255 * cover;
+  }
+  g.putImageData(img, 0, 0);
+  return c.toDataURL();
+}
+/** A shape's shelf tile: its relief on the sphere at the size it starts at on the model. */
 const thumbs = new Map<string, string>();
 function shapeThumb(a: DecalAsset): string {
   const hit = thumbs.get(a.id);
   if (hit || typeof document === 'undefined' || !a.shape) return hit ?? '';
-  const W = 120, H = Math.round((W * a.height) / a.width), k = 1 / 0.2; // drawn as if a fifth of the model wide
-  const sh: Shape = { ...a.shape, corner: a.shape.corner * k, border: a.shape.border * k, depth: a.shape.depth * k, cell: a.shape.cell * k, amount: a.shape.amount * k };
-  const c = document.createElement('canvas'); c.width = W; c.height = H;
-  const g = c.getContext('2d')!, img = g.createImageData(W, H), hw = 0.5, hh = (0.5 * a.height) / a.width, px = 1 / W;
-  const at = (x: number, y: number) => shapeHeight(sh, x, y, hw, hh);
-  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
-    const x = (i + 0.5) * px - hw, y = hh - (j + 0.5) * px, h = at(x, y);
-    if (h === null) continue;
-    const sx = ((at(x + px, y) ?? 0) - (at(x - px, y) ?? 0)) / (2 * px), sy = ((at(x, y + px) ?? 0) - (at(x, y - px) ?? 0)) / (2 * px);
-    const l = Math.max(0, (sx * 0.6 - sy * 0.6 + 1) / Math.hypot(sx, sy, 1) / Math.hypot(0.6, 0.6, 1));
-    const v = 40 + 190 * l, o = (j * W + i) * 4;
-    img.data[o] = v; img.data[o + 1] = v; img.data[o + 2] = v * 1.04; img.data[o + 3] = 255;
-  }
-  g.putImageData(img, 0, 0);
-  const url = c.toDataURL();
+  // in units of the panel's half width: a share of the model over the half of `size` the panel spans
+  const f = 200 / Math.max(a.size ?? 20, 0.5), s = a.shape;
+  const sh: Shape = { ...s, corner: s.corner * (s.pattern === 'fastener' ? 1 : f), border: s.border * f, depth: s.depth * f, cell: s.cell * f, amount: s.amount * f };
+  const url = reliefSphere(sh, 1, a.height / a.width, 120, s.pattern === 'fastener' ? 0.75 : 0.95);
   thumbs.set(a.id, url);
   return url;
 }
@@ -72,7 +111,7 @@ export function loadDecalLibrary(): Promise<DecalAsset[]> {
     if (!r.ok) throw new Error(`Could not read the decal library (${r.status})`);
     const j = await r.json() as { decals?: DecalAsset[] };
     if (!Array.isArray(j.decals)) throw new Error('The decal library has no decals');
-    library = [...GRIP_SHAPES, ...j.decals];
+    library = [...GRIP_SHAPES, ...RELIEF_SHAPES, ...j.decals];
     return library;
   })();
   loading.catch(() => { loading = null; });

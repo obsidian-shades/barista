@@ -278,7 +278,8 @@ pub struct Reseamed {
 /// islands get ids past the old ones.
 ///
 /// With `faces`, those triangles are unwrapped again instead, their islands made by the seams alone (and the edge
-/// of the selection), as Blender's U does. With `live` too, each of their islands is only laid out again by LSCM
+/// of the selection), each solved as Blender's Unwrap solves it (`abf`: Fill Holes, ABF++, angle based LSCM, its pins),
+/// as are all islands of a part seamed by hand (`manual`); a closed piece is projected. With `live` too, each of their islands is only laid out again by LSCM
 /// around its pins (two or more, else it stays as it lies), keeping its id: fast enough to follow a pin drag.
 pub fn reseam(r: &ReseamIn, p: &Params) -> Result<Reseamed, String> {
     let nt = r.island.len();
@@ -330,10 +331,19 @@ pub fn reseam(r: &ReseamIn, p: &Params) -> Result<Reseamed, String> {
     let l = local_mesh(&m, &tris, &cut);
     let mut par: Vec<usize> = (0..l.nv).collect();
     for t in &l.t { for k in 1..3 { let (x, y) = (find(&mut par, t[0] as usize), find(&mut par, t[k] as usize)); par[x] = y; } }
+    // Blender's Unwrap: by hand, or U on a selection; split = a vertex the seams cut apart there (`PVERT_SPLIT`)
+    let blender = (r.manual || !picked.is_empty()) && !r.live;
+    let mut copies: Map<u32, u32> = Map::default();
+    for &o in &l.orig { *copies.entry(o).or_default() += 1; }
+    let split: Set<u32> = copies.into_iter().filter(|x| x.1 > 1).map(|x| x.0).collect();
     let mut pieces: Map<usize, Vec<u32>> = Map::default();
     for (i, t) in l.t.iter().enumerate() { pieces.entry(find(&mut par, t[0] as usize)).or_default().push(l.tris[i]); }
     let solved: Vec<Island> = pieces.into_values().collect::<Vec<_>>().into_par_iter().flat_map(|t| {
-        if r.manual && !r.live { let l = local_mesh(&m, &t, &cut); let f = as_cut(&m, &l); return vec![Island { part: 0, l, f, spine: None }]; }
+        if blender {
+            let l = local_mesh(&m, &t, &cut);
+            let f = crate::abf::flatten(&m, &l, &[], &split).unwrap_or_else(|| as_cut(&m, &l));
+            return vec![Island { part: 0, l, f, spine: None }];
+        }
         if !r.live {
             // a stitched edge stays stitched: if the solve would cut one open again, the piece as the seams leave it
             let auto = crate::chart::islands(&m, vec![t.clone()], &cut, p);
@@ -400,7 +410,9 @@ pub fn reseam(r: &ReseamIn, p: &Params) -> Result<Reseamed, String> {
             // laid out again around the pins, in the mesh's units, then back to UV
             let sg = uv_area.signum();
             let pins: Vec<(usize, f64, f64)> = held.iter().map(|(&q, &(x, y))| (q, sg * x * k, y * k)).collect();
-            let f = if r.live { flatten_lscm_pinned(&m, &s.l, &pins) } else { flatten_pinned(&m, &s.l, &pins) };
+            let f = if r.live { flatten_lscm_pinned(&m, &s.l, &pins) }
+                else if blender { crate::abf::flatten(&m, &s.l, &pins, &split).unwrap_or_else(|| flatten_lscm_pinned(&m, &s.l, &pins)) }
+                else { flatten_pinned(&m, &s.l, &pins) };
             let (u, v): (Vec<f64>, Vec<f64>) = cs.iter().map(|&(_, q)| (sg * f.u[q] / k, f.v[q] / k)).unzip();
             (u, v, f.e)
         } else {

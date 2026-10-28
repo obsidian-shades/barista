@@ -1,7 +1,8 @@
 // App state (zustand) and every user action. UI reads with useApp, acts through the functions below.
 import { create } from 'zustand';
-import { api, projectApi, textureApi, type IslandIn, type Output, type Params, type PartOut, type Stats, ServerDown } from './api';
-import { decodePack, docFrom, docOf, encodePack } from './project';
+import { api, projectApi, textureApi, type IslandIn, type Output, type Params, type PartOut, type SavedProject, type Stats, ServerDown } from './api';
+import { decodePack, docFrom, docOf, encodePack, restoreAssets, type SaveSnapshot } from './project';
+import { cacheFits, commitCache, newCache, prepareSave, primeCache, resetCache, type SaveCache } from './save';
 import type { UVMap } from './colors';
 import { download, readParts, toFbx, toObjs, zipFiles, type ExportPart, type FbxSlot } from './files';
 import { islandsOf, pickTri, seamSegments } from './islands';
@@ -12,7 +13,7 @@ import { clearRecentFiles, forgetRecent, pickWithHandle, recentFiles, remember, 
 import { carryNormals, dissolve, dissolveFaces, limitedDissolve, link, outNormals, ownPolygons, topoOfSoup, triangulate, trisToQuads, type Polys } from './polyedit';
 import { bake } from './bake';
 import { resetLight } from './matview';
-import { CHANNELS, composite, dab, dabUV, disposeSet, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, growSelection, keep as keepPaint, SOLID, maskPolygon, maskTris, newLayer, requestComposite, restoreSet, setIfAny, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, bakeShape, bakeBevel, type Bevel, decalFrame, withoutMirror, shapeHeight, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type Shape, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
+import { CHANNELS, expMap, isLine, mapAt, composite, dab, dabUV, disposeSet, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, growSelection, keep as keepPaint, SOLID, maskPolygon, maskTris, newLayer, requestComposite, restoreSet, setIfAny, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, bakeShape, bakeBevel, type Bevel, decalFrame, shapeHeight, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, shade, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type Shape, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
 import { gpuBegin, gpuDab, gpuFinish, gpuTake } from './gpupaint';
 import { FILL_CHANNELS, loadMaterialLibrary, mapUrl, materialFromFiles, materialPixels, thumbUrl, type MaterialAsset, type MaterialPixels } from './materials';
 import { decalFromFile, decalPixels, decalUrl, loadDecalLibrary, type DecalAsset } from './decals';
@@ -230,6 +231,8 @@ export interface State {
   /** Progressive model loading/unwrapping status; completed parts are already usable in both views. */
   loading: { phase: 'read' | 'unwrap' | 'pack' | 'error'; total: number; complete: number; active: string | null; error?: string; done: boolean[] } | null;
   busy: string | null;
+  /** A project save is writing (it never blocks the tools, unlike `busy`). */
+  saving: string | null;
   error: string | null;
   server: 'unknown' | 'up' | 'down';
   shapes: string[];
@@ -267,7 +270,7 @@ export interface State {
   triangulate: boolean;
   /** Van Gogh's tool and brush: a value per channel and which channels it paints (`on`); size is % of the model (on the
    *  model) or of the texture (in the texture view); Wand and Bucket take a face, an island or the whole part (`by`). */
-  paint: { tool: PaintTool; pickMode: PickMode; grab: MaterialGrab | null; color: string; rough: number; metal: number; on: Record<Channel, boolean>; size: number; flow: number; hardness: number; tip: BrushTip; by: FillBy; angle: number; decalMode: DecalMode; decalSel: boolean; decalMirror: boolean; decalAsset: string; decalTint: string; decalSize: number; decalRotation: number; fillBlend: BlendMode };
+  paint: { tool: PaintTool; pickMode: PickMode; grab: MaterialGrab | null; color: string; rough: number; metal: number; on: Record<Channel, boolean>; size: number; flow: number; hardness: number; tip: BrushTip; by: FillBy; angle: number; decalMode: DecalMode; decalSel: boolean;  decalAsset: string; decalTint: string; decalSize: number; decalRotation: number; fillBlend: BlendMode };
   /** Parts expanded in Van Gogh's Parts tree. */
   paintOpen: number[];
   /** The channel the UV view shows (picked under the part in Parts). */
@@ -314,6 +317,10 @@ export interface State {
   notice: string | null;
   /** Van Gogh: what a Bucket / Wand click or a material dropped from the shelf would take, under the mouse (outlined). */
   paintHover: { part: number; tris: number[] } | null;
+  /** Mirror tool: where a click would put the selected mark's mirrored copy (`snapped`: on the spot symmetric to it). */
+  mirrorAim: { part: number; decal: Decal; snapped: boolean } | null;
+  /** Van Gogh: the line being drawn with a groove / scratch armed (world points), shown until it is let go. */
+  drawLine: [number, number, number][] | null;
   /** A question the app waits on (`AskDialog`, modal): how to open a model, or what to do with unsaved changes. */
   ask: Ask | null;
   /** File › Ask how to open models: off, a model opens with the last answer (`openOpts`) without asking. */
@@ -330,7 +337,7 @@ export type Ask =
   | { kind: 'open'; name: string; done: (o: OpenOpts | null) => void }
   | { kind: 'unsaved'; name: string; done: (a: 'save' | 'discard' | null) => void };
 export type Workspace = 'uv' | 'doc' | 'paint';
-export type PaintTool = 'marquee' | 'lasso' | 'wand' | 'decal' | 'brush' | 'erase' | 'bucket' | 'picker';
+export type PaintTool = 'marquee' | 'lasso' | 'wand' | 'decal' | 'mirror' | 'brush' | 'erase' | 'bucket' | 'picker';
 /** What the Eyedropper takes: the material layers of the part it clicks (fills, solids, generators, bevels — not
  *  decals or hand paint), or the base colour / roughness / metallic under the pointer. */
 export type PickMode = 'material' | 'color';
@@ -351,7 +358,9 @@ export type GrabbedLayer = Pick<PaintLayer, 'name' | 'visible' | 'opacity' | 'bl
 /** What a click on the model does with the Decal tool: `edit` selects the mark under it (and drags it), `place`
  *  puts a copy of the armed mark there. The tool stays in `edit`; a tile clicked in the Decals tab arms one
  *  placement, so a click meant to move a mark can never leave another one behind. */
-export type DecalMode = 'edit' | 'place';
+/** Decal tool: Select (pick and move marks), Place (the next click puts the armed mark), Draw (a drag lays a groove
+ *  or scratch along the stroke). */
+export type DecalMode = 'edit' | 'place' | 'draw';
 export type FillBy = 'face' | 'surface' | 'island' | 'part';
 export type DocView = 'wire' | 'smooth' | 'health';
 interface DocMove { part: number; verts: number[]; base: Geo; normals?: Float32Array; marked: number[]; mouse: [number, number] | null; pivot: [number, number, number]; axis: 0 | 1 | 2 | null; snap: (p: [number, number, number]) => [number, number, number]; reselect: { faces?: number[]; verts?: number[]; edges?: [number, number][] }; moved: boolean }
@@ -377,17 +386,17 @@ export const useApp = create<State>(() => ({
   rev: 0, past: [], future: [], partsPast: [], partsFuture: [], selected: [], selectMode: 'face', csel: null, viewReq: { view: '3d', op: 'all', n: 0 }, menu: null, boxArmed: false, xform: null, liveUnwrap: true, afterAlign: saved('afterAlign', 1, 0, 1) === 1, afterPack: saved('afterPack', 1, 0, 1) === 1, pins: {}, shapeClipboard: null, mode: 'checker', textureResolution: 1024, uvMap: 'checker', recentColors: [],
   scene: { background: '#111111', ...WORK_LIGHT, hdriUrl: null, hdriId: '', hdriName: '', hdriBackground: false, hdriStrength: 1, hdriRotation: 0, hdriBlur: 0, wireframe: false, showEdges: true, showVertices: true, showSeams: true, showGrid: false, showAxes: false,
     lighting: 'studio', matcap: 'clay', bg: 'theme', backface: false, outline: false, specular: true, xray: false, xrayAlpha: 0.5, shadow: false, shadowAmount: 0.4, paintShadow: true, paintLift: 0.4, cavity: false, cavityType: 'both', cavityDistance: 0.2, ridge: 1, valley: 1 }, unfold: 0,
-  busy: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 300, 260, 420), viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, project: null, saved: true, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, moveOnSurface: true,
-  paint: { tool: 'brush', pickMode: 'material' as PickMode, grab: null, color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: false, metal: false, normal: false, height: false }, size: 3, flow: 0.6, hardness: 0.5, tip: 'round' as BrushTip, by: 'island' as FillBy, angle: 30, decalMode: 'edit' as DecalMode, decalSel: true, decalMirror: false, decalAsset: 'garuda-mark', decalTint: '#ffffff', decalSize: 14, decalRotation: 0, fillBlend: 'normal' as BlendMode }, paintChannel: 'material', paintRev: 0, paintPanel: 0, paintLive: 0, lightRev: 0, paintOpen: [0], paintAO: true, linkSets: false, refImage: null,
+  busy: null, saving: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 300, 260, 420), viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, project: null, saved: true, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, moveOnSurface: true,
+  paint: { tool: 'brush', pickMode: 'material' as PickMode, grab: null, color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: false, metal: false, normal: false, height: false }, size: 3, flow: 0.6, hardness: 0.5, tip: 'round' as BrushTip, by: 'island' as FillBy, angle: 30, decalMode: 'edit' as DecalMode, decalSel: true,  decalAsset: 'garuda-mark', decalTint: '#ffffff', decalSize: 14, decalRotation: 0, fillBlend: 'normal' as BlendMode }, paintChannel: 'material', paintRev: 0, paintPanel: 0, paintLive: 0, lightRev: 0, paintOpen: [0], paintAO: true, linkSets: false, refImage: null,
   materials: [], materialsLoading: false, materialsError: null, decals: [], decalsLoading: false, decalsError: null, paintTab: 'layers', assetTab: 'materials', texturePreset: 'generic', exportSize: saved('exportSize', 4096, 256, 16384),
   exportOpen: false, exportKind: savedStr('exportKind', 'textures', ['textures', 'model'] as const), exportModel: savedStr('exportModel', 'fbx', ['fbx', 'obj'] as const),
   exportScope: savedStr('exportScope', 'visible', ['visible', 'selected', 'all'] as const), exportFbx: saved('exportFbx', 0, 0, 1) === 1, exportPadding: saved('exportPadding', 0, 0, 512),
-  paintHover: null, ask: null, askOnOpen: saved('askOnOpen', 1, 0, 1) === 1, openOpts: savedOpen(),
+  paintHover: null, mirrorAim: null, drawLine: null, ask: null, askOnOpen: saved('askOnOpen', 1, 0, 1) === 1, openOpts: savedOpen(),
   notice: null,
 }));
 const set = useApp.setState, get = useApp.getState;
 export const updateScene = (scene: Partial<Scene>) => set((s) => ({ scene: { ...s.scene, ...scene } }));
-/** Van Gogh's base-colour lift: a view setting, so it redraws both the model and the texture view's material. */
+/** Van Gogh's Lift (a fill light opposite the key, `matview.fillOf`): a view setting, so it redraws both the model and the texture view's material. */
 export const setPaintLift = (paintLift: number) => set((s) => ({ scene: { ...s.scene, paintLift }, lightRev: s.lightRev + 1 }));
 const SCENE0 = get().scene;
 /** Shading › Reset: every viewport setting (lighting, lamps, map, background, options, overlays) back to the default,
@@ -660,6 +669,8 @@ export const loadShape = async (name: string) => (await confirmDiscard()) && tas
   const soup = new Float32Array(await api.shape(name));
   if (me !== latest) return;
   const parts = [{ name, soup, seams: [], marked: [], solved: [], visible: true, textured: true }];
+  ++docGen;
+  resetCache(cache);
   setModelSize([soup]);
   resetPaintHistory();
   set({ project: null, source: name, unit: 100, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: [0], layerAnchor: 0, uvScope: 'part', csel: null, fixNote: null, symPlane: null, symEdit: null });
@@ -679,6 +690,8 @@ const loadFile = (file: File, o: OpenOpts) => task(`${o.unwrap ? 'Unwrapping' : 
   const { parts: imported, unit } = await readParts(file);
   if (me !== latest) return;
   const parts = imported.map((p) => ({ ...p, seams: [], marked: [], solved: [], visible: true, textured: true }));
+  ++docGen;
+  resetCache(cache);
   setModelSize(parts.map((p) => p.soup));
   resetPaintHistory();
   set({ project: null, source: file.name, unit, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, layerSel: parts.length ? [0] : [], layerAnchor: 0, uvScope: o.one_atlas ? 'all' : 'part', csel: null, fixNote: null, textureResolution: o.resolution, symPlane: null, symEdit: null });
@@ -699,7 +712,10 @@ export const setParams = (p: Partial<Params>) => {
 };
 
 /** The model's middle, where a new plane goes (arrays, no THREE in the store). */
-const modelCentre = (): [number, number, number] => {
+let centreOf: { r: unknown; c: [number, number, number] } | null = null;
+export const modelCentre = (): [number, number, number] => {
+  const r = get().result;
+  if (centreOf?.r === r) return centreOf.c;
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (const p of get().result?.parts ?? []) {
     for (let i = 0; i + 2 < p.positions.length; i += 3) {
@@ -710,7 +726,9 @@ const modelCentre = (): [number, number, number] => {
       }
     }
   }
-  return Number.isFinite(lo[0]) ? [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2] : [0, 0, 0];
+  const c: [number, number, number] = Number.isFinite(lo[0]) ? [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2] : [0, 0, 0];
+  centreOf = { r, c };
+  return c;
 };
 
 /** Show the mirror-plane gizmo: one across the model's middle (+X: the side-to-side of most characters and vehicles),
@@ -780,44 +798,161 @@ export const openRecent = (name: string) => task(`Opening ${name}…`, async () 
 });
 export const clearRecent = async () => { await clearRecentFiles(); set({ recent: [] }); };
 
-// ---- .barista projects (project.ts, engine/src/project.rs) ----
+// ---- .barista projects (project.ts, save.ts, engine/src/project.rs) ----
 const listRecent = async () => set({ recent: (await recentFiles()).map(({ name, time }) => ({ name, time })) });
-/** File › Save (Ctrl+S) / Save As (Ctrl+Shift+S): the engine asks where the first time, then writes there. */
-export const saveProject = (as = false) => task('Saving…', async () => { await writeProject(as ? 'as' : 'save'); });
-/** Autosave: into the project's own file once it has one, else into the engine's autosave folder (File › Recover). */
-async function writeProject(how: 'save' | 'as' | 'auto'): Promise<string | null> {
+/** What the open project's file already holds (blob names by content key), so a save writes only what changed. */
+let cache: SaveCache = newCache();
+/** Which document the cache describes: opening another one drops it (a save still in flight must not touch it). */
+let docGen = 0;
+/** Saves run one at a time: the engine takes a Pack as one staged buffer (src-tauri `stage`), so two at once would mix. */
+let saveChain: Promise<unknown> = Promise.resolve();
+const serialize = <T,>(f: () => Promise<T>): Promise<T> => {
+  const p = saveChain.then(f, f);
+  saveChain = p.catch(() => {});
+  return p;
+};
+const saveError = (e: unknown) => set({ error: e instanceof Error ? e.message : String(e) });
+
+/** A stroke or a slider drag is writing a set's buffers in place: a save waits for it to end, so it photographs the
+ *  project rather than a half-made stroke. (A GPU stroke also replays into the CPU once the mouse is up.) */
+const paintIdle = () => !painting() && !committing && !paintEditingNow();
+async function untilIdle() {
+  for (let i = 0; i < 120 && !paintIdle(); i++) await new Promise((ok) => setTimeout(ok, 50));
+}
+
+/** The document as Ctrl+S found it: taken in this tick, so the write below is a snapshot, not a race with the artist. */
+interface SaveJob { how: 'save' | 'as' | 'auto'; snap: SaveSnapshot; name: string; gen: number; path: string | null }
+function saveJob(how: SaveJob['how']): SaveJob | null {
   const s = get();
   if (!s.parts.length) return null;
-  const { doc, blobs } = docOf(s, (i) => setIfAny(s.parts[i].soup));
+  // a composite tile the file holds under the same stamp is only named, not copied in this tick
+  const snap = docOf(s, (i) => setIfAny(s.parts[i].soup), { reuse: (id, key) => cache.keys.get(id) === key });
   const name = (s.project?.split(/[\\/]/).pop() ?? baseName()).replace(/\.barista$/i, '');
-  const head = { path: s.project, save_as: how === 'as', autosave: how === 'auto' && !s.project, name, doc };
-  const path = await projectApi.save(encodePack(JSON.stringify(head), blobs));
-  if (!path || head.autosave) return path;
-  // edits made while the file was being written stay unsaved
-  set((now) => ({ project: path, saved: now.parts === s.parts && now.uvs === s.uvs && now.result === s.result && now.paintRev === s.paintRev }));
-  await rememberProject(path);
-  await listRecent();
-  return path;
+  return { how, snap, name, gen: docGen, path: how === 'as' ? null : s.project };
 }
+const mb = (n: number) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+/** File › Save (Ctrl+S) / Save As (Ctrl+Shift+S): the engine asks where the first time, then writes there. The editor
+ *  is never blocked: the snapshot is taken here, and the bytes are made while the artist keeps working. */
+export const saveProject = (as = false) => {
+  const job = saveJob(as ? 'as' : 'save');
+  if (job) void serialize(() => runSave(job)).catch(saveError);
+};
+/** Autosave: into the project's own file once it has one, else into the engine's autosave folder (File › Recover). */
+async function writeProject(how: 'save' | 'as' | 'auto'): Promise<string | null> {
+  const job = saveJob(how);
+  return job ? serialize(() => runSave(job)) : null;
+}
+/** The engine's project format: an older engine can't take a keep list, so it is sent every blob. */
+let engineFormat: number | null = null;
+async function saveFormat(): Promise<number> {
+  if (engineFormat !== null && engineFormat >= 2) return engineFormat;
+  engineFormat = await projectApi.format().catch(() => 0);
+  return engineFormat;
+}
+/** Write a job's snapshot: only changed blobs, unless the file can't take them (a new path, or it moved on). */
+async function runSave(job: SaveJob, full = false): Promise<string | null> {
+  // the document was replaced while this save waited its turn: that project owns the app now
+  if (job.gen !== docGen) return null;
+  if (!paintIdle()) await untilIdle();
+  if (job.gen !== docGen) return null;
+  const path = job.how === 'as' ? null : job.path ?? get().project;
+  const auto = job.how === 'auto' && !path;
+  // the file's own revision and blob names are only known for the project (or autosave file) this editor just had,
+  // and only an engine that understands them may be sent a keep list
+  const reuse = !full && job.how !== 'as' && (await saveFormat()) >= 2 && (path ? cacheFits(cache, path) : auto && cacheFits(cache, null));
+  set({ saving: 'Saving…' });
+  try {
+    const prepared = await prepareSave(job.snap, cache, {
+      reuse, path: path ?? (auto ? cache.path : null), auto,
+      onProgress: ({ bytes }) => set({ saving: bytes ? `Saving… ${mb(bytes)}` : 'Saving…' }),
+    });
+    const head = {
+      path, save_as: job.how === 'as', autosave: auto, name: job.name, doc: job.snap.doc,
+      ...(reuse ? { rev: cache.rev, keep: prepared.keep } : {}),
+    };
+    // an engine older than format 2 answers with the path alone (or null): it was sent every blob, so its revision is
+    // unknown (0) and the next save writes everything again
+    // the pack owns the blob data now: drop our references before the upload so a big first save peaks lower
+    const pack = encodePack(JSON.stringify(head), prepared.blobs);
+    prepared.blobs.length = 0;
+    const raw = (await projectApi.save(pack)) as unknown as SavedProject | string | null;
+    const done: SavedProject = typeof raw === 'string' || raw === null ? { path: raw, rev: 0, stale: false, written: 0 } : raw;
+    if (done.stale) {
+      // another window (or a check script) wrote this project after we last saw it: write ours whole, as it is now
+      if (job.gen !== docGen) return null;
+      const fresh = saveJob(job.how);
+      if (!fresh) return null;
+      return runSave(fresh, true);
+    }
+    if (!done.path) return null; // the dialog was cancelled
+    // the cache belongs to the file the engine actually wrote (a dialog may have picked a different one)
+    if (job.gen === docGen) { commitCache(cache, { ...prepared.next, path: done.path }, done.rev); cache.path = done.path; }
+    // a file that couldn't be read is worth saying, but the project saved: its layer's pixels are in the file
+    if (job.snap.warnings.length) set({ notice: job.snap.warnings[0] });
+    if (job.how === 'auto') return done.path;
+    const now = get(), was = job.snap.stamp;
+    // edits made while the file was being written stay unsaved
+    const same = now.parts === was.parts && now.uvs === was.uvs && now.result === was.result && now.uvRev === was.uvRev
+      && now.paintRev === was.paintRev && now.params === was.params && now.textureResolution === was.textureResolution
+      && now.scene.hdriUrl === was.sceneHdri && now.refImage === was.refImage;
+    // the document may have been replaced while the bytes were written: that project owns the app now
+    if (job.gen === docGen) set({ project: done.path, saved: same });
+    await rememberProject(done.path);
+    await listRecent();
+    return done.path;
+  } finally {
+    set({ saving: null });
+  }
+}
+const mergeById = <T extends { id: string }>(add: T[], have: T[]) => [...add, ...have.filter((x) => !add.some((a) => a.id === x.id))];
 let restoring = false;
 /** File › Open Project…: a `.barista` back as it was saved (`recover`: the dialog opens in the autosave folder). */
 export const openProject = async (path?: string, recover = false) => (await confirmDiscard()) && task('Opening project…', async () => {
   const { json, blobs } = decodePack(await projectApi.open({ path, recover }));
-  const head = JSON.parse(json) as { cancelled?: boolean; path: string; doc: unknown };
+  const head = JSON.parse(json) as { cancelled?: boolean; path: string; rev?: number; lz4?: boolean; doc: unknown };
   if (head.cancelled) return;
-  const { state, sets, pixels } = docFrom(head.doc, blobs);
+  const { state, sets, pixels, assets, names, warnings } = docFrom(head.doc, blobs, head.lz4);
   ++latest; // whatever was loading is stale now
+  ++docGen;
+  resetCache(cache);
   restoring = true;
   try {
+    const restored = restoreAssets(assets);
     setModelSize(state.parts.map((p) => p.soup));
     resetPaintHistory();
-    set((s) => ({ ...state, project: recover ? null : head.path, saved: !recover, rev: s.rev + 1, uvRev: s.uvRev + 1, edited: false, loading: null,
+    set((s) => ({ ...state, scene: { ...state.scene, ...restored.scene },
+      materials: mergeById(restored.materials, s.materials), decals: mergeById(restored.decals, s.decals), refImage: restored.refImage,
+      project: recover ? null : head.path, saved: !recover, rev: s.rev + 1, uvRev: s.uvRev + 1, edited: false, loading: null,
       // the Unfold slider is a view of the old model's UVs: a project opens on the model itself
       unfold: 0,
       past: [], future: [], partsPast: [], partsFuture: [], csel: null, selected: [], layerSel: state.parts.length ? [state.activePart] : [], layerAnchor: state.activePart,
-      uvScope: state.params.one_atlas ? 'all' : 'part', fixNote: null, paintOpen: [state.activePart] }));
-    sets.forEach((saved, i) => { if (saved && state.parts[i]) restoreSet(state.parts[i].soup, saved, pixels(i, saved.size)); });
+      uvScope: state.params.one_atlas ? 'all' : 'part', fixNote: null, paintOpen: [state.activePart], error: warnings[0] ?? null }));
+    const restoredSets: { i: number; ts: TexSet }[] = [];
+    sets.forEach((saved, i) => {
+      if (!saved || !state.parts[i]) return;
+      const ts = restoreSet(state.parts[i].soup, saved, pixels(i, saved.size));
+      if (ts.sel) shade(ts);
+      // a set saved with its composite shows as it is: only the others lay their stack out
+      if (!saved.comp) restoredSets.push({ i, ts });
+    });
     repaint();
+    // Each set's stack is laid out in bands, one set after another (the active part first): opening a 100 MB project
+    // must not hold the view while its paint composites, and seven compositing loops at once only fight for one CPU.
+    // A view tick, not `repaint`: filling textures is not an edit, and a paintRev bump would mark the fresh project unsaved.
+    if (restoredSets.length) {
+      const order = [...restoredSets].sort((a, b) => (a.i === state.activePart ? -1 : b.i === state.activePart ? 1 : a.i - b.i));
+      void (async () => {
+        for (const [k, { ts }] of order.entries()) {
+          set({ notice: order.length > 1 ? `Preparing paint… ${k + 1}/${order.length}` : 'Preparing paint…' });
+          await requestComposite(ts);
+          set((s) => ({ paintLive: s.paintLive + 1 }));
+        }
+        set({ notice: null });
+      })();
+    }
+    // the blobs the file holds are the state's now: a save right after opening writes only the edits
+    if (!recover) primeCache(cache, docOf(get(), (i) => setIfAny(get().parts[i].soup), { reuse: () => true }), names, head.rev ?? 0, head.path);
   } finally { restoring = false; }
   if (!recover) { await rememberProject(head.path); await listRecent(); }
   // a project can hold parts Poly Doc left mesh-only (opened without an unwrap, or edited there and saved before
@@ -831,7 +966,10 @@ export const openProject = async (path?: string, recover = false) => (await conf
 });
 // Anything that changes the document marks it unsaved (the title's dot).
 useApp.subscribe((s, p) => {
-  if (!restoring && s.saved && (s.parts !== p.parts || s.uvs !== p.uvs || s.result !== p.result || s.uvRev !== p.uvRev || s.paintRev !== p.paintRev || s.params !== p.params || s.textureResolution !== p.textureResolution)) set({ saved: false });
+  if (!restoring && s.saved && (s.parts !== p.parts || s.uvs !== p.uvs || s.result !== p.result || s.uvRev !== p.uvRev
+    || s.paintRev !== p.paintRev || s.params !== p.params || s.textureResolution !== p.textureResolution
+    // the environment map and the reference picture are files the project now carries
+    || s.scene.hdriUrl !== p.scene.hdriUrl || s.refImage !== p.refImage)) set({ saved: false });
 });
 const AUTOSAVE_MS = 2 * 60 * 1000;
 let autosaving = false;
@@ -841,7 +979,7 @@ function startAutosave() {
   autosaving = true;
   window.setInterval(() => {
     const s = get();
-    if (!s.saved && s.parts.length && !s.busy && !s.loading && !painting()) void task('Autosaving…', async () => { await writeProject('auto'); });
+    if (!s.saved && s.parts.length && !s.busy && !s.loading && !s.saving && paintIdle()) void writeProject('auto').catch(saveError);
   }, AUTOSAVE_MS);
 }
 
@@ -2481,6 +2619,8 @@ export const setPaint = (p: Partial<State['paint']>) => set((s) => {
   const paint = { ...s.paint, ...p };
   // the stack held on the Eyedropper belongs to it: switching tool (or to Color) lets it go
   if (paint.grab && (paint.tool !== 'picker' || paint.pickMode !== 'material')) paint.grab = null;
+  // and a polyline half drawn belongs to Draw
+  if (drawn && (paint.tool !== 'decal' || paint.decalMode !== 'draw')) { drawn = null; return { paint, drawLine: null }; }
   return { paint };
 });
 export const setPaintTab = (paintTab: State['paintTab']) => set({ paintTab });
@@ -2794,7 +2934,7 @@ export function applyGrab(i: number, tri: number): Promise<void> {
   const raw = grab.layers.some((l) => l.gen) && !texSet(i).bake ? [i] : [];
   return raw.length ? bakePaint(raw).then(job) : job();
 }
-let last: { part: number; at: number[]; uv: boolean; fill: boolean; decal: boolean; moved?: boolean; pressure: number; gpu: boolean; mates?: number[] } | null = null;
+let last: { part: number; at: number[]; uv: boolean; fill: boolean; decal: boolean; draw?: boolean; moved?: boolean; pressure: number; gpu: boolean; mates?: number[] } | null = null;
 /** The other parts drawn in part `i`'s square of the texture view (a shared atlas): a stroke there paints them too. */
 const atlasMates = (i: number) => {
   const at = uvTiles().at, o = at[i], uvs = get().uvs;
@@ -2839,6 +2979,7 @@ export function paintPress(i: number, tri: number, at: [number, number, number] 
     setPaint(ts.channels.length > 1 ? v : { color: v.color });
     return false;
   }
+  if (paint.tool === 'mirror') { if (at) mirrorPress(i, tri, at.slice() as [number, number, number]); return false; }
   // the part being worked on is the one the panels show (its layers); the texture view's Part / All stays as it is
   if (get().activePart !== i) pickPaintPart(i);
   const s = texSet(i);
@@ -2847,6 +2988,12 @@ export function paintPress(i: number, tri: number, at: [number, number, number] 
     // Edit (the default): a click picks the mark under it and a drag slides it; a click on bare surface clears the
     // pick, so the frame and the Decal actions go and the next Delete clears paint rather than removing the layer.
     // Place: one click puts the armed mark there (Alt too).
+    if (paint.decalMode === 'draw' && !mods.alt) {
+      if (!drawArmed()) { set({ error: 'Pick a line, pad or grip panel (Assets › Geometry) to draw.' }); return false; }
+      drawPress(i, tri, at.slice() as [number, number, number]);
+      last = { part: i, at: at.slice(), uv: false, fill: false, decal: true, draw: true, pressure: 1, gpu: false };
+      return true;
+    }
     if (paint.decalMode !== 'place' && !mods.alt) {
       const j = decalUnder(i, at, tri);
       if (j < 0) { deselectDecal(); return false; }
@@ -2875,6 +3022,7 @@ export function paintPress(i: number, tri: number, at: [number, number, number] 
   if (paint.tool !== 'brush' && paint.tool !== 'erase') return false;
   // in a shared atlas the texture view's stroke crosses every part's islands: all their sets, one undo step
   const mates = at ? [] : atlasMates(i);
+  paintEditing = true;
   step(s, ...mates.map(texSet));
   const layer = s.layers[s.active], pen = pressureOf(mods), b = brushOf(result!, pen);
   const above = s.layers.slice(s.active + 1).some((l) => l.visible && l.opacity > 0);
@@ -2915,6 +3063,10 @@ export function paintDrag(i: number, at: [number, number, number] | null, uv: [n
   if (!out || !uvs[i] || !last || last.part !== i || last.uv === !!at) return;
   if (pressure != null) last.pressure = Math.max(0.08, Math.min(1, pressure));
   const b = brushOf(result!, last.pressure), s = texSet(i), from = last.at, to = at ?? uv;
+  if (last.decal && last.draw) {
+    if (at && tri != null && drawn) drawTo(at as [number, number, number], tri);
+    return;
+  }
   if (last.decal) {
     if (at && to.some((x, k) => x !== from[k])) { dragDecal(at, tri, snap, false); last.moved = true; }
     last.at = to;
@@ -2946,7 +3098,9 @@ export function paintDrag(i: number, at: [number, number, number] | null, uv: [n
 }
 // ponytail: the texture view and panel catch up when the stroke ends, not per dab (a 1K redraw per mouse move)
 export const paintEnd = () => {
+  paintEditing = false;
   if (!last) return;
+  if (last.draw) { last = null; return; }
   if (last.decal) { const moved = last.moved; last = null; if (moved) finishDecalEdit(); repaint(); return; }
   if (last.gpu) {
     const part = last.part, s = texSet(part), points = gpuTake(), { result, uvs } = get(), pos = result?.parts[part]?.positions, uv = uvs[part];
@@ -3072,21 +3226,19 @@ export const addMetalLayer = () => layers((s) => {
 export const addPaintLayer = () => layers((s) => { s.layers.splice(s.active + 1, 0, newLayer(s.layers.length + 1)); s.active++; });
 export const deletePaintLayer = () => layers((s) => {
   if (s.layers.length <= 1) return;
-  // a mark deleted out of a mirror pair leaves its partner standing on its own
-  const l = s.layers[s.active], mark = !!l?.decal, mate = l?.decal ? mirrorMate(s, l) : null;
-  if (mate?.decal) mate.decal = withoutMirror(mate.decal);
+  const mark = !!s.layers[s.active]?.decal;
   s.layers.splice(s.active, 1);
   s.active = Math.min(s.active, s.layers.length - 1);
   // a mark goes off the model with its layer: the layer below is active in the panel, not picked as a mark
   if (mark) set((st) => ({ paint: { ...st.paint, decalSel: false } }));
 });
-/** Ctrl+J: a copy of the active layer above it. A copy of a half of a mirror pair is its own mark, not a third side. */
+/** Ctrl+J: a copy of the active layer above it. */
 export const duplicatePaintLayer = () => layers((s) => {
   const l = s.layers[s.active];
   s.layers.splice(s.active + 1, 0, {
     ...newLayer(0), name: `${l.name} copy`, opacity: l.opacity, blend: l.blend ? { ...l.blend } : undefined, px: Object.fromEntries(Object.entries(l.px).map(([c, a]) => [c, a!.slice()])),
     ...(l.fill ? { fill: { ...l.fill, channels: [...l.fill.channels], offset: [...l.fill.offset] as [number, number] } } : {}),
-    ...(l.decal ? { decal: withoutMirror({ ...l.decal, center: [...l.decal.center] as [number, number, number], normal: [...l.decal.normal] as [number, number, number], up: [...l.decal.up] as [number, number, number], channels: [...l.decal.channels] }) } : {}),
+    ...(l.decal ? { decal: { ...l.decal, center: [...l.decal.center] as [number, number, number], normal: [...l.decal.normal] as [number, number, number], up: [...l.decal.up] as [number, number, number], channels: [...l.decal.channels] } } : {}),
     ...(l.mask ? { mask: l.mask.slice() } : {}),
   });
   s.active++;
@@ -3112,17 +3264,6 @@ export function editPaintLayer(j: number, l: Partial<Pick<PaintLayer, 'name' | '
   if (undoable) step(s, ...mates); else ensureStep(s, ...mates);
   s.layers[j] = { ...s.layers[j], ...l };
   for (const t of mates) t.layers[t.active] = { ...t.layers[t.active], ...l };
-  // one half of a mirror pair is the same mark: hide it, fade it or change its blend and both sides follow. A rename
-  // keeps the "(mirror)" suffix so the stack still reads as a pair.
-  const twin = was.decal ? mirrorMate(s, was) : null;
-  if (twin) {
-    if (l.name) { if (twin.name === `${was.name} (mirror)`) twin.name = `${l.name} (mirror)`; }
-    else {
-      if (l.visible !== undefined) twin.visible = l.visible;
-      if (l.opacity !== undefined) twin.opacity = l.opacity;
-      if (l.blend !== undefined) twin.blend = { ...l.blend };
-    }
-  }
   for (const t of [s, ...mates]) scheduleComposite(t);
   repaintPanel();
 }
@@ -3146,7 +3287,25 @@ export function setFillBlend(mode: BlendMode) {
 /** A slider drag starts: its undo step is taken by the first change, so a click that changes nothing leaves no
  *  empty step for Ctrl+Z to chew through. */
 let sliderStep: TexSet | null = null;
-export const beginPaintEdit = () => { sliderStep = get().parts[get().activePart] ? texSet(get().activePart) : null; };
+let paintEditing = false, editWatch = false;
+/** A slider or a drag is writing a set's pixels in place right now. */
+export const paintEditingNow = () => paintEditing;
+export const beginPaintEdit = () => {
+  sliderStep = get().parts[get().activePart] ? texSet(get().activePart) : null;
+  paintEditing = true;
+  if (editWatch || typeof window === 'undefined') return;
+  editWatch = true;
+  const off = () => {
+    paintEditing = false;
+    editWatch = false;
+    window.removeEventListener('pointerup', off);
+    window.removeEventListener('pointercancel', off);
+    window.removeEventListener('blur', off);
+  };
+  window.addEventListener('pointerup', off);
+  window.addEventListener('pointercancel', off);
+  window.addEventListener('blur', off);
+};
 /** The first edit of a drag: take the step the pointerdown deferred. */
 function ensureStep(...ts: TexSet[]) { if (sliderStep === ts[0]) { sliderStep = null; step(...ts); } }
 export const setLinkSets = (linkSets: boolean) => set({ linkSets });
@@ -3164,7 +3323,7 @@ export function pickRefImage() {
   input.click();
 }
 /** Save the project to `path` without the dialog (scripts and agents; the editor's Save as… shows the dialog). */
-export const saveProjectTo = (path: string) => task('Saving…', async () => { set({ project: path }); await writeProject('save'); });
+export const saveProjectTo = (path: string) => { set({ project: path }); return writeProject('save'); };
 /** The parts an add or edit goes to: the active one, and with All sets on every other visible part too. */
 const targetParts = () => { const a = get().activePart; return [a, ...(get().linkSets ? visibleParts().filter((j) => j !== a) : [])].filter((i) => get().parts[i]); };
 /** With All sets on, the other visible parts' layer of the same name and kind as `l` (Edge Wear on every part), each
@@ -3200,13 +3359,16 @@ export function setPbr(i: number, on: boolean) {
 export const pickPaintChannel = (i: number, ch: Shown) => set({ activePart: i, paintChannel: ch });
 
 // ---- the material shelf ----
+/** The library itself was read (an opened project may have put its own imported materials on the shelf first). */
+let libraryLoaded = false;
 /** Read public/materials/index.json once. Imported folders are already in `materials`. */
 export function loadMaterials() {
-  if (get().materials.length || get().materialsLoading) return;
+  if (libraryLoaded || get().materialsLoading) return;
+  libraryLoaded = true;
   set({ materialsLoading: true, materialsError: null });
   loadMaterialLibrary()
-    .then((materials) => set({ materials, materialsLoading: false }))
-    .catch((e) => set({ materialsLoading: false, materialsError: e instanceof Error ? e.message : String(e) }));
+    .then((materials) => set((s) => ({ materials: [...s.materials, ...materials.filter((m) => !s.materials.some((x) => x.id === m.id))], materialsLoading: false })))
+    .catch((e) => { libraryLoaded = false; set({ materialsLoading: false, materialsError: e instanceof Error ? e.message : String(e) }); });
 }
 const materialOf = (id: string) => get().materials.find((m) => m.id === id) ?? null;
 function addImported(m: MaterialAsset) { set((s) => ({ materials: [m, ...s.materials.filter((x) => x.id !== m.id)] })); }
@@ -3217,16 +3379,18 @@ export const importMaterialFiles = (name: string, files: File[]) => task('Import
 });
 
 // ---- the decal shelf ----
+let decalsLoaded = false;
 /** Read public/decals/index.json once; imported marks already live in `decals`. */
 export function loadDecals() {
-  if (get().decals.length || get().decalsLoading) return;
+  if (decalsLoaded || get().decalsLoading) return;
+  decalsLoaded = true;
   set({ decalsLoading: true, decalsError: null });
   loadDecalLibrary()
     .then((decals) => set((s) => ({
-      decals, decalsLoading: false,
+      decals: [...s.decals, ...decals.filter((d) => !s.decals.some((x) => x.id === d.id))], decalsLoading: false,
       paint: !s.paint.decalAsset && decals.length ? { ...s.paint, decalAsset: (decals.find((d) => !d.shape) ?? decals[0]).id } : s.paint,
     })))
-    .catch((e) => set({ decalsLoading: false, decalsError: e instanceof Error ? e.message : String(e) }));
+    .catch((e) => { decalsLoaded = false; set({ decalsLoading: false, decalsError: e instanceof Error ? e.message : String(e) }); });
 }
 const decalOf = (id: string) => get().decals.find((d) => d.id === id) ?? null;
 /** Arm a mark for placement: its ink becomes the starting tint, the Decal tool is selected and the next click on the
@@ -3234,8 +3398,9 @@ const decalOf = (id: string) => get().decals.find((d) => d.id === id) ?? null;
 export function pickDecal(id: string) {
   const a = decalOf(id);
   if (!a) return;
+  cancelDraw(); // a half-drawn polyline belongs to the asset it was started with
   set((s) => ({
-    paint: { ...s.paint, tool: 'decal', decalMode: 'place', decalAsset: id, decalTint: s.paint.color, ...(a.size ? { decalSize: a.size } : {}) },
+    paint: { ...s.paint, tool: 'decal', decalMode: a.shape && isLine(a.shape.pattern) ? 'draw' : 'place', decalAsset: id, decalTint: s.paint.color, ...(a.size ? { decalSize: a.size } : {}) },
     paintTab: 'assets', assetTab: a.shape ? 'geometry' : 'decals', error: null,
   }));
 }
@@ -3361,14 +3526,14 @@ function settleDecal(i: number) {
 const shapeAt = (sh: Shape, span: number): Shape => ({ ...sh, corner: sh.corner * span, border: sh.border * span, depth: sh.depth * span, cell: sh.cell * span, amount: sh.amount * span });
 /** Add a decal layer at a hit on part `i`, of the armed mark (`paint.decalAsset`). One click places: the tool is back
  *  in edit mode afterwards, so the next click selects the mark that was just made. */
-function placeDecal(i: number, tri: number, at: [number, number, number]) {
+function placeDecal(i: number, tri: number, at: [number, number, number], made?: Decal) {
   const st = get(), out = st.result?.parts[i], uv = st.uvs[i], a = decalOf(st.paint.decalAsset) ?? st.decals[0];
   if (!out || !uv || !a) {
     if (!st.decals.length) set({ error: 'The decal shelf is still loading; try again in a moment.' });
     return false;
   }
   const s = texSet(i), normal = faceNormal(out, tri), span = modelSize(st.result!);
-  const decal: Decal = {
+  const decal: Decal = made ?? {
     asset: a.id, center: [...at] as [number, number, number], normal, up: decalUp(normal),
     width: Math.max(span * st.paint.decalSize / 100, span * 0.01), rotation: st.paint.decalRotation,
     aspect: a.width / a.height, tint: st.paint.decalTint, roughness: 0.55, metallic: 0,
@@ -3381,31 +3546,104 @@ function placeDecal(i: number, tri: number, at: [number, number, number]) {
   const at0 = insertAt(s);
   s.layers.splice(at0, 0, layer);
   s.active = at0;
-  // Mirror: the same mark on the far side of the model, across the middle of the axis the face looks along (a gun's
-  // two flanks), so both sides take one click and read the right way round from outside. The pair is linked: moving
-  // or restyling either half takes the other with it.
-  const axis = mirrorAxis(normal);
-  const twin = st.paint.decalMirror ? mirrorFrame(st.result!, i, at, normal, axis) : null;
-  if (twin) {
-    const other: PaintLayer = { ...newLayer(s.layers.length + 1), name: `${a.name} (mirror)`, decal: { ...decal, center: twin.at, normal: twin.normal, up: twin.up, mirror: { of: layer.id, axis } } };
-    layer.decal = { ...decal, mirror: { of: other.id, axis } };
-    s.layers.splice(at0, 0, other);
-    s.active = at0 + 1;
-    rebakeDecal(i, other);
-  }
-  set((now) => ({ activePart: i, paintChannel: 'material', error: null, paint: { ...now.paint, decalMode: 'edit', decalSel: true } }));
+  set((now) => ({ activePart: i, paintChannel: 'material', error: null, paint: { ...now.paint, decalMode: made ? 'draw' : 'edit', decalSel: true } }));
   rebakeDecal(i, layer);
   repaintPanel();
   return true;
 }
-/** Where `at` on part `i` lands mirrored across the model's middle on `axis`: the nearest triangle of the same part
- *  facing the other way, the point on it, its upright frame. The axis is stored with the pair, so an edit keeps the
- *  same plane even when the mark's own facing drifts. */
-function mirrorFrame(r: Output, i: number, at: [number, number, number], normal: [number, number, number], axis: 0 | 1 | 2) {
-  let lo = Infinity, hi = -Infinity;
-  for (const p of r.parts) for (let k = axis; k < p.positions.length; k += 3) { const v = p.positions[k]; if (v < lo) lo = v; if (v > hi) hi = v; }
-  const want: [number, number, number] = [...at] as [number, number, number];
-  want[axis] = lo + hi - at[axis];
+/** The polyline being drawn (Decal tool, Draw): its points on the surface and their triangles. A click adds a corner,
+ *  a drag lays freehand points along the way; `closeR` is how near the first point (world units, ~12 px where it was
+ *  pressed) a click closes it. */
+let drawn: { part: number; pts: [number, number, number][]; tris: number[]; closeR: number; at: number } | null = null;
+/** The armed asset when it can be drawn: a line kind (open or closed) or a panel / pad (its outline, closed). */
+const drawArmed = () => { const a = decalOf(get().paint.decalAsset); return a?.shape && a.shape.pattern !== 'fastener' ? a : null; };
+const dist3 = (a: ArrayLike<number>, b: ArrayLike<number>) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const showDrawn = () => set({ drawLine: drawn ? drawn.pts.map((p) => [...p] as [number, number, number]) : null });
+/** A press in Draw: the first starts a polyline, a press on its first point closes it, a quick second press on its
+ *  last point (a double-click) finishes it open, any other adds a corner. */
+function drawPress(i: number, tri: number, at: [number, number, number]) {
+  const px = view3d.worldDelta?.(12, 0, at), r = px ? Math.hypot(...px) : modelSize(get().result!) * 0.01;
+  const now = performance.now();
+  if (!drawn || drawn.part !== i) { drawn = { part: i, pts: [at], tris: [tri], closeR: r, at: now }; showDrawn(); return; }
+  const d = drawn, n = d.pts.length, quick = now - d.at < 400;
+  d.at = now;
+  if (n >= 3 && dist3(at, d.pts[0]) < d.closeR) { finishDraw(true); return; }
+  if (quick && dist3(at, d.pts[n - 1]) < r * 0.5) { finishDraw(false); return; }
+  d.pts.push(at); d.tris.push(tri); d.closeR = r;
+  showDrawn();
+}
+/** A drag in Draw: freehand points every couple of thousandths of the model. */
+function drawTo(at: [number, number, number], tri: number) {
+  const d = drawn!, r = get().result;
+  if (r && dist3(at, d.pts[d.pts.length - 1]) > modelSize(r) * 0.002) { d.pts.push(at); d.tris.push(tri); showDrawn(); }
+}
+/** Esc: drop the polyline being drawn. True when there was one. */
+export function cancelDraw() { if (!drawn) return false; drawn = null; showDrawn(); return true; }
+/** Backspace: take back its last corner. */
+export function undoDrawPoint() {
+  if (!drawn) return false;
+  drawn.pts.pop(); drawn.tris.pop();
+  if (!drawn.pts.length) drawn = null;
+  showDrawn();
+  return true;
+}
+/** Douglas–Peucker: the corners that keep a freehand run within `tol` (indices, ends kept). */
+function simplify(pts: [number, number][], tol: number): number[] {
+  const keep = new Set([0, pts.length - 1]);
+  const walk = (a: number, b: number) => {
+    let far = -1, fd = tol;
+    const [ax, ay] = pts[a], ex = pts[b][0] - ax, ey = pts[b][1] - ay, l2 = ex * ex + ey * ey || 1;
+    for (let k = a + 1; k < b; k++) {
+      const t = Math.max(0, Math.min(1, ((pts[k][0] - ax) * ex + (pts[k][1] - ay) * ey) / l2));
+      const dd = Math.hypot(pts[k][0] - ax - ex * t, pts[k][1] - ay - ey * t);
+      if (dd > fd) { fd = dd; far = k; }
+    }
+    if (far >= 0) { keep.add(far); walk(a, far); walk(far, b); }
+  };
+  walk(0, pts.length - 1);
+  return [...keep].sort((x, y) => x - y);
+}
+/** Enter, a double-click or a click on the first point: the polyline becomes a wrapped relief decal whose outline is
+ *  the line, laid out in the surface's own coordinates round its middle (`expMap`), so it follows the model over
+ *  bevels and curves as it was drawn. A line kind stays open unless closed; a panel or pad is always its closed outline. */
+export function finishDraw(close = false) {
+  const d = drawn, st = get(), out = d && st.result?.parts[d.part], a = drawArmed();
+  drawn = null;
+  showDrawn();
+  if (!d || !out || !a?.shape) return;
+  const line = isLine(a.shape.pattern), closed = !line || close, { pts, tris } = d;
+  if (pts.length < (closed ? 3 : 2)) { if (!line) set({ error: 'An outline needs three points or more.' }); return; }
+  const span = modelSize(st.result!), sh = shapeAt(a.shape, span), run = [0];
+  for (let k = 1; k < pts.length; k++) run.push(run[k - 1] + dist3(pts[k], pts[k - 1]));
+  const total = run[run.length - 1];
+  if (total < Math.max(sh.border, span * 0.002) * 2) return; // a click, not a line
+  // framed at the line's middle, facing the face there
+  const m = Math.max(0, run.findIndex((x) => x >= total / 2)), normal = faceNormal(out, tris[m]);
+  const decal: Decal = {
+    asset: a.id, center: [...pts[m]] as [number, number, number], normal, up: decalUp(normal), width: 1, rotation: 0, aspect: 1,
+    tint: st.paint.decalTint, roughness: 0.55, metallic: 0, channels: ['normal', 'height'], wrap: true, shape: sh,
+  };
+  const f = decalFrame(decal, span), pos = out.positions;
+  const map = expMap(pos, [f.cx, f.cy, f.cz], [f.nx, f.ny, f.nz], [f.uxr, f.uyr, f.uzr], [f.vxr, f.vyr, f.vzr], total * 1.5 + sh.border * 4);
+  // each point on the map; where the walk didn't reach (another shell), flat along the frame
+  let ab = pts.map((p, k) => mapAt(pos, map, tris[k], p) ?? (() => {
+    const dx = p[0] - f.cx, dy = p[1] - f.cy, dz = p[2] - f.cz;
+    return [dx * f.uxr + dy * f.uyr + dz * f.uzr, dx * f.vxr + dy * f.vyr + dz * f.vzr] as [number, number];
+  })());
+  // a freehand run keeps only the corners that matter (the bake walks every segment per texel)
+  ab = simplify(ab, Math.max(sh.border * 0.08, span * 0.0002)).map((k) => ab[k]);
+  const pad = line ? sh.border : 0;
+  let hw = Math.max(pad, 1e-6), hh = Math.max(pad, 1e-6);
+  for (const [x, y] of ab) { hw = Math.max(hw, Math.abs(x) + pad); hh = Math.max(hh, Math.abs(y) + pad); }
+  placeDecal(d.part, tris[m], pts[m], { ...decal, width: hw * 2, aspect: hw / hh, shape: { ...sh, closed: line ? closed : undefined, outline: ab.map(([x, y]) => [x / hw, y / hh]) } });
+}
+/** `d` mirrored across the plane through the model's middle square to `axis` (Blender's Symmetrize): the point
+ *  reflected and set on the nearest triangle of part `i` facing the reflected way, its up reflected, its turn reversed
+ *  and the mark flipped, so it is the mirror image (a slanted grip panel slants the other way). */
+function mirrorFrame(r: Output, i: number, d: Decal, axis: 0 | 1 | 2): Pick<Decal, 'center' | 'normal' | 'up' | 'rotation' | 'flipH'> | null {
+  const mid = modelCentre()[axis];
+  const ref = (p: [number, number, number], point: boolean) => { const q = [...p] as [number, number, number]; q[axis] = point ? 2 * mid - p[axis] : -p[axis]; return q; };
+  const want = ref(d.center, true), rn = ref(d.normal, false), rl = Math.hypot(...rn) || 1;
   const pos = r.parts[i].positions;
   let best = -1, bestD = Infinity, bn: [number, number, number] = [0, 0, 0];
   for (let t = 0; t < pos.length / 9; t++) {
@@ -3414,8 +3652,7 @@ function mirrorFrame(r: Output, i: number, at: [number, number, number], normal:
     const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
     let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
     const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
-    const nax = axis === 0 ? nx : axis === 1 ? ny : nz;
-    if (nax * normal[axis] > -0.5) continue; // must face the other way, or it is the same side's back
+    if ((nx * rn[0] + ny * rn[1] + nz * rn[2]) / rl < 0.5) continue; // must face the reflected way, or it is the back
     const cx = (pos[o] + pos[o + 3] + pos[o + 6]) / 3, cy = (pos[o + 1] + pos[o + 4] + pos[o + 7]) / 3, cz = (pos[o + 2] + pos[o + 5] + pos[o + 8]) / 3;
     const dd = (cx - want[0]) ** 2 + (cy - want[1]) ** 2 + (cz - want[2]) ** 2;
     if (dd < bestD) { bestD = dd; best = t; bn = [nx, ny, nz]; }
@@ -3423,64 +3660,63 @@ function mirrorFrame(r: Output, i: number, at: [number, number, number], normal:
   if (best < 0) return null;
   const o = best * 9, [nx, ny, nz] = bn;
   const off = (want[0] - pos[o]) * nx + (want[1] - pos[o + 1]) * ny + (want[2] - pos[o + 2]) * nz;
-  const at2: [number, number, number] = [want[0] - nx * off, want[1] - ny * off, want[2] - nz * off];
-  return { tri: best, at: at2, normal: bn, up: decalUp(bn) };
+  // a reflection turns the frame's handedness over: up reflected with the turn reversed keeps the mark's up, and the
+  // flip puts its right back on the far side (frame u = up × n)
+  return { center: [want[0] - nx * off, want[1] - ny * off, want[2] - nz * off], normal: bn, up: ref(d.up, false), rotation: -d.rotation, flipH: !d.flipH };
 }
-/** The model axis a mark faces along, which is also the one it mirrors across. */
-function mirrorAxis(n: [number, number, number]): 0 | 1 | 2 {
-  return [0, 1, 2].reduce((m, k) => (Math.abs(n[k]) > Math.abs(n[m]) ? k : m), 0) as 0 | 1 | 2;
+/** The Mirror tool's copy of the selected mark for a pointer at `at` on part `i`: within reach of the spot symmetric to
+ *  the mark across the model's middle on X, Y or Z it snaps there (`mirrorFrame`); elsewhere the mirror image lands
+ *  under the pointer, reflected across the axis whose facing fits that face best. Null with no mark selected. */
+function mirrorAt(i: number, tri: number, at: [number, number, number]): { decal: Decal; snapped: boolean } | null {
+  const st = get(), src = activeDecal(), out = st.result?.parts[i];
+  if (!src || !out || tri < 0) return null;
+  const d = src.decal, span = modelSize(st.result!);
+  let best: Decal | null = null, bestD = Math.max(d.width, span * 0.06);
+  for (const k of [0, 1, 2] as const) {
+    const m = mirrorFrame(st.result!, i, d, k);
+    // a mark on the middle plane mirrors onto itself across it: not a place to put a copy
+    if (!m || dist3(m.center, d.center) < d.width * 0.25) continue;
+    const dd = dist3(m.center, at);
+    if (dd < bestD) { bestD = dd; best = { ...d, ...m }; }
+  }
+  if (best) return { decal: best, snapped: true };
+  const n = faceNormal(out, tri);
+  // reflecting across k turns the facing to n best where d.normal[k] · n[k] is lowest
+  const k = [0, 1, 2].reduce((b, a) => (d.normal[a] * n[a] < d.normal[b] * n[b] ? a : b), 0);
+  const up = [...d.up] as [number, number, number];
+  up[k] = -up[k];
+  return { decal: { ...d, center: at, normal: n, up: carryUp(up, n), rotation: -d.rotation, flipH: !d.flipH }, snapped: false };
 }
-/** The other half of a linked mirror pair, if this layer has one. */
-function mirrorMate(s: TexSet, l: PaintLayer): PaintLayer | null {
-  const of = l.decal?.mirror?.of;
-  if (of != null) return s.layers.find((x) => x.id === of) ?? null;
-  return s.layers.find((x) => x.decal?.mirror?.of === l.id) ?? null;
+let mirrorKey = '';
+/** The pointer over part `i` (-1: off the model) with the Mirror tool: show where the copy would go. */
+export function mirrorHover(i: number, tri = -1, at?: [number, number, number]) {
+  const aim = i >= 0 && at ? mirrorAt(i, tri, at) : null;
+  const key = aim ? `${i}:${aim.decal.center.join()}` : '';
+  if (key === mirrorKey) return;
+  mirrorKey = key;
+  set({ mirrorAim: aim ? { part: i, ...aim } : null });
 }
-/** After `edited` changed, keep its mirror partner on the other side with the same look (and bake it again). The pair
- *  is symmetric, so editing either half works: the frame is mirrored across the stored axis both ways. */
-function syncMirror(i: number, s: TexSet, edited: PaintLayer, live: boolean, bake = true) {
-  const mate = mirrorMate(s, edited);
-  if (!mate?.decal || !edited.decal) return false;
-  const axis = edited.decal.mirror?.axis ?? mate.decal.mirror?.axis;
-  const r = get().result;
-  if (axis == null || !r?.parts[i]) return false;
-  const m = mirrorFrame(r, i, edited.decal.center, edited.decal.normal, axis);
-  // no face opposite it right now: the partner stays where it was and catches up once there is one again
-  if (!m) return false;
-  mate.decal = { ...edited.decal, center: m.at, normal: m.normal, up: m.up, mirror: { of: edited.id, axis } };
-  if (bake) { if (live) laterRebake(i, mate); else rebakeDecal(i, mate); }
-  return true;
-}
-/** Mirror the active mark onto the other side of the model as a linked pair: moving, scaling, turning or re-inking
- *  either half moves both. One undo step. */
-export function mirrorDecal() {
-  const st = get(), i = st.activePart, s = texSet(i), r = st.result, l = s.layers[s.active];
-  if (!l?.decal || !r?.parts[i]) return;
-  if (mirrorMate(s, l)) { set({ error: 'This mark is already mirrored — Unlink it first.' }); return; }
-  const axis = mirrorAxis(l.decal.normal);
-  const m = mirrorFrame(r, i, l.decal.center, l.decal.normal, axis);
-  if (!m) { set({ error: 'No face on the other side of this part to mirror onto.' }); return; }
+/** A Mirror tool click: on a mark it picks that mark to mirror; anywhere else, with a mark picked, it puts a mirrored
+ *  copy where the hover showed — its own layer with the same settings, nothing linked — and hands over to the Decal
+ *  tool with the copy selected. One undo step. */
+function mirrorPress(i: number, tri: number, at: [number, number, number]) {
+  const j = decalUnder(i, at, tri);
+  if (j >= 0) { selectDecal(i, j); mirrorKey = ''; set({ mirrorAim: null, error: null }); return; }
+  const aim = mirrorAt(i, tri, at), src = activeDecal();
+  if (!aim || !src) { set({ error: 'Click a mark to pick it, then click where its mirror goes.' }); return; }
+  const from = texSet(src.part).layers[texSet(src.part).active], s = texSet(i), d = aim.decal;
   step(s);
-  // the step swaps the active layer for its copy: edit that one
-  const cur = s.layers[s.active], at = s.active;
-  const twin: PaintLayer = { ...newLayer(s.layers.length + 1), name: `${cur.name} (mirror)`, decal: { ...cur.decal!, center: m.at, normal: m.normal, up: m.up, mirror: { of: cur.id, axis } } };
-  cur.decal = { ...cur.decal!, mirror: { of: twin.id, axis } };
-  s.layers.splice(at + 1, 0, twin);
-  set({ error: null });
-  rebakeDecal(i, twin);
-  repaintPanel();
-}
-/** Break a link: both marks stay where they are and become independent. */
-export function unlinkDecal() {
-  const i = get().activePart, s = texSet(i), l = s.layers[s.active];
-  const mate = l?.decal ? mirrorMate(s, l) : null;
-  if (!l?.decal || !mate?.decal) return;
-  const a = l.id, b = mate.id;
-  step(s);
-  // the step may have swapped the active layer: find both again by id
-  const live = s.layers.find((x) => x.id === a), other = s.layers.find((x) => x.id === b);
-  if (live?.decal) live.decal = withoutMirror(live.decal);
-  if (other?.decal) other.decal = withoutMirror(other.decal);
+  if (d.shape && !s.channels.includes('normal')) s.channels = [...FILL_CHANNELS];
+  const layer: PaintLayer = {
+    ...newLayer(s.layers.length + 1), name: `${from.name} mirror`, opacity: from.opacity, blend: from.blend ? { ...from.blend } : undefined,
+    decal: { ...d, center: [...d.center] as [number, number, number], normal: [...d.normal] as [number, number, number], up: [...d.up] as [number, number, number], channels: [...d.channels] },
+  };
+  const at0 = insertAt(s);
+  s.layers.splice(at0, 0, layer);
+  s.active = at0;
+  mirrorKey = '';
+  set((now) => ({ activePart: i, mirrorAim: null, error: null, paint: { ...now.paint, tool: 'decal', decalMode: 'edit', decalSel: true } }));
+  rebakeDecal(i, layer);
   repaintPanel();
 }
 /** A mark dragged from the shelf and let go on part `i` at `at` (triangle `tri`): armed and placed there, as a click
@@ -3530,7 +3766,6 @@ export function dragDecal(at: [number, number, number], tri?: number, snap = fal
   if (snap) snapMiddle(c, normal);
   l.decal = { ...l.decal!, center: c, normal, up };
   if (bake) laterRebake(i, l); else repaintLive();
-  if (bake) syncMirror(i, s, l, true);
 }
 /** A live edit (drag, gizmo, slider) re-bakes at most once a frame. */
 let decalRaf = 0;
@@ -3547,7 +3782,11 @@ export function activeDecal() {
   return d && s.paint.decalSel ? { part: i, decal: d } : null;
 }
 /** Edit / Place: what a click on the model does with the Decal tool (the tile in the Decals tab arms one placement). */
-export const setDecalMode = (decalMode: DecalMode) => set((s) => ({ paint: { ...s.paint, decalMode } }));
+// Draw with nothing drawable armed starts with the groove; leaving Draw drops a half-drawn polyline
+export function setDecalMode(decalMode: DecalMode) {
+  if (decalMode !== 'draw') cancelDraw();
+  set((s) => ({ paint: { ...s.paint, decalMode, ...(decalMode === 'draw' && !drawArmed() ? { decalAsset: 'shape-groove' } : {}) } }));
+}
 /** Arrow keys: move the mark across its own plane, `du` / `dv` steps of 0.4% of the model. */
 export function nudgeDecal(du: number, dv: number, undoable = true) {
   const a = activeDecal();
@@ -3609,7 +3848,6 @@ export function updateDecal(patch: Partial<Decal>, undoable = true, bake = true)
     if (a) { l.name = a.name; if (!a.shape) next.aspect = a.width / a.height; }
   }
   if (undoable) rebakeDecal(i, l); else if (bake) laterRebake(i, l);
-  if (bake) syncMirror(i, s, l, !undoable);
   repaintPanel();
 }
 /** Finish a decal edit whose expensive texture bake was deferred during direct manipulation. */
@@ -3617,22 +3855,21 @@ export function finishDecalEdit() {
   const s = get(), i = s.activePart, ts = s.parts[i] ? texSet(i) : null, l = ts?.layers[ts.active];
   if (!ts || !l?.decal) return;
   rebakeDecal(i, l);
-  syncMirror(i, ts, l, false);
 }
 /** Swap the active grip texture's relief for a preset's (pattern, cell, height, border): its place, size, outline and
  *  corners stay as they are. */
 export function setGripPreset(id: string) {
   const a = decalOf(id), d = activeDecal()?.decal, r = get().result;
   if (!a?.shape || !d?.shape || !r) return;
-  const { pattern, cell, amount, border, depth } = shapeAt(a.shape, modelSize(r));
-  updateDecal({ asset: id, shape: { ...d.shape, pattern, cell, amount, border, depth } });
+  const { pattern, cell, amount, border, depth, profile, head, drive, washer } = shapeAt(a.shape, modelSize(r));
+  updateDecal({ asset: id, shape: { ...d.shape, pattern, cell, amount, border, depth, profile, head, drive, washer } });
 }
 /** Fit the active grip texture to the selected faces (Select Faces, W) or the whole part: the pattern alone (no outline
  *  or groove border) wrapped round the surface from their middle, on a panel big enough to reach every corner, and the
- *  faces' texels as the layer's mask so it stops at their edges. A mirror pair is unlinked first, by hand. */
+ *  faces' texels as the layer's mask so it stops at their edges. */
 export function fitDecal(to: 'faces' | 'part') {
   const st = get(), i = st.activePart, out = st.result?.parts[i], uv = st.uvs[i], d = activeDecal()?.decal;
-  if (st.busy || !out || !uv || !d?.shape || d.mirror) return;
+  if (st.busy || !out || !uv || !d?.shape) return;
   const s = texSet(i), pos = out.positions, n = s.size, tris: number[] = [];
   for (let t = 0; t < pos.length / 9; t++) {
     // a face is in when the texel under its UV middle is selected
@@ -3871,16 +4108,30 @@ export function editBevel(b: Partial<Bevel>, undoable = true) {
   if (undoable) run(); else bevelLater = setTimeout(run, 150);
   repaintPanel();
 }
-/** The active generator layer's settings changed: made again (`undoable` false: inside a slider drag's step). */
+let bakingGen = false;
+/** The active generator layer's settings changed: made again (`undoable` false: inside a slider drag's step). A project
+ *  reopened without its baked maps (they are derived, not saved) bakes them first: the generator's saved pixels are
+ *  already on screen, but its sliders would do nothing until the AO and edge maps exist again. */
 export function editGen(g: Partial<Gen>, undoable = true) {
-  if (!get().parts[get().activePart]) return;
-  const s = texSet(get().activePart), l0 = s.layers[s.active];
+  const st = get(), i = st.activePart;
+  if (!st.parts[i]) return;
+  const s = texSet(i), l0 = s.layers[s.active];
   if (!l0?.gen) return;
   const mates = matesOf(l0).filter((t) => t.layers[t.active].gen);
+  const targets = [s, ...mates];
   if (undoable) step(s, ...mates); else ensureStep(s, ...mates);
-  for (const t of [s, ...mates]) {
+  for (const t of targets) {
     const l = t.layers[t.active];
     t.layers[t.active] = { ...l, gen: { ...l.gen!, ...g } };
+  }
+  if (targets.some((t) => !t.bake)) {
+    const parts = targets.map((t) => st.parts.findIndex((p) => setIfAny(p.soup) === t)).filter((j) => j >= 0);
+    // the bake's own final pass regenerates every generator from the settings they hold by then
+    if (parts.length && !bakingGen && !st.busy) { bakingGen = true; void bakePaint(parts).finally(() => { bakingGen = false; }); }
+    repaintPanel();
+    return;
+  }
+  for (const t of targets) {
     generate(t, t.layers[t.active]);
     scheduleComposite(t);
   }

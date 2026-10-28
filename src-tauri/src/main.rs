@@ -3,7 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use barista::edit::{relax as relax_island, reseam as reseam_part, Reseamed};
-use barista::project::{open_pack, save_pack, OpenReq};
+use barista::project::{format as engine_format, open_pack, save_pack, OpenReq, Saved};
 use barista::texture::{export as texture_export_run, status, ExportDone};
 use barista::req::{EdgeLoopReq, IslandsReq, PackReq, ReseamReq, UnwrapReq};
 use barista::topology::edge_loop as walk_loop;
@@ -39,11 +39,33 @@ async fn edge_loop(body: EdgeLoopReq) -> Result<Vec<f32>, String> {
     blocking(move || walk_loop(&body.positions, &body.edge)).await
 }
 
-/// `.barista` save: the Pack arrives as the raw request body (src/api.ts `callBin`).
+/// The Pack the next project_save / texture_export takes, sent in pieces (src/api.ts `tauriRaw`): one 100 MB raw
+/// invoke ran WebView2's browser process out of memory. An empty piece starts a new one.
+// ponytail: one global buffer, so two raw sends at once would mix; the editor runs them as tasks one at a time
+static STAGED: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
 #[tauri::command]
-async fn project_save(request: tauri::ipc::Request<'_>) -> Result<Option<String>, String> {
-    let tauri::ipc::InvokeBody::Raw(body) = request.body() else { return Err("project-save takes raw bytes".into()) };
-    let body = body.clone();
+fn stage(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(piece) = request.body() else { return Err("stage takes raw bytes".into()) };
+    let mut s = STAGED.lock().map_err(|e| e.to_string())?;
+    if piece.is_empty() { s.clear() } else { s.extend_from_slice(piece) }
+    Ok(())
+}
+
+fn staged() -> Result<Vec<u8>, String> {
+    Ok(std::mem::take(&mut *STAGED.lock().map_err(|e| e.to_string())?))
+}
+
+/// The project format this build keeps (engine/src/project.rs `FORMAT`).
+#[tauri::command]
+fn project_format() -> i64 {
+    engine_format()
+}
+
+/// `.barista` save: the Pack staged by `stage`.
+#[tauri::command]
+async fn project_save() -> Result<Saved, String> {
+    let body = staged()?;
     blocking(move || save_pack(&body)).await
 }
 
@@ -52,11 +74,10 @@ async fn project_open(body: OpenReq) -> Result<tauri::ipc::Response, String> {
     blocking(move || open_pack(&body)).await.map(tauri::ipc::Response::new)
 }
 
-/// Full-resolution textures: the Pack arrives as the raw request body.
+/// Full-resolution textures: the Pack staged by `stage`.
 #[tauri::command]
-async fn texture_export(request: tauri::ipc::Request<'_>) -> Result<Option<ExportDone>, String> {
-    let tauri::ipc::InvokeBody::Raw(body) = request.body() else { return Err("texture-export takes raw bytes".into()) };
-    let body = body.clone();
+async fn texture_export() -> Result<Option<ExportDone>, String> {
+    let body = staged()?;
     blocking(move || texture_export_run(&body)).await
 }
 
@@ -77,7 +98,7 @@ fn shape(body: String) -> Result<Vec<f32>, String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![unwrap, reseam, pack, relax, edge_loop, project_save, project_open, texture_export, texture_status, shapes, shape])
+        .invoke_handler(tauri::generate_handler![unwrap, reseam, pack, relax, edge_loop, stage, project_format, project_save, project_open, texture_export, texture_status, shapes, shape])
         .run(tauri::generate_context!())
         .expect("couldn't start Barista");
 }

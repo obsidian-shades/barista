@@ -88,26 +88,33 @@ function pmremOf(r: THREE.WebGLRenderer, from: THREE.Texture) {
   }
   return pmrem.tex;
 }
-/** The set's PBR material, as the 3D view draws it. `lift`: how much of its base colour shines on its own (the same
- *  store setting the 3D view uses), so the 2D view matches a dark model's lifted texture. */
-function materialOf(s: TexSet, ao: boolean, lift = 0) {
+/** Shading › Lift: a work light, not a look. A second sun from the side opposite the key (low, so tops don't get
+ *  both and clip) and a brighter environment, so the side the key misses is lit too and its texture reads, while
+ *  every face still shades by where it faces (glowing the base colour flattened the model and washed out the lit side).
+ *  `lift` 0 = the true studio. */
+export function fillOf(lift: number) {
+  const dir = new THREE.Vector3(-env.sun.x, 0.2, -env.sun.z).normalize();
+  return { dir, sun: look.sun * lift * 2, env: env.scale * (1 + lift * 1.5) };
+}
+/** The set's PBR material, as the 3D view draws it. */
+function materialOf(s: TexSet, ao: boolean) {
   const pbr = s.channels.includes('rough'), normal = s.channels.includes('normal');
   return new THREE.MeshStandardMaterial({
     map: s.color, side: THREE.DoubleSide, aoMap: ao && s.aoTex ? s.aoTex : null,
     ...(pbr ? { roughnessMap: s.orm, metalnessMap: s.orm, roughness: 1, metalness: 1 } : { roughness: 0.3, metalness: 0 }),
     ...(normal ? { normalMap: s.normal } : {}),
-    emissiveMap: s.color, emissive: lift > 0 ? '#ffffff' : '#000000', emissiveIntensity: lift,
   });
 }
-/** `mesh` in the shared light and environment, on the empty-texture ground. */
-function sceneOf(pm: THREE.Texture, mesh: THREE.Mesh) {
-  const scene = new THREE.Scene(), sun = new THREE.DirectionalLight('#ffffff', look.sun);
+/** `mesh` in the shared light and environment (and Lift's fill), on the empty-texture ground. */
+function sceneOf(pm: THREE.Texture, mesh: THREE.Mesh, lift: number) {
+  const f = fillOf(lift), scene = new THREE.Scene(), sun = new THREE.DirectionalLight('#ffffff', look.sun), fill = new THREE.DirectionalLight('#ffffff', f.sun);
   scene.background = new THREE.Color(EMPTY);
   scene.environment = pm;
-  scene.environmentIntensity = env.scale;
+  scene.environmentIntensity = f.env;
   scene.environmentRotation.copy(env.rot);
   sun.position.copy(env.sun);
-  scene.add(mesh, sun);
+  fill.position.copy(f.dir);
+  scene.add(mesh, sun, fill);
   return scene;
 }
 
@@ -123,7 +130,7 @@ export function partShot(s: TexSet, positions: ArrayLike<number>, uvs: ArrayLike
   geo.setAttribute('uv', new THREE.BufferAttribute(Float32Array.from(uvs), 2));
   geo.computeVertexNormals(); // unindexed: flat faces
   geo.computeBoundingSphere();
-  const { center: c, radius } = geo.boundingSphere!, mat = materialOf(s, false, lift), scene = sceneOf(pm, new THREE.Mesh(geo, mat));
+  const { center: c, radius } = geo.boundingSphere!, mat = materialOf(s, false), scene = sceneOf(pm, new THREE.Mesh(geo, mat), lift);
   const cam = new THREE.PerspectiveCamera(30, 1, radius * 0.05, radius * 10), dist = (radius / Math.sin(Math.PI / 12)) * 1.02;
   cam.position.copy(new THREE.Vector3(1, 0.7, 1.3).normalize().multiplyScalar(dist).add(c));
   cam.lookAt(c);
@@ -162,7 +169,7 @@ export function materialCanvas(s: TexSet, positions: ArrayLike<number>, uvs: Arr
   geo.setAttribute('position', new THREE.BufferAttribute(xyz, 3));
   geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  const mat = materialOf(s, ao, lift), scene = sceneOf(pm, new THREE.Mesh(geo, mat));
+  const mat = materialOf(s, ao), scene = sceneOf(pm, new THREE.Mesh(geo, mat), lift);
   // looking straight down at the UV square; the camera's frame is the world's, so the normals light as on the model
   const cam = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
   cam.position.set(0, 0, 0.5);

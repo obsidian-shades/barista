@@ -13,14 +13,14 @@ import { snapOrbitOffset, type OrbitSnapStart } from '../orbit-snap';
 import type { Output } from '../api';
 import { islandColor, stretchColor, uvMapCanvas } from '../colors';
 import { Morph } from '../morph';
-import { decalFrame, inside, RECT_OUTLINE } from '../paint';
-import { env as paintEnv, look as paintLook, PAINT_HDRI, setEnv, turnLight } from '../matview';
+import { decalFrame, inside, isLine, RECT_OUTLINE } from '../paint';
+import { env as paintEnv, fillOf, look as paintLook, PAINT_HDRI, setEnv, turnLight } from '../matview';
 import { health, healthColor } from '../health';
 import { poles } from '../polygeo';
 import { matcapTexture, studioShader, studioUniforms, THEME_BG } from '../shading';
 import { outNormals, ownPolygons, topoOfSoup } from '../polyedit';
 import { RefImage } from './RefImage';
-import { activeDecal, assignMaterial, dragDecal, dropDecal, beginPaintEdit, finishDecalEdit, modelDiagonal, moveSymPlane, paintHoverAt, shelfDrag, updateDecal, brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, deselectDecal, texSet, type PaintMods, clearSelection, contextMenu, kindOf, liveSel, openRecent, pickFile, pointer, sceneGrade, selectElems, selectLoop, setSceneHdri, useApp, view3d, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
+import { activeDecal, assignMaterial, dragDecal, dropDecal, beginPaintEdit, finishDecalEdit, mirrorHover, modelDiagonal, moveSymPlane, paintHoverAt, shelfDrag, updateDecal, brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, deselectDecal, texSet, type PaintMods, clearSelection, contextMenu, kindOf, liveSel, openRecent, pickFile, pointer, sceneGrade, selectElems, selectLoop, setSceneHdri, useApp, view3d, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
 import { setPaintRenderer } from '../gpupaint';
 import { topoOf, polygonsOf, trisOf } from '../topo';
 import { polyContextMenu } from '../shell/PolyTools';
@@ -35,6 +35,8 @@ const NORMAL_SCALE = new THREE.Vector2(1, 1);
 
 /** Selection blue, and the seam red. */
 export const SEL = '#3f8fe8', SEAM = '#e54b39';
+/** What a click would pick, under the mouse: lighter than the selection, so the two never read as one. */
+export const HOT = '#bcdcff';
 
 /** Floor centre and the longest side of the model, so the grid, axes and ground shadow share one frame. */
 function layoutOf(result: Output | null) {
@@ -121,8 +123,9 @@ function StudioEnvironment({ scene }: { scene: Scene }) {
 function PaintStudio({ layout, world }: { layout: { x: number; y: number; z: number; span: number }; world: boolean }) {
   const tex = useEnvironment({ files: PAINT_HDRI });
   const { scene, invalidate } = useThree();
-  const sun = useMemo(() => new THREE.DirectionalLight('#ffffff'), []);
+  const sun = useMemo(() => new THREE.DirectionalLight('#ffffff'), []), fill = useMemo(() => new THREE.DirectionalLight('#ffffff'), []);
   const shadow = useApp((st) => st.scene.paintShadow !== false); // a project from before the setting keeps its shadow
+  const lift = useApp((st) => st.scene.paintLift ?? 0.4), f = fillOf(lift);
   useApp((st) => st.paintRev); // `relight()` bumps it
   useApp((st) => st.lightRev); // Shift+right-drag
   useEffect(() => {
@@ -138,11 +141,14 @@ function PaintStudio({ layout, world }: { layout: { x: number; y: number; z: num
   }, [tex, scene, invalidate]);
   // the sun from the key, its shadow camera round the model; the plate's turn and level as `relight` left them
   sun.intensity = paintLook.sun;
-  scene.environmentIntensity = paintEnv.scale;
+  scene.environmentIntensity = f.env; // Lift: brighter plate and a fill opposite the key (`fillOf`)
   scene.environmentRotation.copy(paintEnv.rot);
   const c = new THREE.Vector3(layout.x, layout.y + layout.span / 2, layout.z), r = layout.span;
   sun.position.copy(c).addScaledVector(paintEnv.sun, r * 3);
   sun.target.position.copy(c);
+  fill.intensity = f.sun;
+  fill.position.copy(c).addScaledVector(f.dir, r * 3);
+  fill.target.position.copy(c);
   sun.castShadow = shadow;
   sun.shadow.mapSize.set(2048, 2048);
   Object.assign(sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: r * 0.5, far: r * 6 });
@@ -158,7 +164,7 @@ function PaintStudio({ layout, world }: { layout: { x: number; y: number; z: num
   // a floor that only takes the sun's shadow, so the model sits somewhere instead of floating in the dark; with the
   // shadow off there is nothing to catch, so the floor goes too (a shadow-free view for decals on the far side)
   return <>
-    <primitive object={sun} /><primitive object={sun.target} />
+    <primitive object={sun} /><primitive object={sun.target} /><primitive object={fill} /><primitive object={fill.target} />
     {shadow && <mesh rotation-x={-Math.PI / 2} position={[layout.x, layout.y - r * 0.002, layout.z]} receiveShadow raycast={() => null}>
       <planeGeometry args={[r * 6, r * 6]} />
       <shadowMaterial opacity={0.35} depthWrite={false} />
@@ -262,7 +268,10 @@ export function Viewport3D() {
           onPointerMissed={(e) => {
             if (e.button !== 0 || e.shiftKey || e.ctrlKey) return;
             // a click on the empty view is outside every mark too: with the Decal tool it clears the pick
-            if (useApp.getState().workspace === 'paint' && useApp.getState().paint.tool === 'decal') deselectDecal();
+            const s = useApp.getState();
+            if (s.workspace === 'paint' && s.paint.tool === 'decal') deselectDecal();
+            // Select Faces: a click off the model drops the paint selection, as Marquee and Lasso's click does
+            if (s.workspace === 'paint' && s.paint.tool === 'wand' && !e.altKey) deselectPaint();
             clearSelection();
           }}>
           <PaintGL />
@@ -288,6 +297,8 @@ export function Viewport3D() {
           {paintWs && <BrushCursor />}
           {paintWs && <DecalGizmo />}
           {paintWs && <DecalPreview />}
+          {paintWs && <MirrorPreview />}
+          {paintWs && <DrawnLine />}
           <Picker />
           {/* the wheel zooms toward what's under the mouse (Blender's Zoom to Mouse Position), about 14% a notch (three's default 5% felt stuck on a big FBX), with no limit either way */}
           <OrbitControls makeDefault zoomToCursor zoomSpeed={3} minDistance={0} maxDistance={Infinity} mouseButtons={{ LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: -1 as THREE.MOUSE }} />
@@ -432,6 +443,9 @@ void main() {
 }`;
 const BLIT_FRAG = 'uniform sampler2D tex; varying vec2 vUv; void main() { gl_FragColor = texture2D(tex, vUv);\n#include <tonemapping_fragment>\n#include <colorspace_fragment>\n}';
 
+/** Overlays that move outside the store (the brush cursor, the Draw rubber band, the Decal gizmo's screen-sized
+ *  handles) set this, so the Workbench's frame accumulation starts again instead of leaving their old place ghosted in. */
+const bench = { dirty: false };
 function Workbench({ curvature, cavity, outline, outlineColor, ridge, valley, distance, span, toneMap }: { curvature: boolean; cavity: boolean; outline: boolean; outlineColor: string; ridge: number; valley: number; distance: number; span: number; toneMap: boolean }) {
   const { gl, scene, camera, size, invalidate } = useThree();
   const res = useMemo(() => {
@@ -466,7 +480,7 @@ function Workbench({ curvature, cavity, outline, outlineColor, ridge, valley, di
     for (const m of [res.normals, res.resolve, res.blit]) m.dispose();
     res.quad.geometry.dispose();
   }, [res]);
-  // a change to any of these starts the accumulation again (the store subscription catches the rest)
+  // a change to any of these starts the accumulation again (the store subscription and `bench` catch the rest)
   const st = useRef({ k: 0, ours: false, dirty: true, checked: false, view: new THREE.Matrix4(), proj: new THREE.Matrix4() });
   useEffect(() => useApp.subscribe(() => { st.current.dirty = true; }), []);
   useEffect(() => {
@@ -486,6 +500,7 @@ function Workbench({ curvature, cavity, outline, outlineColor, ridge, valley, di
     const s = st.current, dpr = gl.getPixelRatio(), W = Math.round(size.width * dpr), H = Math.round(size.height * dpr);
     if (res.color.width !== W || res.color.height !== H) { for (const t of [res.color, res.normalRT, ...res.accum]) t.setSize(W, H); s.dirty = true; }
     camera.updateMatrixWorld();
+    if (bench.dirty) { s.dirty = true; bench.dirty = false; }
     if (!s.ours || s.dirty || !s.view.equals(camera.matrixWorldInverse) || !s.proj.equals(camera.projectionMatrix)) s.k = 0;
     s.ours = false; s.dirty = false;
     s.view.copy(camera.matrixWorldInverse); s.proj.copy(camera.projectionMatrix);
@@ -805,9 +820,6 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   useApp((s) => (paint ? s.paintLive : 0)); // a live stroke redraws without rebuilding the panel
   const paintAO = useApp((s) => s.paintAO);
   const ts = paint ? texSet(index) : null, pbr = !!ts?.channels.includes('rough'), normal = !!ts?.channels.includes('normal');
-  // Van Gogh's base-colour lift: the material's own colour glows through the shading, so a black paint job's texture
-  // still reads on the shadow side (the slider lives in Shading; 0 is the true material)
-  const lift = useApp((s) => (s.workspace === 'paint' ? (s.scene.paintLift ?? 0.4) : 0));
   const docView = useApp((s) => (s.workspace === 'doc' ? s.docView : null)), smooth = docView === 'smooth' || paint, // Van Gogh shades smooth, as the game (and Substance) will
     sharp = useApp((s) => s.params.sharp);
   const uvReady = !loading || !!loading.done[index];
@@ -848,6 +860,8 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
       morph.current.m.at(unfold, pos);
     }
     geo.attributes.position.needsUpdate = true;
+    // the raycast (and culling) tests these first: left from an unfolded frame, clicks on the model missed it
+    geo.computeBoundingSphere(); geo.computeBoundingBox();
     // normals follow the positions: a UV edit alone (most of them) leaves them as they are
     if (unfold !== 0 || !geo.attributes.normal || shaded.current !== 0) { geo.computeVertexNormals(); shaded.current = unfold; }
     invalidate();
@@ -960,29 +974,35 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   useEffect(() => () => { for (const g of [seams, wire, allVerts, selVerts, selFaces]) g?.dispose(); }, [seams, wire, allVerts, selVerts, selFaces]);
   // Van Gogh: what a Bucket / Wand click or a dropped material would take, tinted and outlined
   const hoverTris = useApp((s) => (paint && s.paintHover?.part === index ? s.paintHover.tris : null));
-  const hoverGeo = useMemo(() => {
-    if (!hoverTris) return null;
-    const fill = new Float32Array(hoverTris.length * 9), count = new Map<number, number>();
-    hoverTris.forEach((t, k) => {
+  // triangles as a fill and their outline
+  const outlined = (tris: number[]) => {
+    const fill = new Float32Array(tris.length * 9), count = new Map<number, number>();
+    tris.forEach((t, k) => {
       for (let j = 0; j < 9; j++) fill[k * 9 + j] = out.positions[t * 9 + j];
       for (let c = 0; c < 3; c++) { const e = topo.edge[t * 3 + c]; count.set(e, (count.get(e) ?? 0) + 1); }
     });
     const border = [...count].filter(([, n]) => n === 1).flatMap(([e]) => [topo.ends[e * 2], topo.ends[e * 2 + 1]].map((v) => [topo.pos[v * 3], topo.pos[v * 3 + 1], topo.pos[v * 3 + 2]] as [number, number, number]));
     return { fill: lineGeo(fill), border };
-  }, [hoverTris, out, topo]);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const hoverGeo = useMemo(() => (hoverTris ? outlined(hoverTris) : null), [hoverTris, out, topo]);
   useEffect(() => () => hoverGeo?.fill.dispose(), [hoverGeo]);
   const flat = unfold === 0, editing = !paint && (doc || selectMode !== 'island');
   const hover = (e: ThreeEvent<PointerEvent>) => {
+    // the nearest part under the mouse is the one hovered: parts behind it along the ray (R3F hands the move to
+    // every hit) would otherwise overwrite the pointer, the brush cursor and the pick outline with the farthest
+    e.stopPropagation();
     pointer.part = index; pointer.tri = e.faceIndex ?? -1;
-    if (paint && e.face) { cursor.on = true; cursor.p.copy(e.point); cursor.n.copy(e.face.normal); invalidate(); }
+    hotAt(e);
+    if (paint && e.face) { cursor.on = true; cursor.p.copy(e.point); cursor.n.copy(e.face.normal); bench.dirty = true; invalidate(); }
     if (shelfDrag.id) return; // a material held from the shelf: the drag outlines, it doesn't paint
     if (paint && !painting()) {
       const st = useApp.getState(), t = st.paint.tool;
       // the held material outlines what a click would put it on, as the Bucket / Wand outline what they'd take
       if (t === 'bucket' || t === 'wand' || (t === 'picker' && st.paint.grab)) paintHoverAt(index, e.faceIndex ?? -1);
+      if (t === 'mirror') mirrorHover(index, e.faceIndex ?? -1, e.point.toArray());
     }
     if (!paint || e.buttons !== 1 || !e.uv || e.faceIndex == null) return;
-    e.stopPropagation();
     // a drag that began off the model starts painting where it comes onto it, as Photoshop paints from anywhere
     const tool = useApp.getState().paint.tool;
     if (painting()) paintDrag(index, e.point.toArray(), [e.uv.x, e.uv.y], e.pointerType === 'pen' ? e.pressure : 1, e.faceIndex, e.shiftKey);
@@ -1004,6 +1024,40 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   };
 
 
+  // the corner and the drawn edge of triangle t nearest to point p: what a click there picks in vertex / edge mode
+  const nearest = (t: number, p: THREE.Vector3) => {
+    const c = [0, 1, 2].map((k) => new THREE.Vector3().fromArray(out.positions, t * 9 + k * 3));
+    let be = 0, bd = Infinity, bv = 0, bvd = Infinity;
+    for (let k = 0; k < 3; k++) {
+      const d = new THREE.Line3(c[k], c[(k + 1) % 3]).closestPointToPoint(p, true, new THREE.Vector3()).distanceTo(p);
+      if (d < bd && shown(topo.edge[t * 3 + k])) { bd = d; be = k; } // a polygon's hidden diagonal isn't an edge to pick
+      const dv = c[k].distanceTo(p);
+      if (dv < bvd) { bvd = dv; bv = k; }
+    }
+    return { vert: topo.vid[t * 3 + bv], edge: topo.edge[t * 3 + be] };
+  };
+  // a face is its whole polygon, as Blender picks it
+  const polygonOf = (t: number) => (pid[t] < 0 ? [t] : pid.reduce<number[]>((a, p, f) => (p === pid[t] ? (a.push(f), a) : a), []));
+  // what a click would pick, outlined under the mouse (vertex, edge, polygon or island), so a click never lands on the wrong one
+  const [hot, setHot] = useState<{ kind: typeof selectMode; id: number; t: number } | null>(null);
+  const hotAt = (e: ThreeEvent<PointerEvent>) => {
+    const m = useApp.getState().selectMode, t = e.faceIndex;
+    if (paint || !uvReady || t == null || e.buttons || (!flat && (m === 'vert' || m === 'edge'))) { setHot(null); return; }
+    const id = m === 'vert' ? nearest(t, e.point).vert : m === 'edge' ? nearest(t, e.point).edge : m === 'island' ? out.island[t] : pid[t] < 0 ? -1 - t : pid[t];
+    setHot((h) => (h?.kind === m && h.id === id ? h : { kind: m, id, t }));
+  };
+  type V3 = [number, number, number];
+  const hotGeo = useMemo((): { dot?: THREE.BufferGeometry; line?: V3[]; fill?: THREE.BufferGeometry; border?: V3[] } | null => {
+    if (!hot || hot.kind !== selectMode) return null;
+    const at = (v: number) => [topo.pos[v * 3], topo.pos[v * 3 + 1], topo.pos[v * 3 + 2]] as [number, number, number];
+    if (hot.kind === 'vert') return { dot: lineGeo(new Float32Array(at(hot.id))) };
+    if (hot.kind === 'edge') return { line: [at(topo.ends[hot.id * 2]), at(topo.ends[hot.id * 2 + 1])] };
+    const tris = hot.kind === 'island' ? Array.from(out.island.keys()).filter((f) => out.island[f] === hot.id) : polygonOf(hot.t);
+    return outlined(tris);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hot, selectMode, topo, out]);
+  useEffect(() => () => { hotGeo?.dot?.dispose(); hotGeo?.fill?.dispose(); }, [hotGeo]);
+
   const click = (e: ThreeEvent<MouseEvent>) => {
     if (paint) return;
     if (e.delta > 4 || e.faceIndex == null || e.button !== 0) return; // a drag, not a click
@@ -1011,26 +1065,15 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
     if (progress && !progress.done[index]) return;
     e.stopPropagation();
     const t = e.faceIndex, m = useApp.getState().selectMode;
-    // the triangle's nearest edge and corner to the click
-    const c = [0, 1, 2].map((k) => new THREE.Vector3().fromArray(out.positions, t * 9 + k * 3));
-    let be = 0, bd = Infinity, bv = 0, bvd = Infinity;
-    for (let k = 0; k < 3; k++) {
-      const d = new THREE.Line3(c[k], c[(k + 1) % 3]).closestPointToPoint(e.point, true, new THREE.Vector3()).distanceTo(e.point);
-      if (d < bd && shown(topo.edge[t * 3 + k])) { bd = d; be = k; } // a polygon's hidden diagonal isn't an edge to pick
-      const dv = c[k].distanceTo(e.point);
-      if (dv < bvd) { bvd = dv; bv = k; }
-    }
     if (!flat && (m === 'vert' || m === 'edge')) return; // unfolded, the corners aren't where the model has them
-    const edge = topo.edge[t * 3 + be];
+    const { vert, edge } = nearest(t, e.point);
     if (e.altKey) { if (m === 'vert' || m === 'edge') void selectLoop(index, edge, e.shiftKey); return; }
-    // a face is its whole polygon, as Blender picks it
-    const face = pid[t] < 0 ? [t] : pid.reduce<number[]>((a, p, f) => (p === pid[t] ? (a.push(f), a) : a), []);
-    selectElems(index, m === 'vert' ? [topo.vid[t * 3 + bv]] : m === 'edge' ? [edge] : face, opOf(e, true));
+    selectElems(index, m === 'vert' ? [vert] : m === 'edge' ? [edge] : polygonOf(t), opOf(e, true));
   };
 
   return (
     <group>
-      <mesh geometry={geo} castShadow={paint} receiveShadow={paint} onUpdate={(m) => m.layers.enable(SOLID)} onClick={click} onPointerDown={press} onPointerMove={hover} userData={{ part: index }} onPointerOut={() => { if (pointer.part === index) pointer.part = -1; cursor.on = false; if (useApp.getState().paintHover?.part === index) paintHoverAt(-1); invalidate(); }}>
+      <mesh geometry={geo} castShadow={paint} receiveShadow={paint} onUpdate={(m) => m.layers.enable(SOLID)} onClick={click} onPointerDown={press} onPointerMove={hover} userData={{ part: index }} onPointerOut={() => { setHot(null); if (pointer.part === index) { pointer.part = -1; cursor.on = false; }if (useApp.getState().paintHover?.part === index) paintHoverAt(-1); if (useApp.getState().mirrorAim?.part === index) mirrorHover(-1); invalidate(); }}>
         {(() => {
           // Blender's Lighting: Studio (lights and the environment), MatCap (a lit sphere by normal), Flat (unlit)
           const key = `${colour}-${uvReady}-${paint}-${pbr}-${normal}-${part.textured !== false}-${sc.lighting}-${sc.xray}`;
@@ -1044,8 +1087,8 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
           // and B) or, without PBR, a plain dielectric; the baked AO as its occlusion map (it darkens the ambient light only)
           const ao = paintAO && ts?.aoTex ? ts.aoTex : null;
           if (ts && sc.lighting === 'studio') return pbr
-            ? <meshStandardMaterial key={`${key}-${!!ao}`} {...props} roughnessMap={ts.orm} metalnessMap={ts.orm} roughness={1} metalness={1} aoMap={ao} normalMap={normal ? ts.normal : null} normalScale={normal ? NORMAL_SCALE : undefined} emissiveMap={ts.color} emissive={lift > 0 ? '#ffffff' : '#000000'} emissiveIntensity={lift} />
-            : <meshStandardMaterial key={`${key}-${!!ao}`} {...props} roughness={0.3} metalness={0} aoMap={ao} emissiveMap={ts.color} emissive={lift > 0 ? '#ffffff' : '#000000'} emissiveIntensity={lift} />; // Substance's default
+            ? <meshStandardMaterial key={`${key}-${!!ao}`} {...props} roughnessMap={ts.orm} metalnessMap={ts.orm} roughness={1} metalness={1} aoMap={ao} normalMap={normal ? ts.normal : null} normalScale={normal ? NORMAL_SCALE : undefined} />
+            : <meshStandardMaterial key={`${key}-${!!ao}`} {...props} roughness={0.3} metalness={0} aoMap={ao} />; // Substance's default
           if (sc.lighting === 'matcap') return <meshMatcapMaterial key={key} {...props} matcap={matcapTexture(sc.matcap)} />;
           if (sc.lighting === 'flat') return <meshBasicMaterial key={key} {...props} />;
           // no plate: Blender's Solid Studio lighting itself (shading.ts), not three's lamps
@@ -1069,6 +1112,10 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
         </mesh>
       )}
       {flat && editing && !!selEdges?.length && <Line points={selEdges} segments color={SEL} lineWidth={2.5} renderOrder={3} />}
+      {hotGeo?.fill && <mesh geometry={hotGeo.fill} renderOrder={3} raycast={() => null}><meshBasicMaterial color={HOT} transparent opacity={0.18} depthWrite={false} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} /></mesh>}
+      {!!hotGeo?.border?.length && <Line points={hotGeo.border} segments color={HOT} lineWidth={1.5} renderOrder={4} raycast={() => null} />}
+      {hotGeo?.line && <Line points={hotGeo.line} color={HOT} lineWidth={3} renderOrder={4} raycast={() => null} />}
+      {hotGeo?.dot && <points geometry={hotGeo.dot} renderOrder={5} raycast={() => null}><pointsMaterial color={HOT} size={9} sizeAttenuation={false} /></points>}
       {flat && editing && showVertices && selectMode === 'vert' && <points geometry={allVerts}><pointsMaterial color="#111111" size={4} sizeAttenuation={false} /></points>}
       {flat && editing && showVertices && selectMode === 'vert' && selVerts && <points geometry={selVerts} renderOrder={4}><pointsMaterial color={SEL} size={6} sizeAttenuation={false} /></points>}
     </group>
@@ -1184,6 +1231,23 @@ function SymPlaneGizmo() {
   );
 }
 
+/** Mirror tool: the selected mark's mirrored copy where a click would put it — its outline (the rectangle for an image
+ *  mark) laid on the surface as the gizmo lays it, solid on the spot symmetric to the mark, dashed anywhere else. */
+function MirrorPreview() {
+  const aim = useApp((s) => (s.paint.tool === 'mirror' ? s.mirrorAim : null));
+  if (!aim) return null;
+  const d = aim.decal, f = decalFrame(d, modelDiagonal());
+  const n = new THREE.Vector3(f.nx, f.ny, f.nz), ur = new THREE.Vector3(f.uxr, f.uyr, f.uzr), vr = new THREE.Vector3(f.vxr, f.vyr, f.vzr);
+  const c = new THREE.Vector3(f.cx, f.cy, f.cz), fu = d.flipH ? -1 : 1, fv = d.flipV ? -1 : 1;
+  const sh = d.shape, pts = sh?.outline ?? RECT_OUTLINE, open = !!sh && isLine(sh.pattern) && !sh.closed;
+  const proj = surfaceProjector(useApp.getState().result?.parts[aim.part]?.positions), inward = n.clone().negate();
+  const line = [...pts, ...(open ? [] : [pts[0]])].map(([x, y]) => {
+    const pw = c.clone().addScaledVector(ur, x * fu * f.width / 2).addScaledVector(vr, y * fv * f.height / 2);
+    return (proj?.ray(pw, inward, f.depth) ?? pw).addScaledVector(n, f.width * 0.004);
+  });
+  return <Line points={line} color={SEL} lineWidth={2} dashed={!aim.snapped} dashSize={f.width * 0.06} gapSize={f.width * 0.04} depthTest={false} renderOrder={12} raycast={() => null} />;
+}
+
 type Pick = { part: number; tri: number; point: [number, number, number]; normal: [number, number, number]; front: boolean };
 const decalAim: { at: Pick | null } = { at: null };
 /** The 3D view raycasts a screen point itself for the shelf drags (R3F's events only see the canvas's own pointer). */
@@ -1204,6 +1268,33 @@ function Picker() {
     return () => { pickAt.fn = null; };
   }, [camera, scene, gl, raycaster, invalidate]);
   return null;
+}
+/** The polyline being drawn (Decal tool, Draw): its segments, a dot per corner, the first one ringed (a click there
+ *  closes it), and a rubber band from the last corner to the pointer, all over the model until it is finished. */
+function DrawnLine() {
+  const pts = useApp((s) => s.drawLine);
+  const band = useMemo(() => {
+    const l = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: SEL, depthTest: false, transparent: true, opacity: 0.6 }));
+    l.renderOrder = 12; l.raycast = () => {};
+    return l;
+  }, []);
+  const dots = useMemo(() => new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts?.flat() ?? [], 3)), [pts]);
+  useFrame(() => {
+    const last = pts?.[pts.length - 1];
+    if (!last) return;
+    band.visible = cursor.on;
+    bench.dirty = true;
+    band.geometry.setAttribute('position', new THREE.Float32BufferAttribute([...last, cursor.p.x, cursor.p.y, cursor.p.z], 3));
+  });
+  if (!pts?.length) return null;
+  return (
+    <group>
+      {pts.length > 1 && <Line points={pts} color={SEL} lineWidth={2} depthTest={false} renderOrder={12} raycast={() => null} />}
+      <primitive object={band} />
+      <points geometry={dots} renderOrder={13} raycast={() => null}><pointsMaterial color="#ffffff" size={6} sizeAttenuation={false} depthTest={false} /></points>
+      <points renderOrder={13} raycast={() => null}><bufferGeometry attach="geometry" onUpdate={(g) => g.setAttribute('position', new THREE.Float32BufferAttribute(pts[0], 3))} /><pointsMaterial color={SEL} size={12} sizeAttenuation={false} depthTest={false} /></points>
+    </group>
+  );
 }
 const unitRect = lineGeo(new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]));
 /** Where a mark dragged from the shelf would land: its frame on the face under the pointer, at the next mark's size and
@@ -1242,6 +1333,43 @@ const decalHandles: {
   hit: ((x: number, y: number) => DecalHandle | null) | null;
   start: ((h: DecalHandle, x: number, y: number, shift: boolean, alt: boolean) => void) | null;
 } = { hit: null, start: null };
+/** A Decal handle's icon: what dragging it does, drawn white on a transparent canvas (cached). */
+type HandleIcon = 'move' | 'rotate' | 'scale' | 'stretchU' | 'stretchV';
+const icons = new Map<HandleIcon, THREE.CanvasTexture>();
+function iconTexture(kind: HandleIcon) {
+  const hit = icons.get(kind);
+  if (hit) return hit;
+  const S = 96, c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d')!, m = S / 2;
+  g.strokeStyle = g.fillStyle = '#ffffff'; g.lineWidth = 8; g.lineCap = 'round'; g.lineJoin = 'round';
+  // an arrowhead with its tip at (x, y) pointing along angle a
+  const head = (x: number, y: number, a: number, k = 24) => {
+    g.beginPath(); g.moveTo(x, y);
+    g.lineTo(x - k * Math.cos(a - 0.62), y - k * Math.sin(a - 0.62)); g.lineTo(x - k * Math.cos(a + 0.62), y - k * Math.sin(a + 0.62));
+    g.closePath(); g.fill();
+  };
+  const line = (x0: number, y0: number, x1: number, y1: number) => { g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); };
+  // a double arrow through the middle along angle a
+  const both = (a: number, l: number) => {
+    const dx = Math.cos(a) * l, dy = Math.sin(a) * l, ix = Math.cos(a) * (l - 14), iy = Math.sin(a) * (l - 14);
+    line(m - ix, m - iy, m + ix, m + iy); head(m + dx, m + dy, a); head(m - dx, m - dy, a + Math.PI);
+  };
+  if (kind === 'move') { both(0, 40); both(Math.PI / 2, 40); }
+  else if (kind === 'scale') both(-Math.PI / 4, 42);
+  else if (kind === 'stretchU') both(0, 40);
+  else if (kind === 'stretchV') both(Math.PI / 2, 40);
+  else {
+    // three quarters of a turn, the arrowhead at its end along the turning direction
+    const r = 26, a0 = -Math.PI * 0.6, a1 = Math.PI * 0.75;
+    g.beginPath(); g.arc(m, m, r, a0, a1); g.stroke();
+    const ta = a1 + 0.35;
+    head(m + r * Math.cos(ta), m + r * Math.sin(ta), ta + Math.PI / 2, 26);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  icons.set(kind, t);
+  return t;
+}
 /** The grabbed handle's colour: nothing else in the gizmo is blue, so it reads as "this drag is the handle's". */
 const GRAB = '#4fb3ff';
 
@@ -1269,6 +1397,9 @@ function DecalGizmo() {
     const per = (2 * Math.tan((((camera as THREE.PerspectiveCamera).fov || 45) * Math.PI) / 360) * dist) / Math.max(1, size.height);
     if (per > 0 && Math.abs(per - px) > px * 0.05) setPx(per);
   });
+  // the screen-sized handles move once React has drawn them at the new size: the Workbench must start its frame
+  // accumulation again then, not in the frame that measured it (that one still drew them at the old size and place)
+  useEffect(() => { bench.dirty = true; invalidate(); }, [px, invalidate]);
   // A pointerdown on a handle must not reach the model: the mark's own press would start a slide there instead. The
   // listener is captured on the canvas's parent, so it runs before R3F's whatever the handle's depth or occlusion.
   useEffect(() => {
@@ -1310,12 +1441,15 @@ function DecalGizmo() {
   const w = f.width, h = f.height;
   const c = new THREE.Vector3(f.cx, f.cy, f.cz).addScaledVector(n, Math.max(px * 1.5, Math.max(w, h) * 0.004));
   const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(ur, vr, n));
-  const glyph = px * 7, reach = px * 26;
+  const glyph = px * 7, reach = px * 64;
   const rect = [[-w / 2, -h / 2, 0], [w / 2, -h / 2, 0], [w / 2, h / 2, 0], [-w / 2, h / 2, 0], [-w / 2, -h / 2, 0]] as [number, number, number][];
   // a small mark would be all handles: keep the middle, the knob and one scale square, set outside the corner so it
   // cannot be mistaken for the middle
   const roomy = w / px > 72 && h / px > 72;
   const sh = d.shape, fu = d.flipH ? -1 : 1, fv = d.flipV ? -1 : 1, pts = sh ? sh.outline ?? RECT_OUTLINE : null;
+  // an open polyline (a line kind not Closed) has no edge from its last corner back to its first
+  const open = !!sh && isLine(sh.pattern) && !sh.closed;
+  const edges = pts ? pts.slice(0, open ? -1 : undefined).map((p, k) => [p, pts[(k + 1) % pts.length]] as const) : [];
   const local = (p: [number, number]): [number, number, number] => [p[0] * fu * w / 2, p[1] * fv * h / 2, 0];
   // A shape's outline is its boundary, so the projector's rectangle is not drawn for one: on a curved surface it read
   // as a second rectangle that did not fit the relief. The knob and the scale square stand on the outline's own box.
@@ -1325,6 +1459,8 @@ function DecalGizmo() {
     : null;
   const top: [number, number, number] = ob ? [(ob[0] + ob[2]) / 2, ob[3] + reach, 0] : [0, h / 2 + reach, 0];
   const topAnchor: [number, number, number] = ob ? [(ob[0] + ob[2]) / 2, ob[3], 0] : [0, h / 2, 0];
+  // the slide disc in the outline's middle: a drawn line is framed on one of its corners, which the disc would hide
+  const mid: [number, number, number] = ob ? [(ob[0] + ob[2]) / 2, (ob[1] + ob[3]) / 2, 0] : [0, 0, 0];
   const solo: [number, number, number] = ob ? [ob[2] + px * 18, ob[3] + px * 18, 0] : [w / 2 + px * 18, h / 2 + px * 18, 0];
   const planeWorld = (at: [number, number, number]) => new THREE.Vector3(...at).applyQuaternion(q).add(c);
   // the outline's points are pulled onto the part's surface: a ray along the projector's normal, so on a curved grip
@@ -1343,9 +1479,9 @@ function DecalGizmo() {
     return near.distanceTo(pw) <= Math.max(w, h) * 0.4 ? near : pw;
   };
   const cursorOf = (mode: DecalGrab) => mode === 'move' ? 'move' : mode === 'uniform' ? 'nwse-resize' : mode === 'u' ? 'ew-resize' : mode === 'v' ? 'ns-resize' : mode === 'rotate' ? 'grab' : mode === 'insert' ? 'copy' : 'move';
-  /** Alt+click a grip outline's corner: it is gone (no drag); three is the fewest an outline may have. */
+  /** Alt+click a grip outline's corner: it is gone (no drag); three is the fewest an outline may have, two a line's. */
   const removeCorner = (index: number) => {
-    if (!sh || !pts || pts.length <= 3) return;
+    if (!sh || !pts || pts.length <= (open ? 2 : 3)) return;
     const o = pts.map((p) => [p[0], p[1]] as [number, number]);
     o.splice(index, 1);
     updateDecal({ shape: { ...sh, outline: o } });
@@ -1443,14 +1579,18 @@ function DecalGizmo() {
   };
 
   /** One handle: a generous invisible pad (the capture above does the real picking) and a glyph shaped by what it does
-   *  — disc = slide, square = scale, bar = stretch one axis, knob = turn, dot = outline corner, plus = add one.
+   *  — an icon badge for slide (four arrows), turn (a curved arrow), scale (a diagonal double arrow) and stretch one axis
+ *  (a double arrow along it); a dot for an outline corner, a plus to add one.
    *  `at` is world space: shape handles stand on the surface, the rest on the frame's plane. The glyph is billboarded,
    *  so a square reads as a square (and stays grabbable) from any angle instead of lying in the mark's tilted plane. */
   const handle = (key: string, mode: DecalGrab, at: THREE.Vector3 | [number, number, number], r: number, glyphShape: 'disc' | 'square' | 'barU' | 'barV' | 'knob' | 'dot' | 'plus', index = 0) => {
     const hot = grab === key;
-    const fill = hot ? GRAB : glyphShape === 'knob' || glyphShape === 'dot' ? SEL : '#ffffff';
+    const fill = hot ? GRAB : glyphShape === 'dot' ? SEL : '#ffffff';
+    const icon: HandleIcon | null = glyphShape === 'disc' ? 'move' : glyphShape === 'knob' ? 'rotate' : glyphShape === 'square' ? 'scale'
+      : glyphShape === 'barU' ? 'stretchV' : glyphShape === 'barV' ? 'stretchU' : null;
     return (
-      <Billboard key={key} position={at}>
+      // r is screen pixels (the pick above reads it so): px turns it into world units here
+      <Billboard key={key} position={at} scale={px}>
         <mesh renderOrder={14}
           onPointerDown={(e) => { if (e.button !== 0) return; e.stopPropagation(); begin(mode, key, e.clientX, e.clientY, e.shiftKey, index, e.nativeEvent.altKey); }}
           onPointerOver={() => { if (!dragging.current) gl.domElement.style.cursor = cursorOf(mode); }}
@@ -1458,14 +1598,25 @@ function DecalGizmo() {
           <planeGeometry args={[r * 2.2, r * 2.2]} />
           <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} side={THREE.DoubleSide} />
         </mesh>
-        <mesh raycast={() => null} renderOrder={15} scale={hot ? 1.3 : 1}>
-          {glyphShape === 'disc' ? <circleGeometry args={[r * 0.42, 20]} /> : glyphShape === 'knob' ? <circleGeometry args={[r * 0.52, 24]} />
-            : glyphShape === 'barU' ? <planeGeometry args={[r * 1.1, r * 0.34]} /> : glyphShape === 'barV' ? <planeGeometry args={[r * 0.34, r * 1.1]} />
-            : glyphShape === 'dot' ? <circleGeometry args={[r * 0.55, 16]} /> : glyphShape === 'plus' ? <planeGeometry args={[r * 0.8, r * 0.2]} />
-            : <planeGeometry args={[r * 0.82, r * 0.82]} />}
-          <meshBasicMaterial color={fill} depthTest={false} transparent={glyphShape === 'disc' || glyphShape === 'plus'} opacity={glyphShape === 'disc' ? 0.95 : glyphShape === 'plus' ? 0.7 : 1} side={THREE.DoubleSide} />
-        </mesh>
-        {glyphShape === 'plus'
+        {icon ? <>
+          {/* a dark badge, ringed, with the drag's icon on it: blue while it is the one being dragged */}
+          <mesh raycast={() => null} renderOrder={15} scale={hot ? 1.2 : 1}>
+            <circleGeometry args={[r * 0.95, 32]} />
+            <meshBasicMaterial color={hot ? GRAB : '#1d1f23'} depthTest={false} side={THREE.DoubleSide} />
+          </mesh>
+          <mesh raycast={() => null} renderOrder={16} scale={hot ? 1.2 : 1}>
+            <ringGeometry args={[r * 0.88, r * 1.02, 32]} />
+            <meshBasicMaterial color={hot ? '#ffffff' : SEL} depthTest={false} transparent opacity={0.9} side={THREE.DoubleSide} />
+          </mesh>
+          <mesh raycast={() => null} renderOrder={17} scale={hot ? 1.2 : 1}>
+            <planeGeometry args={[r * 1.6, r * 1.6]} />
+            <meshBasicMaterial map={iconTexture(icon)} depthTest={false} transparent side={THREE.DoubleSide} />
+          </mesh>
+        </> : <mesh raycast={() => null} renderOrder={15} scale={hot ? 1.3 : 1}>
+          {glyphShape === 'dot' ? <circleGeometry args={[r * 0.55, 16]} /> : <planeGeometry args={[r * 0.8, r * 0.2]} />}
+          <meshBasicMaterial color={fill} depthTest={false} transparent={glyphShape === 'plus'} opacity={glyphShape === 'plus' ? 0.7 : 1} side={THREE.DoubleSide} />
+        </mesh>}
+        {icon ? null : glyphShape === 'plus'
           ? <mesh raycast={() => null} renderOrder={15} scale={hot ? 1.3 : 1}><planeGeometry args={[r * 0.2, r * 0.8]} /><meshBasicMaterial color={fill} depthTest={false} transparent opacity={hot ? 1 : 0.7} side={THREE.DoubleSide} /></mesh>
           : <mesh raycast={() => null} renderOrder={16} scale={hot ? 1.3 : 1}><ringGeometry args={[r * 0.62, r * 0.78, 24]} /><meshBasicMaterial color={hot ? GRAB : SEL} depthTest={false} transparent opacity={hot ? 1 : 0.8} side={THREE.DoubleSide} /></mesh>}
       </Billboard>
@@ -1474,11 +1625,11 @@ function DecalGizmo() {
   // what the capture above picks, in the same order it draws: nearest screen distance inside its own radius wins
   const handles: { key: string; mode: DecalGrab; world: THREE.Vector3; r: number; index?: number }[] = [];
   if (tool === 'decal') {
-    handles.push({ key: 'move', mode: 'move', world: planeWorld([0, 0, 0]), r: 14 });
+    handles.push({ key: 'move', mode: 'move', world: planeWorld(mid), r: 14 });
     handles.push({ key: 'rotate', mode: 'rotate', world: planeWorld(top), r: 16 });
     if (pts) {
       pts.forEach((p, k) => handles.push({ key: `c${k}`, mode: 'corner', world: onSurface(local(p)), r: 12, index: k }));
-      pts.forEach((p, k) => { const e = pts[(k + 1) % pts.length]; handles.push({ key: `m${k}`, mode: 'insert', world: onSurface(local([(p[0] + e[0]) / 2, (p[1] + e[1]) / 2])), r: 10, index: k }); });
+      edges.forEach(([p, e], k) => handles.push({ key: `m${k}`, mode: 'insert', world: onSurface(local([(p[0] + e[0]) / 2, (p[1] + e[1]) / 2])), r: 10, index: k }));
       // a grip panel still needs one scale square on the model: its outline corners belong to its shape
       handles.push({ key: 's1', mode: 'uniform', world: onSurface(solo), r: 14 });
     } else if (roomy) {
@@ -1501,7 +1652,7 @@ function DecalGizmo() {
     return best;
   } : null;
   decalHandles.start = (hh, x, y, shift, alt) => begin(hh.mode, hh.key, x, y, shift, hh.index, alt);
-  const outlineWorld = pts ? [...pts, pts[0]].map((p) => onSurface(local(p))) : null;
+  const outlineWorld = pts ? (open ? pts : [...pts, pts[0]]).map((p) => onSurface(local(p))) : null;
 
   return (
     <>
@@ -1512,18 +1663,18 @@ function DecalGizmo() {
       </group>
       {outlineWorld && <Line points={outlineWorld} color={grab && grab.startsWith('c') ? GRAB : tool === 'decal' ? SEL : '#ffffff'} lineWidth={tool === 'decal' ? 2 : 1.4} depthTest={false} renderOrder={12} raycast={() => null} />}
       {tool === 'decal' && <>
-        {handle('move', 'move', planeWorld([0, 0, 0]), 14, 'disc')}
+        {handle('move', 'move', planeWorld(mid), 14, 'disc')}
         {handle('rotate', 'rotate', planeWorld(top), 16, 'knob')}
         {/* a shape's corners are its outline's: the rectangle's own handles would sit under them */}
         {!pts && roomy && rect.slice(0, 4).map((p, k) => handle(`s${k}`, 'uniform', planeWorld(p), 13, 'square'))}
-        {!pts && roomy && handle('v0', 'v', planeWorld([0, h / 2, 0]), 12, 'barU')}
-        {!pts && roomy && handle('v1', 'v', planeWorld([0, -h / 2, 0]), 12, 'barU')}
-        {!pts && roomy && handle('u0', 'u', planeWorld([w / 2, 0, 0]), 12, 'barV')}
-        {!pts && roomy && handle('u1', 'u', planeWorld([-w / 2, 0, 0]), 12, 'barV')}
+        {!pts && roomy && handle('v0', 'v', planeWorld([0, h / 2, 0]), 11, 'barU')}
+        {!pts && roomy && handle('v1', 'v', planeWorld([0, -h / 2, 0]), 11, 'barU')}
+        {!pts && roomy && handle('u0', 'u', planeWorld([w / 2, 0, 0]), 11, 'barV')}
+        {!pts && roomy && handle('u1', 'u', planeWorld([-w / 2, 0, 0]), 11, 'barV')}
         {!pts && !roomy && handle('s1', 'uniform', planeWorld(solo), 14, 'square')}
         {pts && handle('s1', 'uniform', onSurface(solo), 14, 'square')}
         {pts?.map((p, k) => handle(`c${k}`, 'corner', onSurface(local(p)), 12, 'dot', k))}
-        {pts?.map((p, k) => { const e = pts[(k + 1) % pts.length]; return handle(`m${k}`, 'insert', onSurface(local([(p[0] + e[0]) / 2, (p[1] + e[1]) / 2])), 10, 'plus', k); })}
+        {edges.map(([p, e], k) => handle(`m${k}`, 'insert', onSurface(local([(p[0] + e[0]) / 2, (p[1] + e[1]) / 2])), 10, 'plus', k))}
       </>}
     </>
   );

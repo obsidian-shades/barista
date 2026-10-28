@@ -18,8 +18,8 @@ import {
   answerAsk, confirmDiscard, armBox, cancelDocMove, cancelXform, cancelSymPlane, closeExport, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, flipSel, invertSelection, openExport, pickFile, saveProject, pinSelected, pointer, redo, repack,
   applySymPlane, setSymMode,
   pieMenu, scaleSel, cutSelection, stitchSelection, selectAll, selectAllPaint, selectLinked, selectLinkedUnder, setSelectMode, startXform, undo, unwrap, unwrapSelected, useApp, viewOp, viewPie, xformKey, xformSnap, openFile, type SelectMode,
-  activeDecal, duplicateDecal, mirrorDecal, nudgeDecal, updateDecal,
-  type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, growPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, deletePaintLayer, fillPaintSelection, dropMaterials, type PaintTool,
+  activeDecal, duplicateDecal, nudgeDecal, updateDecal,
+  type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, growPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, deletePaintLayer, fillPaintSelection, dropMaterials, finishDraw, cancelDraw, undoDrawPoint, type PaintTool, type FillBy,
 } from './store';
 import { Tooltip } from './ui/Tooltip';
 
@@ -32,6 +32,7 @@ const NUMPAD: Record<string, [ViewOp, ViewOp?]> = {
 
 const XFORMS: Record<string, XformKind> = { g: 'move', r: 'rotate', s: 'scale' };
 /** Van Gogh's tool keys, Photoshop's. */
+const PAINT_BY: Record<string, FillBy> = { Digit1: 'face', Digit2: 'surface', Digit3: 'island', Digit4: 'part' };
 const PAINT_KEYS: Record<string, PaintTool> = { m: 'marquee', l: 'lasso', w: 'wand', d: 'decal', b: 'brush', e: 'erase', g: 'bucket', i: 'picker' };
 
 /** Where the mouse is (the pie covers the views, so their own tracking stops), and when Z went down. */
@@ -93,6 +94,12 @@ function onKey(e: KeyboardEvent) {
     const p = useApp.getState().paint;
     // Esc lets go of the materials held on the Eyedropper (they stay under Ctrl+Z if applied)
     if (k === 'escape' && p.grab) return run(dropMaterials);
+    // a polyline being drawn (Decal tool, Draw): Enter finishes it, Esc drops it, Backspace takes back a corner
+    if (useApp.getState().drawLine && !ctrl) {
+      if (k === 'enter') return run(() => finishDraw());
+      if (k === 'escape') return run(cancelDraw);
+      if (k === 'backspace' && !e.altKey) return run(undoDrawPoint);
+    }
     if (ctrl) {
       if (k === 'z') return run(e.shiftKey ? redoPaint : undoPaint);
       if (k === 'y') return run(redoPaint);
@@ -101,7 +108,7 @@ function onKey(e: KeyboardEvent) {
       if (k === 'i') return run(invertPaintSelection);
       if (e.shiftKey && (k === '=' || k === '+' || k === '-' || k === '_')) return run(() => growPaintSelection(k === '-' || k === '_' ? -4 : 4));
       if (k === 'j') return run(() => (activeDecal() ? duplicateDecal() : duplicatePaintLayer()));
-      if (k === 'm') return run(mirrorDecal);
+      if (k === 'm') return run(() => setPaint({ tool: 'mirror' }));
       if (k === 'n' && e.shiftKey) return run(addPaintLayer);
       if (k === '[' || k === ']') return run(() => movePaintLayer(k === ']' ? 1 : -1));
     } else {
@@ -116,6 +123,9 @@ function onKey(e: KeyboardEvent) {
         if (k === '[' || k === ']') return run(() => updateDecal({ width: Math.max(1e-5, mark.decal.width * (k === ']' ? 1.1 : 1 / 1.1)) }));
         if (k === ',' || k === '.') return run(() => updateDecal({ rotation: ((((mark.decal.rotation + (k === '.' ? 5 : -5) + 180) % 360) + 360) % 360) - 180 }));
       }
+      // 1-4: Select by Face / Surface / Island / Part, in the slot the other workspaces' 1-4 modes take
+      const by = PAINT_BY[e.code] ?? (e.code ? undefined : PAINT_BY[`Digit${k}`]);
+      if (by && !e.altKey && !e.shiftKey) return run(() => setPaint({ by }));
       if (PAINT_KEYS[k]) return run(() => setPaint(k === 'd' ? { tool: 'decal', decalMode: 'edit' } : { tool: PAINT_KEYS[k] }));
       if (k === 'backspace' && e.altKey) return run(() => fillPaintSelection());
       // Delete clears paint, but a mark picked with the Decal tool goes off the model with its layer: deleting a decal

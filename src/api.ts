@@ -71,19 +71,32 @@ async function post(path: string, init?: RequestInit): Promise<Response> {
 const tauriCall = async <T>(cmd: string, args: Record<string, unknown> | Uint8Array): Promise<T> => {
   try { return await invoke<T>(cmd, args); } catch (e) { throw new Error(String(e)); }
 };
+/** A big raw body (a Pack) to `cmd` in 8 MB pieces (src-tauri `stage`): one 100 MB invoke ran WebView2's browser
+ *  process out of memory, which closed the app on save, autosave and export. */
+const tauriRaw = async <T>(cmd: string, pack: Blob): Promise<T> => {
+  await tauriCall('stage', new Uint8Array(0));
+  for (let o = 0; o < pack.size; o += 8 << 20) await tauriCall('stage', new Uint8Array(await pack.slice(o, o + (8 << 20)).arrayBuffer()));
+  return tauriCall<T>(cmd, {});
+};
 export interface OpenProject { path?: string; recover?: boolean }
+/** A save's answer (engine/src/project.rs `Saved`): the file it wrote, the revision it now carries, and whether the
+ *  file had moved on since the editor saw it (nothing written: send everything again). */
+export interface SavedProject { path: string | null; rev: number; stale: boolean; written: number }
 /** Full-resolution texture export (engine/src/texture): a Pack in; the folder and files out, null when cancelled. */
 export const textureApi = {
-  export: (pack: Uint8Array<ArrayBuffer>): Promise<{ dir: string; files: string[] } | null> => isTauri() ? tauriCall('texture_export', pack)
+  export: (pack: Blob): Promise<{ dir: string; files: string[] } | null> => isTauri() ? tauriRaw('texture_export', pack)
     : post('texture-export', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: pack }).then((r) => r.json()),
   /** What the running export is on ('' when idle). */
   status: (): Promise<string> => isTauri() ? tauriCall('texture_status', {}) : post('texture-status').then((r) => r.text()),
 };
 export const projectApi = {
-  /** Writes a Pack (project.ts); the path written, or null when the dialog was cancelled. */
-  save: (pack: Uint8Array<ArrayBuffer>): Promise<string | null> => isTauri() ? tauriCall('project_save', pack)
+  /** The engine's project format (2 has incremental saves); 0 when the engine is older and has no such route. */
+  format: (): Promise<number> => isTauri() ? tauriCall('project_format', {})
+    : post('project-format', { method: 'POST' }).then((r) => r.json()).catch(() => 0),
+  /** Writes a Pack (project.ts); the path written, its revision, or a stale file (send everything again). */
+  save: (pack: Blob): Promise<SavedProject> => isTauri() ? tauriRaw('project_save', pack)
     : post('project-save', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: pack }).then((r) => r.json()),
-  /** The project as a Pack whose JSON is { path, doc } (or { cancelled }). */
+  /** The project as a Pack whose JSON is { path, rev, doc } (or { cancelled }). */
   open: async (req: OpenProject): Promise<Uint8Array> => new Uint8Array(isTauri() ? await tauriCall<ArrayBuffer>('project_open', { body: req })
     : await (await post('project-open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req) })).arrayBuffer()),
 };

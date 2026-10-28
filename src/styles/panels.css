@@ -227,12 +227,6 @@ button.primary.wide { justify-content: center; }
 .decalactions button { flex: 1; min-height: var(--ctl-sm); padding: 0 6px; font-size: var(--fs-xs); background: var(--plate); border: 1px solid var(--plate-line); border-radius: 3px; }
 .decalactions button + button { border-left: 1px solid var(--plate-line); }
 .decalactions button:hover { background: var(--plate-hi); }
-/* a linked mirror pair: one action creates it, one line says it is linked, one button breaks it */
-.decalmirror { display: flex; align-items: center; gap: 6px; }
-.decalmirror > button { min-height: var(--ctl-sm); padding: 0 8px; background: var(--plate); border-color: var(--plate-line); font-size: var(--fs-xs); }
-.decalmirror > button:hover { background: var(--plate-hi); }
-.decalmirror .hint { flex: 1; min-width: 0; }
-.mirrormark { color: #8fb8ff; }
 /* the Decal tool's Select / Place switch, and the Eyedropper's Materials / Color one: what a click does */
 .options .seg.decalmode, .options .seg.pickmode { display: flex; }
 .decalpreview { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
@@ -244,9 +238,12 @@ button.primary.wide { justify-content: center; }
 .grip-preset.on { background: var(--accent-soft); }
 .grip-preset .decalimg { height: 32px; }
 .grip-preset > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
-.grip-patterns { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; }
+.grip-patterns { display: grid; grid-template-columns: repeat(auto-fit, minmax(54px, 1fr)); gap: 2px; }
 .grip-patterns button { min-width: 0; min-height: var(--ctl-sm); padding: 0 3px; background: var(--well); color: var(--muted); font-size: 9px; }
 .grip-patterns button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--fg); }
+/* the active relief on a lit sphere, over its settings */
+.relief-preview { display: flex; justify-content: center; padding: 4px 0; background: radial-gradient(circle at 50% 45%, #2b2d31, var(--well) 70%); border: 1px solid var(--line); border-radius: var(--r-s); }
+.relief-preview img { width: 144px; height: 144px; }
 .grip-advanced { border-top: 1px solid var(--line-2); padding-top: 3px; }
 .grip-advanced summary { color: var(--muted); cursor: pointer; font-size: var(--fs-xs); }
 .grip-advanced-body { display: grid; gap: 4px; padding-top: 4px; }
@@ -258,6 +255,8 @@ button.primary.wide { justify-content: center; }
 .decaltile:hover { border-color: var(--accent); }
 .decaltile.on { border-color: #b388ff; background: #b388ff1f; }
 .decaltile .decalimg { height: 62px; }
+.relieftile .decalimg { height: 96px; background: radial-gradient(circle at 50% 45%, #2b2d31, #17181b 72%); }
+.relieftile .decalimg img { width: 92px; height: 92px; max-width: none; max-height: none; }
 .decaltile span:last-child { font-size: 9px; line-height: 1.2; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .allsets { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .layers.thumbs .layer.decalrun { grid-template-columns: var(--row) minmax(0, 1fr) auto; height: var(--row); color: var(--muted); cursor: pointer; }

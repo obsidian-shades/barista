@@ -3,12 +3,12 @@
 // (Brush, Eraser, Bucket) stays inside, on the model and in the texture view alike; the options bar holds the current
 // tool's settings; the panel the parts (collapsible, with their channels: Substance's texture sets) and the active
 // part's Layers, as Photoshop's panel lays them out.
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 
-import { CHANNELS, SOLID, blendOf, thumbOf, type BlendMode, type BrushTip, type Channel, type Bevel, type Decal, type Fill, type Pattern, type Gen, type GenKind } from '../paint';
+import { CHANNELS, SOLID, blendOf, thumbOf, type BlendMode, type BrushTip, type Channel, type Bevel, type Decal, type Drive, type Fill, type Head, type Pattern, type Profile, type Shape, isLine, type Gen, type GenKind } from '../paint';
 import { MATERIAL_GROUPS, TILE_KINDS, materialGroup, thumbUrl, tileKind } from '../materials';
 import { ColorPick } from '../ui/ColorPick';
-import { GRIP_SHAPES, decalUrl } from '../decals';
+import { GRIP_SHAPES, RELIEF_SHAPES, decalUrl, reliefSphere } from '../decals';
 import { decalDragOver, decalDrop, shelfDragOver, shelfDrop } from '../views/Viewport3D';
 import { targetInfo } from '../exporting';
 import { Parts, eye } from './Dock';
@@ -17,7 +17,7 @@ import { ToolStrip, type ToolDef } from '../shell/PolyTools';
 import { SelectionControls } from '../shell/Chrome';
 import { ico, Icon, ICON } from '../ui/Icon';
 import {
-  activeDecal, addBevel, editBevel, fitDecal, setGripPreset, shelfDrag, addGenerator, addSolidFill, alignDecal, centerDecal, duplicateDecal, mirrorDecal, setDecalMode, unlinkDecal, setLinkSets, addMetalLayer, addPaintLayer, assignMaterial, bakeAllPaint, bakePaint, beginPaintEdit, clearFillMask, deletePaintLayer, duplicatePaintLayer, editGen, editPaintLayer, fillPaintSelection, importDecal, importMaterialFiles,
+  activeDecal, addBevel, editBevel, fitDecal, finishDraw, setGripPreset, shelfDrag, addGenerator, addSolidFill, alignDecal, centerDecal, duplicateDecal, setDecalMode, setLinkSets, addMetalLayer, addPaintLayer, assignMaterial, bakeAllPaint, bakePaint, beginPaintEdit, clearFillMask, deletePaintLayer, duplicatePaintLayer, editGen, editPaintLayer, fillPaintSelection, importDecal, importMaterialFiles,
   invertFillMask, loadDecals, loadMaterials, modelDiagonal, movePaintLayerTo, openExport, pickDecal, pickPaintLayer, pointer, setAssetTab, setFillBlend, setFillMask, setLayerBlend, setPaint, setPaintAO, setPaintTab, setPbr, texSet, undoPaint, updateDecal, updateFill, useApp, type PaintTool,
 } from '../store';
 
@@ -33,6 +33,8 @@ const PAINT_TOOLS: Partial<Record<PaintTool, ToolDef>>[] = [
   {
     decal: { name: 'Decal', key: 'D', tip: 'Click a mark on the model to select it, drag it to slide it over the surface; its handles scale, stretch and turn it, and a click on bare surface deselects. Place writes the mark armed in Assets > Decals (or Alt+click)', run: () => setPaint({ tool: 'decal', decalMode: 'edit' }), on: () => true,
       icon: ico(['M4 3h12v8l-5 6H4z', 'f'], 'M4 3h12v8l-5 6H4z', ['M16 11h-3.8a1.2 1.2 0 0 0-1.2 1.2V17z', 'F'], ['M10 5.5l1.1 2.3 2.4.3-1.8 1.7.5 2.4-2.2-1.2-2.2 1.2.5-2.4-1.8-1.7 2.4-.3z', 'A']) },
+    mirror: { name: 'Mirror', key: 'Ctrl+M', tip: 'Copy a mark to the other side of the model: click the mark, then hover where its mirror image should go — near the spot opposite it across X, Y or Z the outline snaps there (solid) — and click to place it. The copy is its own layer with the same settings', run: () => setPaint({ tool: 'mirror' }), on: () => true,
+      icon: ico(['M10 2v16', 'd'], ['M8 4H3l2 6-2 6h5z', 'f'], 'M8 4H3l2 6-2 6h5z', ['M12 4h5l-2 6 2 6h-5z', 'a']) },
   },
   {
     brush: { name: 'Brush', key: 'B', tip: 'Paint where you drag, on the model or the texture; Alt+click picks a color', run: () => setPaint({ tool: 'brush' }), on: () => true,
@@ -239,7 +241,7 @@ function Geometry() {
       {error && <div className="hint fix">{error}</div>}
       {loading && !shapes.length && <div className="hint">Loading geometry…</div>}
       <div className="decalgrid">
-        {shown.map((d) => <button key={d.id} className={`decaltile${d.id === armed ? ' on' : ''}`} title={`${d.name}${d.notes ? `\n${d.notes}` : ''}`} onPointerDown={(e) => holdTile(e, d.id, decalUrl(d), decalDragOver, decalDrop, false)} onClick={() => { if (!tileDragged) pickDecal(d.id); }}>
+        {shown.map((d) => <button key={d.id} className={`decaltile relieftile${d.id === armed ? ' on' : ''}`} title={`${d.name}${d.notes ? `\n${d.notes}` : ''}`} onPointerDown={(e) => holdTile(e, d.id, decalUrl(d), decalDragOver, decalDrop, false)} onClick={() => { if (!tileDragged) pickDecal(d.id); }}>
           <span className="decalimg"><img src={decalUrl(d)} alt="" draggable={false} /></span><span>{d.name}</span>
         </button>)}
       </div>
@@ -314,8 +316,6 @@ function FillSettings({ f }: { f: Fill }) {
   );
 }
 
-/** The model axes a mirror pair is described by. */
-const AXES = ['X', 'Y', 'Z'] as const;
 /** A typed number for a decal's size or angle: Enter or blur commits, so typing an exact width moves the mark once. */
 function Num({ value, min, max, step, suffix, onCommit }: { value: number; min: number; max: number; step: number; suffix: string; onCommit: (v: number) => void }) {  const [text, setText] = useState(value.toFixed(1));
   useEffect(() => setText(value.toFixed(1)), [value]);
@@ -363,13 +363,7 @@ function DecalSettings({ d }: { d: Decal }) {
         <button onClick={duplicateDecal} title="Copy the mark just above it, nudged so both are visible (Ctrl+J)">Duplicate</button>
         <button onClick={deletePaintLayer} title="Delete the mark and its layer (Delete with the Decal tool)">Delete</button>
       </span>
-      <div className="decalmirror">
-        {d.mirror ? <>
-          <span className="hint" title="A linked pair: moving, scaling, turning or re-inking either half does both">Mirrored across {AXES[d.mirror.axis]} · linked</span>
-          <button onClick={unlinkDecal} title="Keep both marks, each independent from now on">Unlink</button>
-        </> : <button onClick={mirrorDecal} title="Put the same mark on the opposite side of the model as a linked pair: moving, scaling, turning or re-inking either one does both (Ctrl+M)">Mirror to other side</button>}
-      </div>
-      {d.shape ? <ShapeSettings d={d} span={span} /> : <InkSettings d={d} />}
+      {d.shape ? <><ShapeSettings d={d} span={span} /><ShapeFinish d={d} /></> : <InkSettings d={d} />}
       <DecalTurns d={d} />
     </div>
   );
@@ -382,18 +376,82 @@ const SHAPE_SLIDERS: ['cell' | 'amount' | 'border' | 'depth' | 'corner', string,
   ['depth', 'Depth', 'How deep the border groove cuts', 1],
   ['corner', 'Corner', 'Radius of the outline\'s corners', 10],
 ];
-function ShapeSettings({ d, span }: { d: Decal; span: number }) {
-  const sh = d.shape!;
+/** Each relief's sliders, as shares of the model: [field, label, tip, min, max]. A pad's height goes negative for an
+ *  indent; the fastener's size is the mark's own Width. */
+type ShapeKey = 'cell' | 'amount' | 'border' | 'depth' | 'corner';
+const RELIEF_SLIDERS: Record<string, [ShapeKey, string, string, number, number][]> = {
+  groove: [['border', 'Width', 'How wide the groove is', 0.02, 2], ['depth', 'Depth', 'How deep it cuts', 0, 1]],
+  bead: [['border', 'Width', 'How wide the weld is', 0.05, 3], ['depth', 'Height', 'How high it stands', 0, 1], ['amount', 'Ripple', 'How strong the ripples are', 0, 0.5], ['cell', 'Ripple spacing', 'Distance between ripples', 0.02, 1.5]],
+  stitch: [['border', 'Width', 'How wide the stitched row is', 0.05, 2], ['cell', 'Stitch length', 'Distance from one stitch to the next', 0.05, 3], ['depth', 'Thread', 'How proud the thread stands', 0, 0.5], ['amount', 'Channel', 'How deep the channel under it is cut', 0, 0.5]],
+  rivets: [['border', 'Head size', 'Diameter of each head', 0.1, 5], ['cell', 'Spacing', 'Distance between heads along the line', 0.1, 10], ['depth', 'Head height', 'How high each head stands', 0, 1.5], ['amount', 'Drive depth', 'How deep the drive is cut', 0, 1.5]],
+  scratch: [['border', 'Width', 'How wide the scratch is', 0.02, 1], ['depth', 'Depth', 'How deep it cuts', 0, 0.5], ['amount', 'Breakup', 'How much its depth wanders along it (past Depth, it breaks)', 0, 0.5], ['cell', 'Breakup length', 'How often the depth changes along it', 0.05, 3]],
+  pad: [['amount', 'Height', 'How far the panel stands up; below 0 it is pressed in', -1, 1], ['border', 'Edge', 'How wide its edge is', 0, 2], ['corner', 'Corner', "Radius of the outline's corners", 0, 10]],
+  fastener: [['depth', 'Head height', 'How high the head stands', 0, 1.5], ['amount', 'Drive depth', 'How deep the drive is cut', 0, 1.5]],
+};
+const PROFILES: [Profile, string][] = [['round', 'Round'], ['v', 'V'], ['square', 'Square'], ['chamfer', 'Chamfer']];
+const HEADS: [Head, string][] = [['dome', 'Dome / rivet'], ['pan', 'Pan'], ['flat', 'Countersunk'], ['cap', 'Socket cap'], ['hexhead', 'Hex bolt']];
+const DRIVES: [Drive, string][] = [['none', 'None'], ['slot', 'Slot'], ['phillips', 'Phillips'], ['pozi', 'Pozidriv'], ['torx', 'Torx'], ['hex', 'Hex socket'], ['square', 'Square']];
+/** The active relief on the lit sphere, redrawn as its settings change (deferred, so a slider drag stays smooth). */
+function ReliefPreview({ d }: { d: Decal }) {
+  const key = useDeferredValue(JSON.stringify([d.shape, d.width, d.aspect]));
+  const url = useMemo(() => {
+    const [sh, w, asp] = JSON.parse(key) as [Shape, number, number];
+    return reliefSphere(sh, w / 2, w / 2 / asp, 144, sh.pattern === 'fastener' ? 0.75 : 0.95);
+  }, [key]);
+  return <div className="relief-preview" title="The mark on a lit sphere: what its Normal and Height will read as"><img src={url} alt="" width={144} height={144} /></div>;
+}
+function ReliefSettings({ d, span }: { d: Decal; span: number }) {
+  const sh = d.shape!, rows = RELIEF_SLIDERS[sh.pattern] ?? [], line = isLine(sh.pattern);
+  const set = (p: Partial<Shape>) => updateDecal({ shape: { ...sh, ...p } });
+  const pick = <T extends string>(label: string, tip: string, value: T, opts: [T, string][], key: keyof Shape) => (
+    <label title={tip}>{label}
+      <select value={value} onChange={(e) => set({ [key]: e.target.value })}>{opts.map(([v, n]) => <option key={v} value={v}>{n}</option>)}</select>
+    </label>
+  );
   return (
     <>
+      <ReliefPreview d={d} />
+      {line && <div className="grip-patterns" role="group" aria-label="Line kind" title="What runs along the line; its path stays as drawn">
+        {RELIEF_SHAPES.filter((g) => g.category === 'Lines').map((g) => <button key={g.id} className={sh.pattern === g.shape!.pattern ? 'on' : ''} aria-pressed={sh.pattern === g.shape!.pattern} title={g.notes} onClick={() => setGripPreset(g.id)}>{g.name}</button>)}
+      </div>}
+      {(sh.pattern === 'groove' || sh.pattern === 'pad') && pick(sh.pattern === 'pad' ? 'Edge' : 'Profile', 'The cross-section', sh.profile ?? 'round', PROFILES, 'profile')}
+      {(sh.pattern === 'fastener' || sh.pattern === 'rivets') && <>
+        {pick('Head', 'The head', sh.head ?? 'dome', HEADS, 'head')}
+        {pick('Drive', 'What is cut into the head', sh.drive ?? 'none', DRIVES, 'drive')}
+        <label title="A flat washer under the head"><input type="checkbox" checked={!!sh.washer} onChange={(e) => set({ washer: e.target.checked })} />Washer</label>
+      </>}
+      {rows.map(([key, name, tip, min, max]) => (
+        <label key={key} title={tip}>{name}
+          <input type="range" min={min} max={max} step={0.01} value={(sh[key] / span) * 100} onPointerDown={beginPaintEdit}
+            onChange={(e) => updateDecal({ shape: { ...sh, [key]: key === 'cell' ? Math.max(1e-4, (span * +e.target.value) / 100) : (span * +e.target.value) / 100 } }, false)} />
+          <span className="num readout">{((sh[key] / span) * 100).toFixed(2)}%</span>
+        </label>
+      ))}
+      {line && <label title="Join the line's last point back to its first"><input type="checkbox" checked={!!sh.closed} onChange={(e) => set({ closed: e.target.checked })} />Closed</label>}
+      {line && sh.closed && <label title="Round the closed line's corners">Corner
+        <input type="range" min={0} max={5} step={0.01} value={(sh.corner / span) * 100} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ shape: { ...sh, corner: (span * +e.target.value) / 100 } }, false)} />
+        <span className="num readout">{((sh.corner / span) * 100).toFixed(2)}%</span>
+      </label>}
+      {!line && <label title="Bend round the model: the relief follows the surface over bevels and curves instead of projecting flat">Wrap
+        <input type="checkbox" checked={!!d.wrap} onChange={(e) => updateDecal({ wrap: e.target.checked })} />
+      </label>}
+    </>
+  );
+}
+function ShapeSettings({ d, span }: { d: Decal; span: number }) {
+  const sh = d.shape!;
+  if (RELIEF_SHAPES.some((g) => g.shape!.pattern === sh.pattern)) return <ReliefSettings d={d} span={span} />;
+  return (
+    <>
+      <ReliefPreview d={d} />
       <div className="grip-presets" role="group" aria-label="Grip texture presets" title="Choose a starting look; you can adjust its settings below">
         {GRIP_SHAPES.map((g) => <button key={g.id} className={`grip-preset${sh.pattern === g.shape?.pattern ? ' on' : ''}`} aria-pressed={sh.pattern === g.shape?.pattern} title={`${g.name}: ${g.notes ?? ''}`} onClick={() => setGripPreset(g.id)}>
           <span className="decalimg"><img src={decalUrl(g)} alt="" /></span><span>{g.name}</span>
         </button>)}
       </div>
-      <span className="seg decalactions" title={d.mirror ? 'Unlink the mirror pair first' : undefined}>
-        <button disabled={!!d.mirror} onClick={() => fitDecal('faces')} title="Cover the faces picked with Select Faces (W) with the pattern, wrapped round them and stopping at their edges">Fit to faces</button>
-        <button disabled={!!d.mirror} onClick={() => fitDecal('part')} title="Cover the whole part with the pattern, wrapped round it">Fit to part</button>
+      <span className="seg decalactions">
+        <button onClick={() => fitDecal('faces')} title="Cover the faces picked with Select Faces (W) with the pattern, wrapped round them and stopping at their edges">Fit to faces</button>
+        <button onClick={() => fitDecal('part')} title="Cover the whole part with the pattern, wrapped round it">Fit to part</button>
       </span>
       {sh.pattern !== 'none' && <label title={sh.pattern === 'grooves' ? 'Distance between parallel ribs' : sh.pattern === 'stipple' ? 'Size of each raised dot' : 'Size of each checkered diamond'}>
         {sh.pattern === 'grooves' ? 'Rib spacing' : sh.pattern === 'stipple' ? 'Dot size' : 'Diamond size'}
@@ -422,6 +480,52 @@ function ShapeSettings({ d, span }: { d: Decal; span: number }) {
           {sh.outline && <button title="Back to the rectangle (drag a corner on the model, click an edge's + to add one, Alt+click a corner to remove it)" onClick={() => updateDecal({ shape: { ...sh, outline: undefined } })}>Reset outline</button>}
         </div>
       </details>
+    </>
+  );
+}
+
+/** Material finishes a panel or its border can take: [name, roughness, metallic]. */
+const FINISHES: [string, number, number][] = [['Rubber', 0.85, 0], ['Polymer', 0.6, 0], ['Cerakote', 0.45, 0], ['Anodized', 0.35, 1], ['Bare metal', 0.2, 1]];
+type Finish = { tint: string; roughness: number; metallic: number };
+/** One finish row: colour, a material preset, roughness and metallic. */
+function FinishRow({ label, tip, f, set }: { label: string; tip: string; f: Finish; set: (p: Partial<Finish>, undoable?: boolean) => void }) {
+  const preset = FINISHES.find(([, r, m]) => Math.abs(r - f.roughness) < 0.005 && m === f.metallic)?.[0] ?? '';
+  return (
+    <>
+      <label title={tip}>{label}
+        <ColorPick value={f.tint} onStart={beginPaintEdit} onChange={(c) => set({ tint: c }, false)} label={`${label} colour`} />
+        <select value={preset} title="Material: sets roughness and metallic" onChange={(e) => { const p = FINISHES.find(([n]) => n === e.target.value); if (p) set({ roughness: p[1], metallic: p[2] }); }}>
+          <option value="" disabled>Custom</option>
+          {FINISHES.map(([n]) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </label>
+      <label title="Roughness">Rough
+        <input type="range" min={0} max={1} step={0.01} value={f.roughness} onPointerDown={beginPaintEdit} onChange={(e) => set({ roughness: +e.target.value }, false)} />
+        <span className="num readout">{Math.round(f.roughness * 100)}%</span>
+      </label>
+      <label title="Metallic">Metal
+        <input type="range" min={0} max={1} step={0.01} value={f.metallic} onPointerDown={beginPaintEdit} onChange={(e) => set({ metallic: +e.target.value }, false)} />
+        <span className="num readout">{Math.round(f.metallic * 100)}%</span>
+      </label>
+    </>
+  );
+}
+/** A grip or relief's own colour and material: the panel inside, and its border band separately. */
+function ShapeFinish({ d }: { d: Decal }) {
+  const sh = d.shape!, on = d.channels.includes('color');
+  const hasRim = !isLine(sh.pattern) && sh.pattern !== 'fastener' && sh.border > 0;
+  return (
+    <>
+      <label title="Paint the mark's own colour and material over what is under it, not only its relief">Colour
+        <input type="checkbox" checked={on} onChange={(e) => updateDecal({ channels: e.target.checked ? ['normal', 'height', 'color', 'rough', 'metal'] : ['normal', 'height'] })} />
+      </label>
+      {on && <FinishRow label={hasRim ? 'Panel' : 'Fill'} tip="Colour and material of the mark" f={d} set={(p, u = true) => updateDecal(p, u)} />}
+      {on && hasRim && <>
+        <label title="Give the border its own colour and material (off: the same as the panel)">Own border
+          <input type="checkbox" checked={!!d.rim} onChange={(e) => updateDecal({ rim: e.target.checked ? { tint: d.tint, roughness: d.roughness, metallic: d.metallic } : undefined })} />
+        </label>
+        {d.rim && <FinishRow label="Border" tip="Colour and material of the border band" f={d.rim} set={(p, u = true) => updateDecal({ rim: { ...d.rim!, ...p } }, u)} />}
+      </>}
     </>
   );
 }
@@ -469,7 +573,7 @@ function DecalTurns({ d }: { d: Decal }) {
 /** Photoshop's options bar: the current tool, its settings, and the Select-by group for the tools that use it (Select
  *  Faces, Bucket, the Materials eyedropper). Lighting and Shading live in the 3D view header. */
 export function PaintOptionsBar() {
-  const p = useApp((s) => s.paint), channels = useChannels(), t = ALL[p.tool];
+  const p = useApp((s) => s.paint), channels = useChannels(), t = ALL[p.tool], drawing = useApp((s) => !!s.drawLine);
   const target = p.by === 'part' ? 'the part' : p.by === 'island' ? 'the island' : p.by === 'face' ? 'the face' : 'the surface';
   const fill = useApp((s) => {
     if (!s.parts[s.activePart]) return false;
@@ -517,15 +621,19 @@ export function PaintOptionsBar() {
         <span className="seg decalmode">
           <button className={p.decalMode === 'edit' ? 'on' : ''} onClick={() => setDecalMode('edit')} title="Click a mark on the model to select it, drag it to slide it over the surface (Shift: the middle line). A click on bare surface deselects, so a missed grab leaves no mark behind.">Select</button>
           <button className={p.decalMode === 'place' ? 'on' : ''} onClick={() => setDecalMode('place')} title="The next click on the model puts the armed mark there, then the tool is back in Select (Alt+click does it any time)">Place</button>
+          <button className={p.decalMode === 'draw' ? 'on' : ''} onClick={() => setDecalMode('draw')} title="Lay the armed line (Geometry › Lines) as a polyline: click corners on the model, drag for freehand, click the first point to close, Enter or double-click to finish. With a pad or grip panel armed, draw its outline">Draw</button>
         </span>
-        <span className="decalhint" title="The whole manipulator is on the mark: the middle disc slides it, corners scale it, the side bars stretch one axis, the knob turns it">drag to slide · corners scale · bars stretch · knob turns · Shift snaps</span>
+        {p.decalMode === 'draw' ? <>
+          <span className="decalhint" title="Click corners on the model, drag for freehand, click the first point to close. Enter or double-click finishes, Backspace takes back a corner, Esc drops the line">click corners · first point closes · Enter finishes</span>
+          {drawing && <><button onClick={() => finishDraw()} title="Finish the line open (Enter)">Finish</button><button onClick={() => finishDraw(true)} title="Join it back to its first point">Close</button></>}
+        </> : <span className="decalhint" title="The whole manipulator is on the mark: the middle disc slides it, corners scale it, the side bars stretch one axis, the knob turns it">drag to slide · corners scale · bars stretch · knob turns · Shift snaps</span>}
       </>}
       {p.tool === 'decal' && decal && <>
         <button onClick={centerDecal} title="Put the mark on the model's middle across the face it lies on — a gun's flanks, a scope's bore (Shift while dragging catches it there too)">Center</button>
         <button onClick={alignDecal} title="Turn the projector onto the surface under the mark, after a drag left it leaning">Face</button>
         <DecalTurns d={decal} />
       </>}
-      {p.tool === 'decal' && <label title="Each new mark lands on both sides of the model as a linked pair. The selected mark is mirrored from its settings (Ctrl+M)"><input type="checkbox" checked={p.decalMirror} onChange={(e) => setPaint({ decalMirror: e.target.checked })} />Mirror new</label>}
+      {p.tool === 'mirror' && <span className="decalhint">{decal ? 'hover the other side: the outline snaps solid on the mirrored spot · click to place a copy' : 'click a mark to mirror'}</span>}
       {p.tool === 'picker' && <>
         <span className="seg pickmode" title="What the Eyedropper takes">
           <button className={p.pickMode === 'material' ? 'on' : ''} onClick={() => setPaint({ pickMode: 'material' })} title="Click a part to pick up its material layers (fills, solids, generators, bevel), then click where to apply them; decals and hand paint are left behind">Materials</button>
@@ -613,9 +721,9 @@ function Layers() {
               <input className="lname-edit" value={name} autoFocus onChange={(e) => setName(e.target.value)} onBlur={commit} onClick={(e) => e.stopPropagation()}
                 onKeyDown={(e) => { if (e.key === 'Enter') commit(); else if (e.key === 'Escape') setRenaming(null); }} />
             ) : (
-              <span className="lname">{x.fill && <span className="fillmark" title="Fill layer: a PBR material">▤ </span>}{x.decal && <span className="decalmark" title="Decal layer: projected onto the model">◆ </span>}{x.decal?.mirror && <span className="mirrormark" title="Linked mirror: this is one half of a pair, and both follow an edit">⇄ </span>}{x.gen && <span className="genmark" title="Generator layer: made from the baked maps">◇ </span>}{x.name}</span>
+              <span className="lname">{x.fill && <span className="fillmark" title="Fill layer: a PBR material">▤ </span>}{x.decal && <span className="decalmark" title="Decal layer: projected onto the model">◆ </span>}{x.gen && <span className="genmark" title="Generator layer: made from the baked maps">◇ </span>}{x.name}</span>
             )}
-            <span className="ltype num">{x.fill ? (x.fill.asset === SOLID ? 'Solid' : 'Fill') : x.decal ? (x.decal.shape ? 'Grip' : 'Decal') : x.bevel ? 'Bevel' : x.gen ? 'Gen' : x.opacity < 1 ? `${Math.round(x.opacity * 100)}%` : ''}
+            <span className="ltype num">{x.fill ? (x.fill.asset === SOLID ? 'Solid' : 'Fill') : x.decal ? (x.decal.shape ? (RELIEF_SHAPES.some((g) => g.shape!.pattern === x.decal!.shape!.pattern) ? 'Relief' : 'Grip') : 'Decal') : x.bevel ? 'Bevel' : x.gen ? 'Gen' : x.opacity < 1 ? `${Math.round(x.opacity * 100)}%` : ''}
               {j === s.active && <Icon name="chevron" size={11} className={open ? 'chev' : 'chev closed'} />}</span>
           </li>
         ), ...(j === s.active && open ? [props] : [])]).reverse().flat()}

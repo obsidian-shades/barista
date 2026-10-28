@@ -61,22 +61,30 @@ export interface Decal {
   flipV?: boolean;
   /** Engraved: how deep the mark is cut, 0..1 (the 'normal' and 'height' channels carry it; 0 or absent: ink only). */
   engrave?: number;
-  /** A procedural relief instead of an image (grip textures): written to Normal and Height only. */
+  /** A procedural relief instead of an image (grip textures): written to Normal and Height, and with 'color' in
+   *  `channels` also painted: `tint` / `roughness` / `metallic` inside, `rim` on the border band (`onRim`). */
   shape?: Shape;
+  /** A shape's border finish (absent: the same as inside). */
+  rim?: { tint: string; roughness: number; metallic: number };
   /** Bend round the model: the relief follows the surface's own coordinates out from `center` (`expMap`) instead of a
    *  flat projection, so it carries over bevels and curves without stretching. */
   wrap?: boolean;
-  /** A linked mirror pair (two layers, the same mark on the two sides): the other layer's id and the model axis they
-   *  are mirrored across. Editor-only — the engine bakes each layer from its own frame and ignores this. */
-  mirror?: { of: number; axis: 0 | 1 | 2 };
 }
-/** A decal without its mirror link (a copy of a paired mark is its own mark). */
-export function withoutMirror(d: Decal): Decal {
-  const { mirror, ...rest } = d;
-  return rest;
-}
-/** A grip texture's fill: raised stipple dots, grooves across the panel, diamond checkering, or none (the border alone). */
-export type Pattern = 'stipple' | 'grooves' | 'checker' | 'none';
+/** A grip texture's fill: raised stipple dots, grooves across the panel, diamond checkering, or none (the border alone).
+ *  The other reliefs: `pad` lifts the panel by `amount` (negative: pressed in) over a `border` wide edge; `fastener`
+ *  is one screw / bolt / rivet head; and the line kinds run along the outline as a polyline (`closed` or open), `border`
+ *  wide: `groove` cut `depth` deep, `bead` a weld `depth` high rippling by `amount` every `cell`, `stitch` thread
+ *  dashes every `cell` in a channel `amount` deep, `rivets` a head every `cell`, `scratch` a V with burred lips whose
+ *  depth wanders by `amount` every `cell`. */
+export type Pattern = 'stipple' | 'grooves' | 'checker' | 'none' | 'pad' | 'fastener' | 'groove' | 'bead' | 'stitch' | 'rivets' | 'scratch';
+/** A cross-section: a groove's, or a pad's edge. */
+export type Profile = 'round' | 'v' | 'square' | 'chamfer';
+/** A fastener's head: button dome, pan, countersunk flush, socket cap, hex bolt. */
+export type Head = 'dome' | 'pan' | 'flat' | 'cap' | 'hexhead';
+/** What's cut into the head. */
+export type Drive = 'none' | 'slot' | 'phillips' | 'pozi' | 'torx' | 'hex' | 'square';
+/** A relief drawn as a line on the model rather than placed as a panel. */
+export const isLine = (p: Pattern) => p === 'groove' || p === 'bead' || p === 'stitch' || p === 'rivets' || p === 'scratch';
 /** A relief panel: a rounded rectangle (`corner` radius), a groove `border` wide and `depth` deep round its edge, and
  *  `pattern` inside, one `cell` per repeat, `amount` high. All world units, so stretching the panel never stretches the
  *  dots. `shapeHeight` here and the engine's `shape_height` must agree. */
@@ -85,6 +93,12 @@ export interface Shape {
   /** A free outline instead of the rectangle: corners in the panel's frame as shares of its half width / height (the
    *  rectangle is [-1,-1] [1,-1] [1,1] [-1,1]), each rounded by `corner`. */
   outline?: [number, number][];
+  /** A line kind's polyline closes back to its first point. */
+  closed?: boolean;
+  /** A groove's cross-section or a pad's edge (round when absent). */
+  profile?: Profile;
+  /** A fastener's or a rivet row's head and drive, and a washer under it. */
+  head?: Head; drive?: Drive; washer?: boolean;
 }
 /** The rectangle a shape is until its outline is edited. */
 export const RECT_OUTLINE: [number, number][] = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
@@ -99,7 +113,7 @@ export const blendOf = (l: PaintLayer, ch: Channel): BlendMode => l.blend?.[ch] 
 /** A layer: per channel it paints, k values + coverage per texel (row 0 = v 0). A generator layer (`gen`) is a fill of
  *  one value per channel whose coverage the generator makes from the baked maps, again whenever its settings change.
  *  A fill layer (`fill`) holds a material; its pixels are the baked cache, and `mask` applies the layer. */
-export interface PaintLayer { id: number; name: string; visible: boolean; opacity: number; blend?: Partial<Record<Channel, BlendMode>>; px: Partial<Record<Channel, Uint8ClampedArray>>; gen?: Gen; fill?: Fill; decal?: Decal; bevel?: Bevel; mask?: Uint8Array }
+export interface PaintLayer { id: number; name: string; visible: boolean; opacity: number; blend?: Partial<Record<Channel, BlendMode>>; px: Partial<Record<Channel, Uint8ClampedArray>>; gen?: Gen; fill?: Fill; decal?: Decal; bevel?: Bevel; mask?: Uint8Array; /** Per buffer, bumped when its pixels are written in place (a generator slider, a re-bake, a mask): a buffer's identity alone can't tell a save that its bytes moved. */ ver?: Partial<Record<Channel | 'mask' | 'clip', number>> }
 export type GenKind = 'edge' | 'dirt' | 'ao';
 /** A whole-part bevel faked in the normal map (Substance's / Blender's Bevel): within `radius` (world units) of an edge
  *  sharper than `angle` degrees the normal turns toward the face across it, so a hard-edged low poly shades rounded
@@ -110,10 +124,10 @@ export interface Bevel { radius: number; profile: 'round' | 'chamfer'; angle: nu
  *  `color` / `rough` / `metal` what it lays down; `clip` the selection it was made in. */
 export interface Gen { kind: GenKind; amount: number; soft: number; width: number; grunge: number; scale: number; color: string; rough: number; metal: number; clip: Uint8Array | null }
 /** `sel`: 0..255 per texel, null = no selection (paint goes anywhere). A new selection is always a new array. */
-interface State { channels: Channel[]; layers: PaintLayer[]; active: number; sel: Uint8Array | null; undoRect?: [number, number, number, number] }
+interface State { channels: Channel[]; layers: PaintLayer[]; active: number; sel: Uint8Array | null; undoRect?: [number, number, number, number]; bytes?: number }
 /** The composite: `color` (sRGB) and `orm` (G roughness, B metallic, as three and glTF read them); `shade` darkens
  *  what's outside the selection; `normal` (tangent space, RGB) and `height` (R) are the extra PBR maps. */
-export interface TexSet extends State { size: number; color: THREE.DataTexture; orm: THREE.DataTexture; shade: THREE.DataTexture; normal: THREE.DataTexture; height: THREE.DataTexture; past: State[]; future: State[]; ver: number; bake?: Baked; aoTex?: THREE.DataTexture; shell?: Uint8Array; shellFor?: unknown; cov?: Uint8Array; dirty?: [number, number, number, number]; preview?: THREE.Texture }
+export interface TexSet extends State { size: number; color: THREE.DataTexture; orm: THREE.DataTexture; shade: THREE.DataTexture; normal: THREE.DataTexture; height: THREE.DataTexture; past: State[]; future: State[]; ver: number; bake?: Baked; aoTex?: THREE.DataTexture; shell?: Uint8Array; shellFor?: unknown; cov?: Uint8Array; dirty?: [number, number, number, number]; preview?: THREE.Texture; /** Per composite tile, moved by every write to it (`stampTiles`): a save sends only the tiles that moved. */ stamp?: Uint32Array; /** A restored stack whose composite has not been made yet (cleared by a whole composite). */ unlaid?: boolean }
 export type BrushTip = 'round' | 'square' | 'chalk' | 'spray' | 'ring';
 export interface Brush { radius: number; flow: number; hardness: number; erase: boolean; tip?: BrushTip; values: Partial<Record<Channel, number[]>> }
 export type SelOp = 'set' | 'add' | 'sub';
@@ -141,10 +155,44 @@ export function setOf(soup: Float32Array, size: number): TexSet {
     s = { size, channels: ['color'], layers: [newLayer(1)], active: 0, sel: null, color: tex(size, true), orm: tex(size, false), shade: tex(size, false), normal: tex(size, false), height: tex(size, false), past: [], future: [], ver: 0 };
     sets.set(soup, s);
     soups.set(s, soup);
-    composite(s);
+    blank(s);
   } else if (s.size !== size) resize(s, size);
   return s;
 }
+/** What `composite` makes of a new set's one empty layer — the base values, nothing covered — written straight in: a
+ *  GPU pass and its readback per new set cost an opening project ~100 ms a part, only to be composited over again. */
+function blank(s: TexSet) {
+  const fill = (t: THREE.DataTexture, [r, g, b]: number[]) => {
+    new Uint32Array((t.image.data as Uint8ClampedArray).buffer).fill(((255 << 24) | (b << 16) | (g << 8) | r) >>> 0); // little-endian RGBA
+    t.needsUpdate = true;
+  };
+  fill(s.color, CHANNELS.color.base);
+  fill(s.orm, [255, CHANNELS.rough.base[0], CHANNELS.metal.base[0]]);
+  s.cov = new Uint8Array(s.size * s.size);
+  stampTiles(s, 0, 0, s.size - 1, s.size - 1);
+  s.ver++;
+}
+let stamps = 0;
+/** The composite's texels in a rectangle were written: their tiles' stamps move, so the next save sends those tiles.
+ *  ponytail: one stamp per tile for all five maps, and a rewrite that leaves the bytes as they were still moves it; per-map
+ *  stamps or a hash per tile if composite saves get heavy. */
+function stampTiles(s: TexSet, x0: number, y0: number, x1: number, y1: number) {
+  const t = Math.min(PAINT_TILE, s.size), m = s.size / t;
+  if (s.stamp?.length !== m * m) s.stamp = new Uint32Array(m * m);
+  for (let ty = Math.floor(y0 / t); ty <= Math.floor(y1 / t); ty++) for (let tx = Math.floor(x0 / t); tx <= Math.floor(x1 / t); tx++) s.stamp[ty * m + tx] = ++stamps;
+}
+/** The composite is exactly what the layers make, padding and all: made at least once over the whole stack (`unlaid`),
+ *  nothing queued or running, no band left unpadded (`dirty`), no live GPU stroke. Only then may a save keep it. */
+export function compSettled(s: TexSet) {
+  const q = queues.get(s);
+  return !s.unlaid && !s.dirty && !s.preview && !!s.cov && !(q && (q.running || q.full || q.rects.length));
+}
+/** The composite's maps as a project keeps them, under layer id 0: `comp_color` … `comp_cov`. */
+export const compMaps = (s: TexSet) => [
+  ['comp_color', s.color.image.data, 4], ['comp_orm', s.orm.image.data, 4], ['comp_normal', s.normal.image.data, 4],
+  ['comp_height', s.height.image.data, 4], ['comp_cov', s.cov!, 1],
+] as [CompMap, Uint8Array | Uint8ClampedArray, number][];
+export type CompMap = 'comp_color' | 'comp_orm' | 'comp_normal' | 'comp_height' | 'comp_cov';
 
 /** Free a set's textures and forget it: nothing will draw it again (the document it belongs to was replaced). A
  *  WebGL texture is only released by `dispose()`, never by its object being garbage collected. */
@@ -160,25 +208,39 @@ export function disposeSet(s: TexSet) {
 
 /** The part's set if it has one yet (saving a project must not make empty ones). */
 export const setIfAny = (soup: Float32Array) => sets.get(soup) ?? null;
+/** A layer's buffer was written in place: a project save reads this to know the buffer no longer holds what it wrote. */
+function touch(l: PaintLayer | null | undefined, what: Channel | 'mask' | 'clip') {
+  if (!l) return;
+  const v = (l.ver ??= {});
+  v[what] = (v[what] ?? 0) + 1;
+}
 /** A layer's stack entry as a project file keeps it (project.ts): everything but the pixels, which go as tiles. */
-export type SavedLayer = Omit<PaintLayer, 'px' | 'mask' | 'gen'> & { gen?: Omit<Gen, 'clip'> & { clip: boolean }; mask: boolean; px: Channel[] };
-export interface SavedSet { size: number; channels: Channel[]; active: number; layers: SavedLayer[] }
+export type SavedLayer = Omit<PaintLayer, 'px' | 'mask' | 'gen' | 'ver'> & { gen?: Omit<Gen, 'clip'> & { clip: boolean }; mask: boolean; px: Channel[] };
+export interface SavedSet { size: number; channels: Channel[]; active: number; layers: SavedLayer[]; /** The set has a selection mask saved under `set/<part>/0/sel`. */ sel?: boolean; /** Its composite is saved too (`compMaps`), so opening shows it without compositing the stack. */ comp?: boolean }
 export const PAINT_TILE = 256;
 /** `px` (n × n texels of `stride` bytes) as tiles of PAINT_TILE² texels, row by row; tiles whose last byte per texel (the
- *  coverage, or the whole value for a 1-byte mask) is 0 everywhere are left out. */
-export function tilesOf(px: ArrayLike<number> & { subarray(a: number, b: number): Uint8Array | Uint8ClampedArray }, n: number, stride: number): { tx: number; ty: number; data: Uint8Array }[] {
-  const t = Math.min(PAINT_TILE, n), out: { tx: number; ty: number; data: Uint8Array }[] = [];
+ *  coverage, or the whole value for a 1-byte mask) is 0 everywhere are left out. A sparse layer (a decal's footprint, a
+ *  mask's edge) must not allocate a tile's bytes per tile just to drop them: one scratch tile is reused, and only the
+ *  non-empty ones are copied out. */
+type Px = ArrayLike<number> & { subarray(a: number, b: number): Uint8Array | Uint8ClampedArray };
+export function tilesOf(px: Px, n: number, stride: number): { tx: number; ty: number; data: Uint8Array }[] {
+  const t = Math.min(PAINT_TILE, n), out: { tx: number; ty: number; data: Uint8Array }[] = [], scratch = new Uint8Array(t * t * stride);
   for (let ty = 0; ty < n / t; ty++) for (let tx = 0; tx < n / t; tx++) {
-    const data = new Uint8Array(t * t * stride);
-    let any = false;
-    for (let y = 0; y < t; y++) {
-      const o = ((ty * t + y) * n + tx * t) * stride, row = px.subarray(o, o + t * stride);
-      data.set(row, y * t * stride);
-      if (!any) for (let i = stride - 1; i < row.length; i += stride) if (row[i]) { any = true; break; }
-    }
-    if (any) out.push({ tx, ty, data });
+    const data = tileAt(px, n, stride, tx, ty, scratch);
+    if (data) out.push({ tx, ty, data });
   }
   return out;
+}
+/** One tile of `px` copied out, or null when it is empty (as `tilesOf` judges); `scratch` takes the copy-in. */
+export function tileAt(px: Px, n: number, stride: number, tx: number, ty: number, scratch?: Uint8Array): Uint8Array | null {
+  const t = Math.min(PAINT_TILE, n), into = scratch ?? new Uint8Array(t * t * stride);
+  let any = false;
+  for (let y = 0; y < t; y++) {
+    const o = ((ty * t + y) * n + tx * t) * stride, row = px.subarray(o, o + t * stride);
+    into.set(row, y * t * stride);
+    if (!any) for (let i = stride - 1; i < row.length; i += stride) if (row[i]) { any = true; break; }
+  }
+  return any ? (scratch ? into.slice() : into) : null;
 }
 /** The other way: tiles back into one n × n buffer (missing tiles stay 0). */
 export function fromTiles<T extends Uint8Array | Uint8ClampedArray>(into: T, n: number, stride: number, tiles: { tx: number; ty: number; data: Uint8Array }[]): T {
@@ -186,9 +248,9 @@ export function fromTiles<T extends Uint8Array | Uint8ClampedArray>(into: T, n: 
   for (const { tx, ty, data } of tiles) for (let y = 0; y < t; y++) into.set(data.subarray(y * t * stride, (y + 1) * t * stride), ((ty * t + y) * n + tx * t) * stride);
   return into;
 }
-/** A part's set as a saved project had it: its stack, with `pixels(layer id, channel | 'mask' | 'clip', stride)` giving
- *  each buffer back. Layer ids carry on past the highest one loaded. */
-export function restoreSet(soup: Float32Array, saved: SavedSet, pixels: (id: number, what: Channel | 'mask' | 'clip', stride: number) => Uint8Array) {
+/** A part's set as a saved project had it: its stack, with `pixels(layer id, channel | 'mask' | 'clip' | 'sel', stride)`
+ *  giving each buffer back (the selection is under layer id 0). Layer ids carry on past the highest one loaded. */
+export function restoreSet(soup: Float32Array, saved: SavedSet, pixels: (id: number, what: Channel | 'mask' | 'clip' | 'sel' | CompMap, stride: number) => Uint8Array) {
   const s = setOf(soup, saved.size);
   s.channels = saved.channels;
   s.layers = saved.layers.map(({ px, mask, gen, ...l }) => ({
@@ -198,22 +260,41 @@ export function restoreSet(soup: Float32Array, saved: SavedSet, pixels: (id: num
     ...(gen ? { gen: { ...gen, clip: gen.clip ? pixels(l.id, 'clip', 1) : null } } : {}),
   }));
   s.active = Math.min(saved.active, s.layers.length - 1);
-  s.sel = null; s.past = []; s.future = []; s.bake = undefined; s.aoTex = undefined;
+  s.sel = saved.sel ? pixels(0, 'sel', 1) : null;
+  s.past = []; s.future = []; s.bake = undefined; s.aoTex = undefined;
   footprints.delete(s);
   ids = Math.max(ids, ...s.layers.map((l) => l.id));
-  composite(s);
+  const n = s.size;
+  if (saved.comp) {
+    const [col, orm, nrm, hgt] = [s.color, s.orm, s.normal, s.height];
+    for (const [t, what] of [[col, 'comp_color'], [orm, 'comp_orm'], [nrm, 'comp_normal'], [hgt, 'comp_height']] as const) {
+      t.image.data = new Uint8ClampedArray(pixels(0, what, 4).buffer);
+      t.needsUpdate = true;
+    }
+    s.cov = pixels(0, 'comp_cov', 1);
+    s.dirty = undefined;
+    s.unlaid = false;
+  } else {
+    // the caller lays the stack out (store `openProject` uses the banded `requestComposite`): a 4K set's full composite
+    // here would hold the viewport for seconds while a project opens. Until then the composite is not the stack's.
+    s.unlaid = true;
+  }
   return s;
 }
-/** The set as a project saves it: the stack, and every pixel buffer to tile. */
-export function saveSet(s: TexSet): { saved: SavedSet; buffers: { id: number; what: Channel | 'mask' | 'clip'; px: Uint8Array | Uint8ClampedArray; stride: number }[] } {
-  const buffers: { id: number; what: Channel | 'mask' | 'clip'; px: Uint8Array | Uint8ClampedArray; stride: number }[] = [];
-  const layers = s.layers.map(({ px, mask, gen, ...l }): SavedLayer => {
-    for (const ch of Object.keys(px) as Channel[]) buffers.push({ id: l.id, what: ch, px: px[ch]!, stride: CHANNELS[ch].k + 1 });
-    if (mask) buffers.push({ id: l.id, what: 'mask', px: mask, stride: 1 });
-    if (gen?.clip) buffers.push({ id: l.id, what: 'clip', px: gen.clip, stride: 1 });
+/** The set as a project saves it: the stack, and every pixel buffer to tile. `ver` moves when a buffer was written in
+ *  place (project.ts keys its blobs by it, so a re-baked generator is not mistaken for the one already saved). */
+export function saveSet(s: TexSet): { saved: SavedSet; buffers: { id: number; what: Channel | 'mask' | 'clip' | 'sel'; px: Uint8Array | Uint8ClampedArray; stride: number; ver: number }[] } {
+  const buffers: { id: number; what: Channel | 'mask' | 'clip' | 'sel'; px: Uint8Array | Uint8ClampedArray; stride: number; ver: number }[] = [];
+  const layers = s.layers.map(({ px, mask, gen, ver, ...l }): SavedLayer => {
+    const stamp = ver ?? {};
+    for (const ch of Object.keys(px) as Channel[]) buffers.push({ id: l.id, what: ch, px: px[ch]!, stride: CHANNELS[ch].k + 1, ver: stamp[ch] ?? 0 });
+    if (mask) buffers.push({ id: l.id, what: 'mask', px: mask, stride: 1, ver: stamp.mask ?? 0 });
+    if (gen?.clip) buffers.push({ id: l.id, what: 'clip', px: gen.clip, stride: 1, ver: stamp.clip ?? 0 });
     return { ...l, px: Object.keys(px) as Channel[], mask: !!mask, ...(gen ? { gen: { ...gen, clip: !!gen.clip } } : {}) };
   });
-  return { saved: { size: s.size, channels: [...s.channels], active: s.active, layers }, buffers };
+  // the selection is document state (Photoshop's): saving it with the paint keeps it across a reopen
+  if (s.sel) buffers.push({ id: 0, what: 'sel', px: s.sel, stride: 1, ver: 0 });
+  return { saved: { size: s.size, channels: [...s.channels], active: s.active, layers, ...(s.sel ? { sel: true } : {}) }, buffers };
 }
 
 /** Move a set to another resolution: every layer, the selection and the composite are resampled nearest (a hard
@@ -271,15 +352,21 @@ export function resize(s: TexSet, size: number) {
 export type TexRect = [number, number, number, number];
 type Rect = TexRect;
 const snapshot = (s: TexSet): State => ({ channels: [...s.channels], layers: s.layers.map((l) => ({ ...l, px: { ...l.px }, mask: l.mask?.slice() })), active: s.active, sel: s.sel, undoRect: undefined });
+/** Most memory one set's undo steps may hold. */
+const UNDO_BYTES = 256 << 20;
 /** Keep the set as it is, for one undo step. Copy on write: the layers' buffers are shared with the step, and the
  *  active layer gets fresh copies before paint goes into them. */
 export function keep(s: TexSet) {
-  s.past.push(snapshot(s));
-  // ponytail: 20 steps, each a copy of the painted layer's channels (4 MB each at 1K); keep dirty tiles if memory bites
-  if (s.past.length > 20) s.past.shift();
-  s.future.length = 0;
   const l = s.layers[s.active];
-  if (l) s.layers[s.active] = { ...l, px: Object.fromEntries(Object.entries(l.px).map(([c, a]) => [c, a!.slice()])), mask: l.mask?.slice() };
+  // what this step holds on to: the painted layer's channels and every layer's mask (snapshot copies those)
+  const bytes = Object.values(l?.px ?? {}).reduce((a, x) => a + x!.byteLength, 0) + s.layers.reduce((a, m) => a + (m.mask?.byteLength ?? 0), 0);
+  s.past.push({ ...snapshot(s), bytes });
+  // ponytail: whole-layer copies, so at 2K a fill is ~60 MB a step and 20 steps on a few sets ran the page out of memory
+  // (saves then failed: "Array buffer allocation failed"); keep dirty tiles instead if the depth matters
+  let total = s.past.reduce((a, p) => a + (p.bytes ?? 0), 0);
+  while (s.past.length > 1 && (s.past.length > 20 || total > UNDO_BYTES)) total -= s.past.shift()!.bytes ?? 0;
+  s.future.length = 0;
+  if (l) s.layers[s.active] = { ...l, px: Object.fromEntries(Object.entries(l.px).map(([c, a]) => [c, a!.slice()])), mask: l.mask?.slice(), ver: l.ver ? { ...l.ver } : undefined };
 }
 /** A selection change only moves the mask: its step can share the layers instead of copying every buffer of every
  *  visible part (island picks are document-wide), which at 4K was hundreds of megabytes per click. */
@@ -362,12 +449,18 @@ async function drainComposite(s: TexSet, q: CompQueue) {
           await new Promise((ok) => setTimeout(ok, 0));
         }
         s.dirty = undefined;
+        s.unlaid = false;
+        // the bands skipped the padding pass each blocking composite does: without it the mip chain repeats the
+        // island edge into bare texture space (a seam at distance) until the next stroke bleeds
+        bleedAll(s);
       } else {
         const [x0, y0, x1, y1] = union(rects);
         for (let y = y0; y <= y1; y += band) {
           composite(s, x0, y, x1, Math.min(y1, y + band - 1), undefined, false);
           await new Promise((ok) => setTimeout(ok, 0));
         }
+        bleedAll(s);
+        s.dirty = undefined;
       }
       q.notify?.();
     }
@@ -504,6 +597,8 @@ export function composite(s: TexSet, x0 = 0, y0 = 0, x1 = s.size - 1, y1 = s.siz
   if (want('rough') || want('metal')) mark(s.orm);
   if (want('normal')) mark(s.normal);
   if (want('height')) mark(s.height);
+  stampTiles(s, x0, y0, x1, y1);
+  if (!only && x0 === 0 && y0 === 0 && x1 === n - 1 && y1 === n - 1) s.unlaid = false;
   if (pad) { s.dirty = undefined; bleed(s, x0, y0, x1, y1); }
   else {
     const d = s.dirty;
@@ -515,7 +610,7 @@ export function composite(s: TexSet, x0 = 0, y0 = 0, x1 = s.size - 1, y1 = s.siz
 /** Carry the paint into the empty texture around the islands once, after a stroke: the mip-padding pass is
  *  too expensive to run on every dab, and a live stroke does not need it until it is committed. */
 export function bleedAll(s: TexSet) {
-  if (!s.shell) return;
+  if (!s.shell) { s.dirty = undefined; return; } // no shell known: nothing to pad, so nothing left undone
   const n = s.size, [x0, y0, x1, y1] = s.dirty ?? [0, 0, n - 1, n - 1];
   bleed(s, x0, y0, x1, y1);
   const p = mipPad(n), ax0 = Math.max(0, x0 - p), ay0 = Math.max(0, y0 - p), ax1 = Math.min(n - 1, x1 + p), ay1 = Math.min(n - 1, y1 + p);
@@ -586,6 +681,7 @@ function bleed(s: TexSet, x0: number, y0: number, x1: number, y1: number) {
   const n = s.size, p = mipPad(n);
   const [ex0, ey0, ex1, ey1] = [Math.max(0, x0 - p), Math.max(0, y0 - p), Math.min(n - 1, x1 + p), Math.min(n - 1, y1 + p)];
   const w = ex1 - ex0 + 1, h = ey1 - ey0 + 1;
+  stampTiles(s, ex0, ey0, ex1, ey1);
   const col = s.color.image.data as Uint8ClampedArray, orm = s.orm.image.data as Uint8ClampedArray;
   const nrm = s.normal.image.data as Uint8ClampedArray, hgt = s.height.image.data as Uint8ClampedArray;
   const at = new Uint8Array(w * h); // 0 = untouched, 1 = queued
@@ -624,7 +720,7 @@ function bleed(s: TexSet, x0: number, y0: number, x1: number, y1: number) {
 }
 /** The selection's shade, as the 3D view draws a selection: a light blue tint inside with a solid blue border
  *  (`SEL`), black over what's outside. Darkening alone vanished on a dark material, so a click looked like nothing. */
-function shade(s: TexSet) {
+export function shade(s: TexSet) {
   const d = s.shade.image.data as Uint8ClampedArray, m = s.sel, n = s.size;
   // the border is a couple of texels wide, enough to survive the texture view's downsampled preview
   const w = Math.max(1, Math.round(n / 512));
@@ -755,6 +851,7 @@ function lay(s: TexSet, b: Brush, compositeNow = true) {
   }
   touched.length = 0;
   if (x1 >= 0) {
+    for (const ch of channels) touch(l, ch);
     if (compositeNow) composite(s, x0, y0, x1, y1, channels, false);
     else {
       const d = s.dirty;
@@ -1049,6 +1146,7 @@ function genAt(g: Gen, b: Baked, i: number) {
 export function generate(s: TexSet, l: PaintLayer) {
   const g = l.gen, b = s.bake;
   if (!g || !b) return;
+  for (const ch of ['color', 'rough', 'metal'] as Channel[]) if (s.channels.includes(ch)) touch(l, ch);
   const n = s.size, values: Partial<Record<Channel, number[]>> = { color: [1, 3, 5].map((k) => parseInt(g.color.slice(k, k + 2), 16)), rough: [g.rough * 255], metal: [g.metal * 255] };
   const cover = new Float32Array(n * n);
   // the coverage on the GPU (gpubake.ts GENERATOR) when there is one: the noise is most of a generator's time
@@ -1105,6 +1203,7 @@ function fillBuf(s: TexSet, l: PaintLayer, ch: Channel) {
 export function bakeFill(s: TexSet, l: PaintLayer, src: MaterialPixels, pos: ArrayLike<number>, uvs: ArrayLike<number>, span: number) {
   const f = l.fill;
   if (!f) return;
+  for (const ch of f.channels) touch(l, ch);
   ensureShell(s, uvs);
   const n = s.size;
   for (const ch of Object.keys(l.px) as Channel[]) if (!f.channels.includes(ch)) delete l.px[ch];
@@ -1408,6 +1507,7 @@ function projectedUVBox(pos: ArrayLike<number>, uvs: ArrayLike<number>, t: numbe
 export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLike<number>, uvs: ArrayLike<number>, span: number): Rect | null {
   const d = l.decal;
   if (!d) return null;
+  for (const ch of Object.keys(l.px) as Channel[]) touch(l, ch);
   if (d.shape) { bakeShape(s, l, pos, uvs, span); return null; }
   ensureShell(s, uvs);
   const n = s.size, f = decalFrame(d, span);
@@ -1564,26 +1664,200 @@ const polyCache = new WeakMap<Shape, { hw: number; hh: number; poly: number[] }>
 function outlinePoly(sh: Shape, hw: number, hh: number) {
   const c = polyCache.get(sh);
   if (c && c.hw === hw && c.hh === hh) return c.poly;
-  const poly = filleted(sh.outline!, hw, hh, sh.corner);
+  const poly = filleted(sh.outline!, hw, hh, isLine(sh.pattern) && !sh.closed ? 0 : sh.corner);
   polyCache.set(sh, { hw, hh, poly });
   return poly;
 }
 /** The relief at (x, y) world units from a shape's centre (half extents hw × hh), null outside its outline: a groove
  *  `border` wide round the rounded edge, then the pattern faded in a little inside it. Engine: `shape_height`. */
 export function shapeHeight(sh: Shape, x: number, y: number, hw: number, hh: number): number | null {
-  let sd: number;
-  if (sh.outline) sd = polySd(outlinePoly(sh, hw, hh), x, y);
-  else {
-    const r = Math.min(sh.corner, hw, hh);
-    const qx = Math.abs(x) - hw + r, qy = Math.abs(y) - hh + r;
-    sd = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+  if (isLine(sh.pattern)) return sh.outline ? lineHeight(sh, outlinePoly(sh, hw, hh), x, y) : null;
+  if (sh.pattern === 'fastener') {
+    const r = Math.min(hw, hh);
+    return fastener(sh, x / r, y / r);
   }
+  const sd = panelSd(sh, x, y, hw, hh);
   if (sd > 0) return null;
   const g = sh.border;
+  if (sh.pattern === 'pad') return sh.amount * profileAt(sh.profile, 1 - Math.min(1, -sd / Math.max(g, 1e-9)));
   let h = g > 0 && sd > -g ? -sh.depth * Math.sin((Math.PI * (sd + g)) / g) : 0;
   const fade = smooth01((-(g > 0 ? g * 1.6 : 0) - sd) / (sh.cell * 0.5));
   if (fade > 0 && sh.pattern !== 'none') h += sh.amount * fade * patternAt(sh.pattern, x / sh.cell, y / sh.cell);
   return h;
+}
+/** A panel's (or pad's) signed distance to its rounded outline, negative inside. Engine: `panel_sd`. */
+function panelSd(sh: Shape, x: number, y: number, hw: number, hh: number) {
+  if (sh.outline) return polySd(outlinePoly(sh, hw, hh), x, y);
+  const r = Math.min(sh.corner, hw, hh);
+  const qx = Math.abs(x) - hw + r, qy = Math.abs(y) - hh + r;
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+}
+/** Whether (x, y) lies on a panel's or pad's border band, which takes the decal's `rim` finish. Engine: `on_rim`. */
+export function onRim(sh: Shape, x: number, y: number, hw: number, hh: number) {
+  if (isLine(sh.pattern) || sh.pattern === 'fastener' || sh.border <= 0) return false;
+  const sd = panelSd(sh, x, y, hw, hh);
+  return sd <= 0 && sd > -sh.border;
+}
+/** The step a shape's slope is taken over (world units): a fraction of its finest feature. Engine: `slope_step`. */
+export function slopeStep(sh: Shape, hw: number, hh: number) {
+  if (sh.pattern === 'fastener') return Math.min(hw, hh) * 0.012;
+  if (sh.pattern === 'rivets') return sh.border * 0.006;
+  return Math.min(sh.cell, sh.border > 0 ? sh.border : sh.cell) * 0.1;
+}
+/** How deep a cross-section is at q (0 on its centre line, 1 at its lip), 0..1. Engine: `profile_at`. */
+function profileAt(p: Profile | undefined, q: number) {
+  if (q >= 1) return 0;
+  if (p === 'v') return 1 - q;
+  if (p === 'square') return smooth01((1 - q) / 0.18);
+  if (p === 'chamfer') return Math.min(1, (1 - q) / 0.45);
+  return Math.sqrt(1 - q * q);
+}
+/** 1D value noise, 0..1 (engine: `vnoise`): a scratch's depth wanders along its length. */
+function vnoise(t: number) {
+  const i = Math.floor(t), f = t - i, k = f * f * (3 - 2 * f);
+  return hash(i, 0, 7) * (1 - k) + hash(i + 1, 0, 7) * k;
+}
+/** A line kind along the polyline p (flat x, y pairs; `sh.closed` joins its ends), null off it. Engine: `line_relief`. */
+function lineHeight(sh: Shape, p: number[], x: number, y: number): number | null {
+  const n = p.length / 2, segs = sh.closed ? n : n - 1, w = sh.border / 2;
+  if (n < 2 || w <= 0) return null;
+  // the nearest point: its distance, the side of the line it's on, how far along the line it is
+  let d = Infinity, side = 1, at = 0, run = 0;
+  for (let i = 0; i < segs; i++) {
+    const j = (i + 1) % n, ax = p[i * 2], ay = p[i * 2 + 1], ex = p[j * 2] - ax, ey = p[j * 2 + 1] - ay, len = Math.hypot(ex, ey);
+    const t = len > 0 ? Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / (len * len))) : 0;
+    const dd = Math.hypot(x - ax - ex * t, y - ay - ey * t);
+    if (dd < d) { d = dd; at = run + t * len; side = ex * (y - ay) - ey * (x - ax) < 0 ? -1 : 1; }
+    run += len;
+  }
+  const cell = Math.max(sh.cell, 1e-9), q = d / w;
+  switch (sh.pattern) {
+    case 'groove': return q > 1 ? null : -sh.depth * profileAt(sh.profile, q);
+    case 'bead': {
+      // a weld: a round bead whose ripples are crescents pointing the way it was laid
+      if (q > 1) return null;
+      const f = Math.sqrt(1 - q * q), phase = at / cell + 0.6 * (1 - f);
+      return f * (sh.depth + sh.amount * (0.5 + 0.5 * Math.cos(2 * Math.PI * phase)));
+    }
+    case 'stitch': {
+      // a channel a little wider than the row, the thread laid in it as slanted dashes
+      if (q > 1.5) return null;
+      const ch = -sh.amount * (1 - (q / 1.5) ** 2);
+      const u = at - (Math.floor(at / cell) + 0.5) * cell, v = side * d, co = 0.94, si = 0.342;
+      const a = u * co + v * si, b = -u * si + v * co, L = 0.36 * cell, tw = w * 0.45;
+      if (Math.abs(a) >= L || Math.abs(b) >= tw) return ch;
+      return ch * 0.5 + sh.depth * Math.sqrt(1 - (b / tw) ** 2) * Math.sqrt(1 - (a / L) ** 4);
+    }
+    case 'rivets': {
+      // a head every `cell`, centred on an open line (a closed row spaced evenly round), each turned to the line
+      const k = sh.closed ? Math.max(1, Math.round(run / cell)) : Math.max(0, Math.floor(run / cell));
+      const sp = sh.closed ? run / k : cell, o = sh.closed ? 0 : (run - k * sp) / 2, heads = sh.closed ? k : k + 1;
+      let best = Infinity, X = 0, Y = 0, walked = 0, h0 = 0;
+      for (let i = 0; i < segs && h0 < heads; i++) {
+        const j = (i + 1) % n, ax = p[i * 2], ay = p[i * 2 + 1], ex = p[j * 2] - ax, ey = p[j * 2 + 1] - ay, len = Math.hypot(ex, ey);
+        if (len <= 0) continue;
+        const tx = ex / len, ty = ey / len;
+        while (h0 < heads && o + h0 * sp <= walked + len + 1e-9) {
+          const s = o + h0 * sp - walked, cx = ax + tx * s, cy = ay + ty * s, dd = Math.hypot(x - cx, y - cy);
+          if (dd < best) { best = dd; X = ((x - cx) * tx + (y - cy) * ty) / w; Y = (-(x - cx) * ty + (y - cy) * tx) / w; }
+          h0++;
+        }
+        walked += len;
+      }
+      return best > w ? null : fastener(sh, X, Y);
+    }
+    default: {
+      // scratch: a V gouge whose displaced metal stands up as a burr on both lips, tapering out at an open line's ends
+      if (q > 1) return null;
+      const f = q < 0.55 ? -(1 - q / 0.55) : 0.3 * Math.sin((Math.PI * (q - 0.55)) / 0.45);
+      const taper = sh.closed ? 1 : Math.sqrt(Math.sin(Math.PI * Math.min(1, Math.max(0, at / (run || 1)))));
+      return Math.max(0, sh.depth - sh.amount * vnoise(at / cell)) * f * taper;
+    }
+  }
+}
+/** A screw, bolt or rivet head at (X, Y) in units of its outer radius (1 = the washer's edge with one, else the
+ *  head's), null outside: the head `depth` high, its drive cut `amount` deep. Engine: `fastener`. */
+function fastener(sh: Shape, X: number, Y: number) {
+  const rho = Math.hypot(X, Y);
+  if (rho > 1) return null;
+  let base = 0, hx = X, hy = Y;
+  if (sh.washer) { base = 0.22 * smooth01((1 - rho) / 0.05); hx = X * 1.35; hy = Y * 1.35; }
+  const r = Math.hypot(hx, hy);
+  if (r > 1) return sh.depth * base;
+  const ax = Math.abs(hx), ay = Math.abs(hy);
+  let H: number;
+  switch (sh.head) {
+    case 'pan': { const t = Math.min(1, (1 - r) / 0.4); H = Math.sqrt(1 - (1 - t) ** 2) * (0.92 + 0.08 * Math.sqrt(1 - r * r)); break; }
+    case 'flat': H = r > 0.93 ? -0.35 * Math.sin((Math.PI * (r - 0.93)) / 0.07) : 0; break;
+    case 'cap': H = Math.min(1, (1 - r) / 0.12); break;
+    case 'hexhead': {
+      // six flats, the top's corners turned off by the bolt's chamfer circle
+      const flat = Math.max(ay, ax * 0.866 + ay * 0.5);
+      H = flat > 0.85 ? 0 : Math.min(Math.min(1, (0.85 - flat) / 0.04), 0.55 + 0.45 * Math.max(0, Math.min(1, (0.87 - r) / 0.12)));
+      break;
+    }
+    default: H = 0.2 * smooth01((1 - r) / 0.05) + 0.8 * Math.sqrt(1 - r * r);
+  }
+  // the drive: its outline as a distance (negative inside), and how deep its floor sinks toward the middle
+  let sd = 1, floor = 1, scribe = 0;
+  switch (sh.drive) {
+    case 'slot': sd = Math.max(ax - 1.2, ay - 0.085); break;
+    case 'phillips': case 'pozi': {
+      const pozi = sh.drive === 'pozi';
+      const arm = (a: number, b: number) => Math.max(a - 0.55, b - (pozi ? 0.075 : 0.06 + 0.1 * Math.max(0, 1 - a / 0.55)));
+      sd = Math.min(arm(ax, ay), arm(ay, ax), r - 0.16);
+      floor = 0.55 + 0.45 * Math.max(0, 1 - r / 0.55);
+      if (pozi) {
+        // Pozidriv's four scribed ticks between the arms
+        const u = Math.abs(hx + hy) * 0.7071, v = Math.abs(hx - hy) * 0.7071;
+        scribe = Math.max(smooth01(-Math.max(u - 0.42, v - 0.012) / 0.01), smooth01(-Math.max(v - 0.42, u - 0.012) / 0.01));
+      }
+      break;
+    }
+    case 'torx': sd = r - (0.25 + 0.17 * (0.5 + 0.5 * Math.cos(6 * Math.atan2(hy, hx))) ** 1.6); floor = 0.8 + 0.2 * Math.max(0, 1 - r / 0.4); break;
+    case 'hex': sd = Math.max(ay, ax * 0.866 + ay * 0.5) - 0.3; floor = 0.75 + 0.25 * Math.max(0, 1 - r / 0.3); break;
+    case 'square': sd = Math.max(ax, ay) - 0.22; floor = 0.75 + 0.25 * Math.max(0, 1 - r / 0.3); break;
+  }
+  const cut = smooth01(-sd / 0.03) * floor + 0.15 * scribe;
+  return sh.depth * (base + H) - sh.amount * cut;
+}
+/** Triangle t's texel size in world units at an n² texture. Engine: `texel_sizes`. */
+function texelSize(pos: ArrayLike<number>, uvs: ArrayLike<number>, t: number, n: number) {
+  const o = t * 9, q = t * 6;
+  const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+  const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+  const area = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+  const uva = Math.abs((uvs[q + 2] - uvs[q]) * (uvs[q + 5] - uvs[q + 1]) - (uvs[q + 4] - uvs[q]) * (uvs[q + 3] - uvs[q + 1])) * n * n;
+  return uva > 0 ? Math.sqrt(area / uva) : 0;
+}
+/** Distance from p to the triangle abc: to its plane where p projects inside it, else to its nearest edge. Engine: `tri_dist`. */
+function triDist(a: V, b: V, c: V, p: V) {
+  const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]], q = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+  const d11 = e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2], d12 = e1[0] * e2[0] + e1[1] * e2[1] + e1[2] * e2[2], d22 = e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2];
+  const q1 = q[0] * e1[0] + q[1] * e1[1] + q[2] * e1[2], q2 = q[0] * e2[0] + q[1] * e2[1] + q[2] * e2[2], det = d11 * d22 - d12 * d12;
+  const seg = (s: V, t: V) => {
+    const ex = t[0] - s[0], ey = t[1] - s[1], ez = t[2] - s[2], l2 = ex * ex + ey * ey + ez * ez;
+    const k = l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - s[0]) * ex + (p[1] - s[1]) * ey + (p[2] - s[2]) * ez) / l2)) : 0;
+    return Math.hypot(p[0] - s[0] - ex * k, p[1] - s[1] - ey * k, p[2] - s[2] - ez * k);
+  };
+  if (det > 0) {
+    const u = (d22 * q1 - d12 * q2) / det, v = (d11 * q2 - d12 * q1) / det;
+    if (u >= 0 && v >= 0 && u + v <= 1) return Math.hypot(q[0] - u * e1[0] - v * e2[0], q[1] - u * e1[1] - v * e2[1], q[2] - u * e1[2] - v * e2[2]);
+  }
+  return Math.min(seg(a, b), seg(b, c), seg(c, a));
+}
+/** Where on a decal's exponential map (`expMap`) the point p on triangle t lands, or null where the walk stopped. */
+export function mapAt(pos: ArrayLike<number>, map: Float64Array, t: number, p: ArrayLike<number>): [number, number] | null {
+  const o = t * 9;
+  const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+  const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+  const fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x, f2 = fx * fx + fy * fy + fz * fz;
+  if (f2 <= 0) return null;
+  const px = p[0] - pos[o], py = p[1] - pos[o + 1], pz = p[2] - pos[o + 2];
+  const w1 = ((py * e2z - pz * e2y) * fx + (pz * e2x - px * e2z) * fy + (px * e2y - py * e2x) * fz) / f2;
+  const w2 = ((e1y * pz - e1z * py) * fx + (e1z * px - e1x * pz) * fy + (e1x * py - e1y * px) * fz) / f2, w0 = 1 - w1 - w2;
+  const u = w0 * map[t * 6] + w1 * map[t * 6 + 2] + w2 * map[t * 6 + 4], v = w0 * map[t * 6 + 1] + w1 * map[t * 6 + 3] + w2 * map[t * 6 + 5];
+  return Number.isNaN(u) || Number.isNaN(v) ? null : [u, v];
 }
 /** How far a shape reaches from its centre (world units): its outline's farthest corner. */
 export function reachOf(sh: Shape, hw: number, hh: number) {
@@ -1622,11 +1896,11 @@ export function expMap(pos: ArrayLike<number>, c: V, nrm: V, uax: V, vax: V, rea
   }
   for (let v = 0; v < nv; v++) { const l = Math.hypot(vn[v * 3], vn[v * 3 + 1], vn[v * 3 + 2]) || 1; for (let k = 0; k < 3; k++) vn[v * 3 + k] /= l; }
   for (const l of nb) l.sort((x, y) => x - y);
-  // seed: the triangle whose corners are nearest the centre in sum
+  // seed: the triangle the centre lies on (nearest by point-to-triangle distance; by the corners' summed distance a
+  // small triangle near a big face won, and the walk from there never reached the face the mark is on)
   let best = -1, bestD = Infinity;
   for (let t = 0; t < corners / 3; t++) {
-    let dd = 0;
-    for (let k = 0; k < 3; k++) { const q = P(id[t * 3 + k]); dd += Math.hypot(q[0] - c[0], q[1] - c[1], q[2] - c[2]); }
+    const dd = triDist(P(id[t * 3]), P(id[t * 3 + 1]), P(id[t * 3 + 2]), c);
     if (dd < bestD) { bestD = dd; best = t; }
   }
   const out = new Float64Array(corners * 2).fill(NaN);
@@ -1695,16 +1969,24 @@ export function expMap(pos: ArrayLike<number>, c: V, nrm: V, uax: V, vax: V, rea
 export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs: ArrayLike<number>, span: number) {
   const d = l.decal, sh = d?.shape;
   if (!d || !sh) return;
+  for (const ch of Object.keys(l.px) as Channel[]) touch(l, ch);
   ensureShell(s, uvs);
   const n = s.size;
   const { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth } = decalFrame(d, span);
   for (const ch of Object.keys(l.px) as Channel[]) if (!d.channels.includes(ch)) delete l.px[ch];
   const nm = d.channels.includes('normal') ? fillBuf(s, l, 'normal') : null, ht = d.channels.includes('height') ? fillBuf(s, l, 'height') : null;
   nm?.fill(0); ht?.fill(0);
+  // painted: the panel's finish inside, the rim's on the border band
+  const col = d.channels.includes('color') ? fillBuf(s, l, 'color') : null, rc = col && d.channels.includes('rough') ? fillBuf(s, l, 'rough') : null, mt = col && d.channels.includes('metal') ? fillBuf(s, l, 'metal') : null;
+  col?.fill(0); rc?.fill(0); mt?.fill(0);
+  const fin = (f: { tint: string; roughness: number; metallic: number }) => [...hexTint(f.tint), f.roughness * 255, f.metallic * 255];
+  const inner = fin(d), outer = fin(d.rim ?? d);
+  let rim = false;
   const hw = width / 2, hh = height / 2, fu = d.flipH ? -1 : 1, fv = d.flipV ? -1 : 1;
-  const e = Math.min(sh.cell, sh.border > 0 ? sh.border : sh.cell) * 0.1, top = Math.max(sh.depth, sh.amount, 1e-9);
+  const e0 = slopeStep(sh, hw, hh), top = Math.max(sh.depth, Math.abs(sh.amount), 1e-9);
+  let e = e0;
   const at = (a: number, b: number) => shapeHeight(sh, a, b, hw, hh) ?? 0;
-  const map = d.wrap ? expMap(pos, [cx, cy, cz], [nx, ny, nz], [uxr, uyr, uzr], [vxr, vyr, vzr], reachOf(sh, hw, hh) + sh.cell) : null;
+  const map = d.wrap ? expMap(pos, [cx, cy, cz], [nx, ny, nz], [uxr, uyr, uzr], [vxr, vyr, vzr], reachOf(sh, hw, hh) * 1.25 + sh.cell) : null;
   // the decal's axes at the texel: the frame's when flat, the map's own directions on a wrapped triangle
   let Ux = uxr, Uy = uyr, Uz = uzr, Vx = vxr, Vy = vyr, Vz = vzr;
   let h = 0, gx = 0, gy = 0, tx = 1, ty = 0, tz = 0, bx = 0, by = 1, bz = 0;
@@ -1728,6 +2010,8 @@ export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs:
       Ux /= ul; Uy /= ul; Uz /= ul; Vx /= vl; Vy /= vl; Vz /= vl;
     } else if (fx * nx + fy * ny + fz * nz < 0.12) continue;
     [tx, ty, tz, bx, by, bz] = tangentOf(pos, uvs, t, fx, fy, fz);
+    // never finer than half a texel here: a hard rim sampled finer than the texture aliases into steps (engine: the same)
+    e = Math.max(e0, texelSize(pos, uvs, t, n) * 0.5);
     raster(n, pos, uvs, t, (x, y, z) => {
       const dx = x - cx, dy = y - cy, dz = z - cz;
       let a: number, b: number;
@@ -1744,6 +2028,7 @@ export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs:
       const hv = shapeHeight(sh, a, b, hw, hh);
       if (hv === null) return 0;
       h = hv;
+      if (col) rim = onRim(sh, a, b, hw, hh);
       // the slope along the decal's axes, into world, then the triangle's tangent space; the normal leans downhill
       const su = ((at(a + e, b) - at(a - e, b)) / (2 * e)) * fu, sv = ((at(a, b + e) - at(a, b - e)) / (2 * e)) * fv;
       const wx = su * Ux + sv * Vx, wy = su * Uy + sv * Vy, wz = su * Uz + sv * Vz;
@@ -1755,6 +2040,12 @@ export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs:
         nm[i * 4] = (-gx * k * 0.5 + 0.5) * 255; nm[i * 4 + 1] = (-gy * k * 0.5 + 0.5) * 255; nm[i * 4 + 2] = (k * 0.5 + 0.5) * 255; nm[i * 4 + 3] = 255;
       }
       if (ht) { ht[i * 2] = 128 + 127 * Math.max(-1, Math.min(1, h / top)); ht[i * 2 + 1] = 255; }
+      if (col) {
+        const f = rim ? outer : inner;
+        col[i * 4] = f[0]; col[i * 4 + 1] = f[1]; col[i * 4 + 2] = f[2]; col[i * 4 + 3] = 255;
+        if (rc) { rc[i * 2] = f[3]; rc[i * 2 + 1] = 255; }
+        if (mt) { mt[i * 2] = f[4]; mt[i * 2 + 1] = 255; }
+      }
     });
   }
   for (const i of touched) weight[i] = 0;
@@ -1840,6 +2131,7 @@ export function bevelNormal(e: ReturnType<typeof bevelEdges>, b: Bevel, px: numb
 export function bakeBevel(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs: ArrayLike<number>) {
   const b = l.bevel;
   if (!b) return;
+  for (const ch of Object.keys(l.px) as Channel[]) touch(l, ch);
   ensureShell(s, uvs);
   const n = s.size, e = bevelEdges(pos, b);
   for (const ch of Object.keys(l.px) as Channel[]) if (ch !== 'normal') delete l.px[ch];
@@ -1929,7 +2221,7 @@ export function maskDab(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs: A
     x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
   }
   touched.length = 0;
-  if (x1 >= 0) composite(s, x0, y0, x1, y1, undefined, false);
+  if (x1 >= 0) { touch(l, 'mask'); composite(s, x0, y0, x1, y1, undefined, false); }
 }
 /** Paint a fill layer's mask in the texture view. */
 export function maskDabUV(s: TexSet, l: PaintLayer, u: number, v: number, r: number, b: Brush) {
@@ -1946,17 +2238,18 @@ export function maskDabUV(s: TexSet, l: PaintLayer, u: number, v: number, r: num
     x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
   }
   touched.length = 0;
-  if (x1 >= 0) composite(s, x0, y0, x1, y1, undefined, false);
+  if (x1 >= 0) { touch(l, 'mask'); composite(s, x0, y0, x1, y1, undefined, false); }
 }
 /** White or black the whole mask (a fill layer with no mask is white). */
-export function maskFill(s: TexSet, l: PaintLayer, value: number) { maskOf(s, l).fill(value); }
+export function maskFill(s: TexSet, l: PaintLayer, value: number) { maskOf(s, l).fill(value); touch(l, 'mask'); }
 /** Fill (or clear) the mask inside the selection; outside it stays as it was. */
 export function maskSelection(s: TexSet, l: PaintLayer, erase: boolean) {
   const m = maskOf(s, l), v = erase ? 0 : 255;
   if (!s.sel) m.fill(v);
   else for (let i = 0; i < m.length; i++) if (s.sel[i]) m[i] = v;
+  touch(l, 'mask');
 }
-export function maskInvert(s: TexSet, l: PaintLayer) { const m = maskOf(s, l); for (let i = 0; i < m.length; i++) m[i] = 255 - m[i]; }
+export function maskInvert(s: TexSet, l: PaintLayer) { const m = maskOf(s, l); for (let i = 0; i < m.length; i++) m[i] = 255 - m[i]; touch(l, 'mask'); }
 
 /** A channel's composite (or the selection's shade) as a canvas, top row v = 1 as images have it, for the texture view
  *  and export; kept until the set changes. */

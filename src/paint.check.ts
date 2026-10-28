@@ -10,6 +10,12 @@ const uvs = pos.flatMap((_, i) => (i % 3 ? [] : [pos[i] / 2 + (i >= 18 ? 0.25 : 
 const s = setOf(new Float32Array(pos), 64);
 const at = (u: number, v: number) => { const i = (Math.floor(v * 64) * 64 + Math.floor(u * 64)) * 4; return Array.from((s.color.image.data as Uint8ClampedArray).subarray(i, i + 3)); };
 const BASE = [188, 188, 188]; // the unpainted Base Color
+{ // a new set starts as its one empty layer composites, without the pass
+  const fresh = setOf(new Float32Array(pos), 32), copy = (t: typeof fresh.color) => Array.from(t.image.data as Uint8ClampedArray);
+  const before = [copy(fresh.color), copy(fresh.orm), Array.from(fresh.cov!)];
+  composite(fresh);
+  assert.deepEqual(before, [copy(fresh.color), copy(fresh.orm), Array.from(fresh.cov!)], 'the blank set is what composite makes of it');
+}
 const red: Brush = { radius: 0.1, flow: 1, hardness: 0.9, erase: false, values: { color: [255, 0, 0] } };
 
 keep(s);
@@ -309,6 +315,18 @@ assert.ok(gs.sel!.every((x, i) => !x || gs.shell![i]), 'a grown selection stays 
     if (ht[i * 2] < 70) cut++;
   }
   assert.ok(covered > 500 && tilted > 50 && cut > 20, `relief baked: ${covered} texels, ${tilted} tilted, ${cut} in the groove`);
+  // painted: black rubber inside, a purple metal rim on the border band
+  l.decal = { ...l.decal!, tint: '#101010', roughness: 0.85, metallic: 0, rim: { tint: '#8040ff', roughness: 0.35, metallic: 1 }, channels: ['normal', 'height', 'color', 'rough', 'metal'] };
+  bakeShape(ss, l, pos, uvs, 1);
+  const pc = l.px.color!, pm = l.px.metal!;
+  let inside = 0, rim = 0, wrong = 0;
+  for (let i = 0; i < 64 * 64; i++) {
+    if (!pc[i * 4 + 3]) continue;
+    if (pc[i * 4] === 16 && pm[i * 2] === 0) inside++;
+    else if (pc[i * 4] === 128 && pc[i * 4 + 2] === 255 && pm[i * 2] === 255) rim++;
+    else wrong++;
+  }
+  assert.ok(inside > 300 && rim > 50 && !wrong && inside + rim === covered, `panel ${inside} / rim ${rim} / other ${wrong} of ${covered}`);
 
   // a free outline: inside its box is not inside it, and a rounded corner trims the tip
   const tri: Shape = { pattern: 'none', corner: 0, border: 0.05, depth: 0.02, cell: 0.03, amount: 0, outline: [[-1, -1], [1, -1], [0, 1]] };

@@ -340,7 +340,6 @@ dependencies = [
  "axum",
  "image",
  "lz4_flex",
- "png 0.17.16",
  "rayon",
  "rfd",
  "rusqlite",

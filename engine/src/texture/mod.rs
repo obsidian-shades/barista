@@ -9,6 +9,8 @@ pub mod layers;
 
 use crate::project::{load, Pack};
 use bake::{Edges, Occlusion};
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{ExtendedColorType, ImageEncoder};
 use layers::{fill_at, gen_at, DecalFrame, Map, Material, Mesh, Texel, Up, NONE};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -58,14 +60,33 @@ pub struct Decal {
     /// Bent round the model (paint.ts `Decal.wrap`): the shape follows `layers::exp_map` instead of a flat projection.
     #[serde(default)]
     pub wrap: bool,
+    /// A shape's border finish (paint.ts `Decal.rim`; None: the same as inside).
+    #[serde(default)]
+    pub rim: Option<Rim>,
 }
-/// A relief panel in world units (paint.ts `Shape`): rounded outline, groove border, pattern inside.
 #[derive(Deserialize, Clone)]
+pub struct Rim { pub tint: String, pub roughness: f32, pub metallic: f32 }
+/// A relief in world units (paint.ts `Shape`): a panel (rounded outline, groove border, pattern inside), a pad, a
+/// fastener, or a line kind along the outline as a polyline.
+#[derive(Deserialize, Clone, Default)]
 pub struct Shape {
     pub pattern: String, pub corner: f32, pub border: f32, pub depth: f32, pub cell: f32, pub amount: f32,
     /// Free outline: corners as shares of the panel's half width / height (None: the rectangle).
     #[serde(default)]
     pub outline: Option<Vec<[f32; 2]>>,
+    /// A line kind's polyline closes back to its first point.
+    #[serde(default)]
+    pub closed: bool,
+    /// A groove's cross-section or a pad's edge: round (None), v, square, chamfer.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// A fastener's or rivet row's head (dome, pan, flat, cap, hexhead) and drive, and a washer under it.
+    #[serde(default)]
+    pub head: Option<String>,
+    #[serde(default)]
+    pub drive: Option<String>,
+    #[serde(default)]
+    pub washer: bool,
 }
 /// A whole-part bevel in the normal map (paint.ts `Bevel`): `radius` world units, `profile` round / chamfer, edges
 /// sharper than `angle` degrees, concave ones too when `concave`.
@@ -203,7 +224,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
         .iter()
         .map(|l| {
             if let Some(f) = &l.fill { if let Some(m) = assets.materials.get(&f.asset) { return Src::Fill(f, m); } }
-            if let Some(d) = &l.decal { if let Some(sh) = &d.shape { return Src::Shape(layers::ShapeSrc::new(d, sh, span, mesh)); } }
+            if let Some(d) = &l.decal { if let Some(sh) = &d.shape { return Src::Shape(layers::ShapeSrc::new(d, sh, span, mesh, n)); } }
             if let Some(d) = &l.decal { if let Some(img) = assets.decals.get(&d.asset) { return Src::Decal(DecalFrame::new(d, span), img, &d.channels); } }
             if let Some(b) = &l.bevel { return Src::Bevel(layers::BevelSrc::new(b, mesh.pos)); }
             if let Some(g) = &l.gen { if occ.is_some() && edges.is_some() { return Src::Gen(g); } }
@@ -375,17 +396,16 @@ fn pad(o: &mut Out, n: usize, p: usize) {
 /// An n² image as PNG, rows flipped (texture row 0 is v = 0, an image's is the top).
 fn png(path: &Path, n: usize, channels: usize, px: impl Fn(usize, &mut [u8]) + Sync) -> Result<(), String> {
     let f = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?);
-    let mut enc = png::Encoder::new(f, n as u32, n as u32);
-    enc.set_color(if channels == 1 { png::ColorType::Grayscale } else if channels == 3 { png::ColorType::Rgb } else { png::ColorType::Rgba });
-    enc.set_depth(png::BitDepth::Eight);
-    enc.set_compression(png::Compression::Fast);
-    let mut w = enc.write_header().map_err(|e| e.to_string())?;
     let mut data = vec![0u8; n * n * channels];
     data.par_chunks_mut(n * channels).enumerate().for_each(|(row, out)| {
         let y = n - 1 - row;
         for x in 0..n { px(y * n + x, &mut out[x * channels..(x + 1) * channels]); }
     });
-    w.write_image_data(&data).map_err(|e| e.to_string())
+    let color = [ExtendedColorType::L8, ExtendedColorType::La8, ExtendedColorType::Rgb8, ExtendedColorType::Rgba8][channels - 1];
+    // Sub is what the png crate wrote by default; Adaptive is several times slower at 8K
+    PngEncoder::new_with_quality(f, CompressionType::Fast, FilterType::Sub)
+        .write_image(&data, n as u32, n as u32, color)
+        .map_err(|e| e.to_string())
 }
 
 struct Assets { materials: HashMap<String, Material>, decals: HashMap<String, Map> }
@@ -422,7 +442,7 @@ pub fn export(body: &[u8]) -> Result<Option<ExportDone>, String> {
 
 fn run(req: &ExportReq, dir: &Path, fbx: Option<&[u8]>) -> Result<Vec<String>, String> {
     progress("Reading the project…");
-    let project = load(Path::new(&req.project))?;
+    let project = load(Path::new(&req.project))?.pack;
     let doc: Doc = serde_json::from_str(&project.json).map_err(|e| format!("project document: {e}"))?;
     let blobs: HashMap<&str, &[u8]> = project.blobs.iter().map(|(k, v)| (k.as_str(), v.as_slice())).collect();
     let floats = |name: &str| -> Result<Vec<f32>, String> {
@@ -537,7 +557,7 @@ mod tests {
     /// The engine draws a grip texture as the editor does: paint.ts `shapeHeight` at the same points (from Node).
     #[test]
     fn shape_relief_matches_the_editor() {
-        let sh = |p: &str| Shape { pattern: p.into(), corner: 0.2, border: 0.06, depth: 0.03, cell: 0.05, amount: 0.012, outline: None };
+        let sh = |p: &str| Shape { pattern: p.into(), corner: 0.2, border: 0.06, depth: 0.03, cell: 0.05, amount: 0.012, outline: None, ..Default::default() };
         let pts = [(0.3079, 0.2233), (-0.1728, 0.5644), (0.0044, 0.3288), (0.2237, 0.6699), (0.1085, -0.0205), (0.47, 0.2)];
         let want = [
             ("stipple", [0.003171373, 0.005149145, 0.006135595, 0.004268161, 0.01070719, -0.03]),
@@ -552,13 +572,50 @@ mod tests {
             assert!(layers::shape_height(&sh(p), 0.6, 0.0, 0.5, 1.0).is_none(), "{p}: nothing outside the outline");
         }
         // a free outline with rounded corners
-        let sh = Shape { pattern: "stipple".into(), corner: 0.08, border: 0.05, depth: 0.02, cell: 0.04, amount: 0.01, outline: Some(vec![[-1.0, -1.0], [0.8, -0.9], [1.0, 0.4], [0.0, 1.0], [-0.6, 0.3]]) };
+        let sh = Shape { pattern: "stipple".into(), corner: 0.08, border: 0.05, depth: 0.02, cell: 0.04, amount: 0.01, outline: Some(vec![[-1.0, -1.0], [0.8, -0.9], [1.0, 0.4], [0.0, 1.0], [-0.6, 0.3]]), ..Default::default() };
         let pts = [(0.0, 0.0), (0.1, -0.2), (-0.3, 0.1), (0.35, 0.2), (0.42, -0.4), (-0.45, -0.45), (0.2, 0.6), (0.6, 0.6)];
         let want = [Some(0.0), Some(0.0), Some(-0.019924021), Some(0.001377607), Some(-0.006470219), None, None, None];
         for (&(x, y), w) in pts.iter().zip(want) {
             let h = layers::shape_height(&sh, x, y, 0.5, 0.7);
             assert!(match (h, w) { (Some(h), Some(w)) => (h - w).abs() < 2e-5, (None, None) => true, _ => false }, "outline at ({x}, {y}): engine {h:?}, editor {w:?}");
         }
+
+    }
+
+    /// Lines (open and closed), fasteners and pads give the editor's numbers (paint.ts `shapeHeight`).
+    #[test]
+    fn relief_kinds_match_the_editor() {
+        let same = |h: Option<f32>, w: Option<f32>| match (h, w) { (Some(h), Some(w)) => (h - w).abs() < 3e-5, (None, None) => true, _ => false };
+        let cases: Vec<(Shape, f32, f32, Vec<(f32, f32, Option<f32>)>)> = vec![
+            (Shape { pattern: "groove".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: false, profile: Some("v".into()), head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, Some(-0.0241876181)), (-0.25, 0.0, Some(-0.0300000000)), (0.25, 0.1, Some(-0.0282144679)), (0.45, -0.12, Some(-0.0196439138)), (-0.48, -0.33, Some(-0.0276750472)), (0.1, 0.3, Some(-0.0128588919)), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "groove".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: true, profile: Some("square".into()), head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, None), (-0.25, 0.0, Some(-0.0300000000)), (0.25, 0.1, Some(-0.0300000000)), (0.45, -0.12, None), (-0.48, -0.33, None), (0.1, 0.3, None), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "bead".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: false, profile: None, head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, Some(0.0398657201)), (-0.25, 0.0, Some(0.0311979398)), (0.25, 0.1, Some(0.0349464481)), (0.45, -0.12, Some(0.0338302506)), (-0.48, -0.33, Some(0.0303269912)), (0.1, 0.3, Some(0.0249598823)), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "bead".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: true, profile: None, head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, None), (-0.25, 0.0, Some(0.0419879102)), (0.25, 0.1, Some(0.0375460401)), (0.45, -0.12, None), (-0.48, -0.33, None), (0.1, 0.3, None), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "stitch".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: false, profile: None, head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, Some(0.0125865859)), (-0.25, 0.0, Some(0.0238605591)), (0.25, 0.1, Some(0.0211147352)), (0.45, -0.12, Some(-0.0113644532)), (-0.48, -0.33, Some(0.0234181309)), (0.1, 0.3, Some(-0.0102588587)), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "stitch".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: true, profile: None, head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, Some(-0.000610085878)), (-0.25, 0.0, Some(-0.0120000000)), (0.25, 0.1, Some(0.0160918635)), (0.45, -0.12, None), (-0.48, -0.33, None), (0.1, 0.3, Some(-0.00512925967)), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "rivets".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: false, profile: None, head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, Some(0.0299115559)), (-0.25, 0.0, Some(0.0218674618)), (0.25, 0.1, Some(0.0194970058)), (0.45, -0.12, Some(0.0288115910)), (-0.48, -0.33, Some(0.0262972912)), (0.1, 0.3, Some(0.0295145620)), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "rivets".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: true, profile: None, head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, None), (-0.25, 0.0, Some(0.0180824371)), (0.25, 0.1, Some(0.0196630992)), (0.45, -0.12, None), (-0.48, -0.33, None), (0.1, 0.3, None), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "scratch".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: false, profile: None, head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, Some(-0.0134257954)), (-0.25, 0.0, Some(-0.0243841853)), (0.25, 0.1, Some(-0.0162468713)), (0.45, -0.12, Some(-0.00340895225)), (-0.48, -0.33, Some(-0.00444765676)), (0.1, 0.3, Some(0.000944724287)), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "scratch".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: 0.012, outline: Some(vec![[-1.0, -0.5], [0.0, 0.5], [1.0, -0.2]]), closed: true, profile: None, head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.7, vec![(0.0, 0.33, None), (-0.25, 0.0, Some(-0.0258202901)), (0.25, 0.1, Some(-0.0176001229)), (0.45, -0.12, None), (-0.48, -0.33, None), (0.1, 0.3, None), (0.3, 0.3, None), (-0.5, 0.05, None)]),
+            (Shape { pattern: "fastener".into(), corner: 0.2, border: 0.12, depth: 0.2, cell: 0.05, amount: 0.15, outline: None, closed: false, profile: None, head: Some("dome".into()), drive: Some("none".into()), washer: false }, 0.5, 0.5, vec![(0.02, 0.01, Some(0.199839920)), (0.3, 0.05, Some(0.166996063)), (0.1, 0.4, Some(0.130509668)), (0.6, 0.6, None), (-0.2, -0.25, Some(0.162898332)), (0.45, -0.1, Some(0.101967734)), (0.0, 0.2, Some(0.186642422)), (0.7, 0.1, None)]),
+            (Shape { pattern: "fastener".into(), corner: 0.2, border: 0.12, depth: 0.2, cell: 0.05, amount: 0.15, outline: None, closed: false, profile: None, head: Some("pan".into()), drive: Some("phillips".into()), washer: false }, 0.5, 0.5, vec![(0.02, 0.01, Some(0.0554725225)), (0.3, 0.05, Some(0.196657498)), (0.1, 0.4, Some(0.159738265)), (0.6, 0.6, None), (-0.2, -0.25, Some(0.195290449)), (0.45, -0.1, Some(0.112868339)), (0.0, 0.2, Some(0.0977551513)), (0.7, 0.1, None)]),
+            (Shape { pattern: "fastener".into(), corner: 0.2, border: 0.12, depth: 0.2, cell: 0.05, amount: 0.15, outline: None, closed: false, profile: None, head: Some("pan".into()), drive: Some("pozi".into()), washer: false }, 0.5, 0.5, vec![(0.02, 0.01, Some(0.0554725225)), (0.3, 0.05, Some(0.196657498)), (0.1, 0.4, Some(0.159738265)), (0.6, 0.6, None), (-0.2, -0.25, Some(0.195290449)), (0.45, -0.1, Some(0.112868339)), (0.0, 0.2, Some(0.0977551513)), (0.7, 0.1, None)]),
+            (Shape { pattern: "fastener".into(), corner: 0.2, border: 0.12, depth: 0.2, cell: 0.05, amount: 0.15, outline: None, closed: false, profile: None, head: Some("flat".into()), drive: Some("slot".into()), washer: false }, 0.5, 0.5, vec![(0.02, 0.01, Some(-0.150000000)), (0.3, 0.05, Some(0.00000000)), (0.1, 0.4, Some(0.00000000)), (0.6, 0.6, None), (-0.2, -0.25, Some(0.00000000)), (0.45, -0.1, Some(0.00000000)), (0.0, 0.2, Some(0.00000000)), (0.7, 0.1, None)]),
+            (Shape { pattern: "fastener".into(), corner: 0.2, border: 0.12, depth: 0.2, cell: 0.05, amount: 0.15, outline: None, closed: false, profile: None, head: Some("cap".into()), drive: Some("hex".into()), washer: false }, 0.5, 0.5, vec![(0.02, 0.01, Some(0.0555901699)), (0.3, 0.05, Some(0.200000000)), (0.1, 0.4, Some(0.200000000)), (0.6, 0.6, None), (-0.2, -0.25, Some(0.200000000)), (0.45, -0.1, Some(0.130075924)), (0.0, 0.2, Some(0.200000000)), (0.7, 0.1, None)]),
+            (Shape { pattern: "fastener".into(), corner: 0.2, border: 0.12, depth: 0.2, cell: 0.05, amount: 0.15, outline: None, closed: false, profile: None, head: Some("hexhead".into()), drive: Some("none".into()), washer: true }, 0.5, 0.5, vec![(0.02, 0.01, Some(0.244000000)), (0.3, 0.05, Some(0.190620294)), (0.1, 0.4, Some(0.0440000000)), (0.6, 0.6, None), (-0.2, -0.25, Some(0.158183671)), (0.45, -0.1, Some(0.0440000000)), (0.0, 0.2, Some(0.244000000)), (0.7, 0.1, None)]),
+            (Shape { pattern: "fastener".into(), corner: 0.2, border: 0.12, depth: 0.2, cell: 0.05, amount: 0.15, outline: None, closed: false, profile: None, head: Some("dome".into()), drive: Some("torx".into()), washer: false }, 0.5, 0.5, vec![(0.02, 0.01, Some(0.0531940219)), (0.3, 0.05, Some(0.166996063)), (0.1, 0.4, Some(0.130509668)), (0.6, 0.6, None), (-0.2, -0.25, Some(0.162898332)), (0.45, -0.1, Some(0.101967734)), (0.0, 0.2, Some(0.186642422)), (0.7, 0.1, None)]),
+            (Shape { pattern: "fastener".into(), corner: 0.2, border: 0.12, depth: 0.2, cell: 0.05, amount: 0.15, outline: None, closed: false, profile: None, head: Some("pan".into()), drive: Some("square".into()), washer: true }, 0.5, 0.5, vec![(0.02, 0.01, Some(0.101517543)), (0.3, 0.05, Some(0.204921691)), (0.1, 0.4, Some(0.0440000000)), (0.6, 0.6, None), (-0.2, -0.25, Some(0.188098110)), (0.45, -0.1, Some(0.0440000000)), (0.0, 0.2, Some(0.241466640)), (0.7, 0.1, None)]),
+            (Shape { pattern: "pad".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: -0.02, outline: None, closed: false, profile: Some("round".into()), head: None, drive: None, washer: false }, 0.5, 0.4, vec![(0.0, 0.0, Some(-0.0200000000)), (0.45, 0.1, Some(-0.0162446572)), (0.42, 0.35, Some(-0.00713947621)), (0.47, 0.37, None), (0.6, 0.0, None), (0.3, 0.39, Some(-0.00799305254))]),
+            (Shape { pattern: "pad".into(), corner: 0.2, border: 0.12, depth: 0.03, cell: 0.05, amount: -0.02, outline: None, closed: false, profile: Some("chamfer".into()), head: None, drive: None, washer: false }, 0.5, 0.4, vec![(0.0, 0.0, Some(-0.0200000000)), (0.45, 0.1, Some(-0.0185185185)), (0.42, 0.35, Some(-0.00292824921)), (0.47, 0.37, None), (0.6, 0.0, None), (0.3, 0.39, Some(-0.00370370370))]),
+        ];
+        for (sh, hw, hh, pts) in &cases {
+            for &(x, y, w) in pts {
+                let h = layers::shape_height(sh, x, y, *hw, *hh);
+                assert!(same(h, w), "{} at ({x}, {y}): engine {h:?}, editor {w:?}", sh.pattern);
+            }
+        }
+        // every kind covers something: none of the pinned cases is all None
+        assert!(cases.iter().all(|c| c.3.iter().any(|p| p.2.is_some())));
     }
 
     /// Wrapping unfolds the surface (paint.ts `expMap`): a strip bent 90° over an edge, its far face's corners one unit

@@ -44,7 +44,7 @@ function PaintSelectModes() {
   return (
     <>
       <span className="seg modes" role="group" aria-label="Select by" title="What Select Faces and Bucket pick">
-        {PAINT_KINDS.map(([v, label, title]) => <button key={v} aria-pressed={by === v} title={title} onClick={() => setPaint({ by: v })}><span className="mico">{PAINT_ICON[v]}</span>{label}</button>)}
+        {PAINT_KINDS.map(([v, label, title], i) => <button key={v} aria-pressed={by === v} title={`${title} (${i + 1})`} onClick={() => setPaint({ by: v })}><span className="mico">{PAINT_ICON[v]}</span>{label}</button>)}
       </span>
       {by === 'surface' && (
         <label title="Surface stops at edges bent more than this, and at twice this from the clicked face (90°: a whole bore)">
@@ -116,7 +116,7 @@ export function PopupMenu() {
 const pct = (x: number) => `${(x * 100).toFixed(2)}%`;
 
 export function StatusBar() {
-  const server = useApp((s) => s.server), busy = useApp((s) => s.busy), error = useApp((s) => s.error), notice = useApp((s) => s.notice), edited = useApp((s) => s.edited);
+  const server = useApp((s) => s.server), busy = useApp((s) => s.busy), saving = useApp((s) => s.saving), error = useApp((s) => s.error), notice = useApp((s) => s.notice), edited = useApp((s) => s.edited);
   const stats = useApp((s) => s.result?.stats);
   const workspace = useApp((s) => s.workspace), doc = workspace === 'doc', paint = workspace === 'paint', uv = workspace === 'uv';
   // Poly Doc reads the mesh only: polygons and triangles of every part, nothing from the unwrap
@@ -143,6 +143,7 @@ export function StatusBar() {
         <span>stretch <span className="num">{pct(stats.mean_stretch)}</span></span>
       </>}
       {edited && uv && <span title="UVs moved by hand since the last unwrap; Auto Unwrap starts over">edited by hand</span>}
+      {saving && <span className="busy" title="The project is being written; the tools stay usable">{saving}</span>}
       {busy && <span className="busy">{busy}</span>}
       {notice && !busy && <span title={notice}>{notice}</span>}
       {error && server !== 'down' && <span className="err" title={error}>{error}</span>}

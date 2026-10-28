@@ -119,7 +119,7 @@ export function SceneSettings() {
           {scene.lighting === 'studio' && <>
             {paintWs && <>
               <div className="tsec"><span className="caps">Look</span></div>
-              <Switch label="Lift" title="Lift the base colour so a dark paint job’s texture still reads on the side the key does not light. Off shows the true PBR material." checked={lift > 0} onChange={(on) => setPaintLift(on ? 0.4 : 0)} />
+              <Switch label="Lift" title="Work light: a second light opposite the key and a brighter environment, so both sides are lit and the texture reads everywhere. Off shows the true studio light." checked={lift > 0} onChange={(on) => setPaintLift(on ? 0.4 : 0)} />
               {materialView && <Switch label="Shadow" title="The key light’s shadow on the floor and between the parts. Off, the model is lit evenly with no ground shadow (Shift+right-drag turns the key)." checked={scene.paintShadow !== false} onChange={(paintShadow) => updateScene({ paintShadow })} />}
             </>}
             <details className="scene-adv">
