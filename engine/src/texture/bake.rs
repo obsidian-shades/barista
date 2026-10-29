@@ -116,18 +116,52 @@ fn raster_depth(buf: &mut [f32], v: &[[f32; 3]]) {
     }
 }
 
-/// The part's sharp (> 20°) edges, convex and concave apart, as whole segments in a grid of `reach` cells; a query is
-/// the distance to the nearest segment over its strength (Infinity past `reach`).
+/// The file's normals per output corner (polyedit.ts `outNormals`): each output triangle's corner takes the normal of
+/// the nearest corner of the file triangle it came from (`source`); NaN where it came from none.
+pub fn out_normals(pos: &[f32], source: &[i32], soup: &[f32], normals: &[f32]) -> Vec<f32> {
+    let mut n = vec![f32::NAN; pos.len()];
+    for (t, &s) in source.iter().enumerate() {
+        if s < 0 || (s as usize) * 9 + 9 > soup.len().min(normals.len()) || t * 9 + 9 > pos.len() { continue; }
+        let s = s as usize;
+        for k in 0..3 {
+            let o = t * 9 + k * 3;
+            let best = (0..3).map(|j| s * 9 + j * 3).min_by(|&a, &b| {
+                let d = |q: usize| (0..3).map(|c| (soup[q + c] - pos[o + c]).powi(2)).sum::<f32>();
+                d(a).total_cmp(&d(b))
+            }).unwrap();
+            n[o..o + 3].copy_from_slice(&normals[best..best + 3]);
+        }
+    }
+    n
+}
+
+/// The part's hard edges (bake.ts `isHard`: the file's normals differ across it, else the faces meet at more than
+/// `sharp` degrees; UV seams play no part), convex and concave apart, as whole segments in a grid of `reach` cells; a
+/// query is the distance to the nearest segment over its strength (Infinity past `reach`).
 pub struct Edges { grids: [HashMap<(i32, i32, i32), Vec<[f32; 7]>>; 2], reach: f32 }
 
 impl Edges {
-    pub fn new(pos: &[f32], reach: f32) -> Edges {
+    pub fn new(pos: &[f32], reach: f32, normals: Option<&[f32]>, sharp: f32) -> Edges {
         let tris = pos.len() / 9;
         let fnrm: Vec<V3> = (0..tris).map(|t| norm(cross(sub(at(pos, t * 3 + 1), at(pos, t * 3)), sub(at(pos, t * 3 + 2), at(pos, t * 3))))).collect();
         let fc: Vec<V3> = (0..tris).map(|t| { let (a, b, c) = (at(pos, t * 3), at(pos, t * 3 + 1), at(pos, t * 3 + 2)); [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0] }).collect();
         // welded edges by exact position (topo.ts topoOf): the triangles on each
         let key = |v: V3| (v[0].to_bits(), v[1].to_bits(), v[2].to_bits());
         let mut edges: HashMap<((u32, u32, u32), (u32, u32, u32)), (V3, V3, Vec<usize>)> = HashMap::new();
+        // the corner of triangle `t` at position `v`
+        let corner = |t: usize, v: V3| (0..3).map(|k| t * 3 + k).find(|&c| key(at(pos, c)) == key(v)).unwrap_or(t * 3);
+        let hard = |v0: V3, v1: V3, a: usize, b: usize, angle: f32| -> bool {
+            if let Some(n) = normals {
+                let mut known = true;
+                for v in [v0, v1] {
+                    let (ca, cb) = (corner(a, v) * 3, corner(b, v) * 3);
+                    if n[ca].is_nan() || n[cb].is_nan() { known = false; break; }
+                    if n[ca] * n[cb] + n[ca + 1] * n[cb + 1] + n[ca + 2] * n[cb + 2] < 0.999 { return true; }
+                }
+                if known { return false; }
+            }
+            angle > sharp.to_radians()
+        };
         for t in 0..tris {
             for k in 0..3 {
                 let (a, b) = (at(pos, t * 3 + k), at(pos, t * 3 + (k + 1) % 3));
@@ -142,7 +176,7 @@ impl Edges {
             let [a, b] = [ts[0], *ts.get(1).unwrap_or(&usize::MAX)];
             if b == usize::MAX { continue; }
             let angle = dot(fnrm[a], fnrm[b]).clamp(-1.0, 1.0).acos();
-            if angle < 20f32.to_radians() { continue; }
+            if !hard(*v0, *v1, a, b, angle) { continue; }
             // convex when b's centre lies behind a's plane
             let side = dot(sub(fc[b], *v0), fnrm[a]);
             let g = &mut grids[if side < 0.0 { 0 } else { 1 }];
@@ -199,8 +233,27 @@ mod tests {
     #[test]
     fn an_edge_distance_is_measured_to_the_segment() {
         let pos = [0., 0., 0., 1., 0., 0., 1., -1., 0., 0., 0., 0., 1., 0., 0., 1., 0., 1.];
-        let e = Edges::new(&pos, 10.0);
+        let e = Edges::new(&pos, 10.0, None, 45.0);
         let d = e.dist(0, [0.5, 0.5, 0.5]).min(e.dist(1, [0.5, 0.5, 0.5]));
         assert!((d - 0.5f32.hypot(0.5)).abs() < 1e-4, "distance {d}");
+    }
+
+    /// Wear follows the shading, not the bend: two quads meeting at 30° are an edge only when the file's normals
+    /// split there (or, with no normals, when 30° is past Sharp edges). bake.ts `isHard` is the same rule.
+    #[test]
+    fn hard_edges_follow_the_shading() {
+        let (c, s) = (30f32.to_radians().cos(), 30f32.to_radians().sin());
+        // flank a in the xy plane, flank b turned 30° about the x axis, sharing the edge (0,0,0)-(1,0,0)
+        let pos = [0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 0., 0., 1., -c, s, 1., 0., 0.];
+        let p = [0.5, 0.05, 0.05];
+        let near = |e: &Edges| e.dist(0, p).min(e.dist(1, p)).is_finite();
+        assert!(!near(&Edges::new(&pos, 10.0, None, 45.0)), "30° under a 45° Sharp edges is smooth");
+        assert!(near(&Edges::new(&pos, 10.0, None, 20.0)), "30° over a 20° Sharp edges is an edge");
+        let up = [0f32, 0., 1.];
+        let smooth: Vec<f32> = (0..6).flat_map(|_| up).collect();
+        assert!(!near(&Edges::new(&pos, 10.0, Some(&smooth), 20.0)), "one normal across it: smooth, whatever the angle");
+        let mut split = smooth.clone();
+        for k in 3..6 { split[k * 3..k * 3 + 3].copy_from_slice(&[0., s, c]); }
+        assert!(near(&Edges::new(&pos, 10.0, Some(&split), 45.0)), "normals split across it: an edge");
     }
 }

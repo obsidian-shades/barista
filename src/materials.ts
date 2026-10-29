@@ -31,6 +31,9 @@ export interface MaterialAsset {
   /** No colour of its own: the base colour map is left out and the fill's tint is the colour (on white), so one
    *  finish takes any colour (Cerakote). Its roughness / normal / height keep the coating's texture. */
   colorless?: boolean;
+  /** A finish's own flat roughness / metallic, put on a new fill as its overrides (still editable there). */
+  roughness?: number;
+  metallic?: number;
 }
 
 export interface MapPixels { width: number; height: number; data: Uint8ClampedArray }
@@ -84,34 +87,38 @@ export const TILE_KINDS: [string, RegExp][] = [
 ];
 export const tileKind = (m: MaterialAsset) => TILE_KINDS.find(([, re]) => re.test(m.name))?.[0] ?? 'Other';
 
-const BASE = '/materials';
+/** The asset tree (public/assets/<shelf>): the CC0 core set, the purchased pack beside it. */
+const BASE = '/assets/materials/core', PACK = '/assets/materials/pack';
 /** Weapon finishes the pack has under other names: the same maps, shelved again under the finish's name
- *  (textures only, no tint). [name, the pack material it is]. */
-const FINISHES: [string, string, boolean][] = [
-  ['Cerakote', 'painted metal PBR', true],
+ *  (textures only, no tint). [name, the pack material it is, colorless, what of it to keep]. */
+const FINISHES: [string, string, boolean, Partial<MaterialAsset>?][] = [
+  // the pack's roughness is per-texel noise and its height blotchy grime: sandpaper, not a sprayed ceramic coat.
+  // Keep only its fine normal grain and scratches, on one satin roughness.
+  ['Cerakote', 'painted metal PBR', true, { roughness: 0.42, metallic: 0 }],
   ['Anodized Metal', 'silver metal PBR', false],
 ];
 let library: MaterialAsset[] | null = null;
 let loading: Promise<MaterialAsset[]> | null = null;
 
 /** The installed material shelf. The purchased pack is the library now; the small core set is only
- *  a fallback for a checkout without `public/materials-pack/index.json`. */
+ *  a fallback for a checkout without `public/assets/materials/pack/index.json`. */
 export function loadMaterialLibrary(): Promise<MaterialAsset[]> {
   if (library) return Promise.resolve(library);
   loading ??= (async () => {
     try {
-      const pr = await fetch(`${BASE}-pack/index.json`);
+      const pr = await fetch(`${PACK}/index.json`);
       if (pr.ok) {
         const pj = await pr.json() as { materials?: MaterialAsset[] };
         if (Array.isArray(pj.materials) && pj.materials.length) {
           library = pj.materials.map((m) => ({ ...m, library: 'pack' as const }));
-          for (const [name, of, colorless] of FINISHES) {
+          for (const [name, of, colorless, own] of FINISHES) {
             const m = library.find((x) => x.name === of);
             if (!m) continue;
+            const maps = { ...m.maps, ...(colorless ? { basecolor: undefined } : {}), ...(own ? { roughness: undefined, metallic: undefined, height: undefined } : {}) };
             library.unshift({
               ...m, id: `finish-${name.toLowerCase().replace(/\W+/g, '-')}`, name, tags: [...m.tags, 'finish', name.toLowerCase(), ...(colorless ? ['colorless', 'any colour'] : [])],
               notes: colorless ? `${name} finish (the pack's “${of}” texture, no colour: the fill's tint is its colour)` : `${name} finish (the pack's “${of}”)`,
-              ...(colorless ? { maps: { ...m.maps, basecolor: undefined }, colorless } : {}),
+              maps, ...(colorless ? { colorless } : {}), ...own,
             });
           }
           return library;

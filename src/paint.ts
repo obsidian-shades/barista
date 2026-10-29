@@ -41,6 +41,8 @@ export interface Fill {
   metallic?: number;
   channels: Channel[];
 }
+/** A decal's relief maps, decoded (DECALmachine's: normal, ao_curv_height and masks). */
+export interface ReliefPixels { normal: MapPixels; height: MapPixels; mask: MapPixels }
 /** A placed decal: a planar projector tangent to the surface at `center`, oriented by `normal`/`up`.
  *  `width` is world units, `aspect` image width / height. It is baked into a layer, so it paints and
  *  exports like the rest of the stack. */
@@ -69,6 +71,10 @@ export interface Decal {
   /** Bend round the model: the relief follows the surface's own coordinates out from `center` (`expMap`) instead of a
    *  flat projection, so it carries over bevels and curves without stretching. */
   wrap?: boolean;
+  /** A relief read from the decal's own maps (DECALmachine's): how strongly the normal map tilts (1 = as authored)
+   *  and the height map's contrast. `bakeRelief` writes Normal and Height; the mark puts down no colour. */
+  reliefNormal?: number;
+  reliefHeight?: number;
 }
 /** A grip texture's fill: raised stipple dots, grooves across the panel, diamond checkering, or none (the border alone).
  *  The other reliefs: `pad` lifts the panel by `amount` (negative: pressed in) over a `border` wide edge; `fastener`
@@ -76,7 +82,7 @@ export interface Decal {
  *  wide: `groove` cut `depth` deep, `bead` a weld `depth` high rippling by `amount` every `cell`, `stitch` thread
  *  dashes every `cell` in a channel `amount` deep, `rivets` a head every `cell`, `scratch` a V with burred lips whose
  *  depth wanders by `amount` every `cell`. */
-export type Pattern = 'stipple' | 'grooves' | 'checker' | 'none' | 'pad' | 'fastener' | 'groove' | 'bead' | 'stitch' | 'rivets' | 'scratch';
+export type Pattern = 'stipple' | 'grooves' | 'checker' | 'pyramid' | 'none' | 'pad' | 'fastener' | 'groove' | 'bead' | 'stitch' | 'rivets' | 'scratch';
 /** A cross-section: a groove's, or a pad's edge. */
 export type Profile = 'round' | 'v' | 'square' | 'chamfer';
 /** A fastener's head: button dome, pan, countersunk flush, socket cap, hex bolt. */
@@ -265,6 +271,8 @@ export function restoreSet(soup: Float32Array, saved: SavedSet, pixels: (id: num
   footprints.delete(s);
   ids = Math.max(ids, ...s.layers.map((l) => l.id));
   const n = s.size;
+  // an older file may hold a decal under a material layer: its saved composite is of that order, so lay it again
+  if (decalsLast(s)) saved = { ...saved, comp: undefined };
   if (saved.comp) {
     const [col, orm, nrm, hgt] = [s.color, s.orm, s.normal, s.height];
     for (const [t, what] of [[col, 'comp_color'], [orm, 'comp_orm'], [nrm, 'comp_normal'], [hgt, 'comp_height']] as const) {
@@ -490,12 +498,26 @@ function blendedHeight(dst: number, src: number, mode: BlendMode) {
   return mode === 'add' ? Math.max(0, Math.min(1, dst + (src - 0.5))) : blended(dst, src, mode);
 }
 
+/** Decals always paint on top of the material stack: move any decal layer below a non-decal one up to the top (in
+ *  its own order), keeping the active layer the same layer. True when it moved anything. The engine's export sorts
+ *  the same way. */
+export function decalsLast(s: { layers: PaintLayer[]; active: number }) {
+  const first = s.layers.findIndex((l) => l.decal);
+  if (first < 0 || s.layers.slice(first).every((l) => l.decal)) return false;
+  const act = s.layers[s.active];
+  s.layers = [...s.layers.filter((l) => !l.decal), ...s.layers.filter((l) => l.decal)];
+  s.active = Math.max(0, s.layers.indexOf(act));
+  return true;
+}
+
 /** Texels in a composite box from which the GPU takes over (256²). */
 const GPU_MIN = 256 * 256;
 /** The layers flattened into the textures the model shows, within a texel rectangle (all of it by default).
  *  `only` limits the work to the channels a brush just touched: painting Base Color does not recomposite
  *  Roughness, Metallic, Normal and Height on every dab. */
 export function composite(s: TexSet, x0 = 0, y0 = 0, x1 = s.size - 1, y1 = s.size - 1, only?: Channel[], pad = true) {
+  // a stack whose decals are not all on top (an add above a mark, an older project): put them back, then lay all of it
+  if (decalsLast(s)) { x0 = y0 = 0; x1 = y1 = s.size - 1; only = undefined; }
   const n = s.size, col = s.color.image.data as Uint8ClampedArray, orm = s.orm.image.data as Uint8ClampedArray;
   const nrm = s.normal.image.data as Uint8ClampedArray, hgt = s.height.image.data as Uint8ClampedArray;
   const shown = s.layers.filter((l) => l.visible && l.opacity > 0);
@@ -1609,8 +1631,10 @@ function tangentOf(pos: ArrayLike<number>, uvs: ArrayLike<number>, t: number, fx
 }
 
 const smooth01 = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
-/** A pattern's relief at (x, y) in cells: stipple 0..1 bumps, grooves 0..-1 cuts across, checker 0..1 pyramids. */
+/** A pattern's relief at (x, y) in cells: stipple 0..1 bumps, grooves 0..-1 cuts across, checker 0..1 pyramids,
+ *  pyramid 0..1 a square grid of flat-topped nubs with flat gaps between (a polymer pistol frame's texture). */
 function patternAt(p: Pattern, x: number, y: number) {
+  if (p === 'pyramid') { const d = 2 * Math.max(Math.abs(x - Math.floor(x) - 0.5), Math.abs(y - Math.floor(y) - 0.5)); return smooth01((0.85 - d) / 0.4); }
   if (p === 'grooves') { const f = y - Math.floor(y); return f > 0.25 && f < 0.75 ? -Math.sin(Math.PI * (f - 0.25) * 2) : 0; }
   if (p === 'checker') {
     const tri = (s: number) => 1 - 2 * Math.abs(s - Math.floor(s) - 0.5);
@@ -2052,6 +2076,60 @@ export function bakeShape(s: TexSet, l: PaintLayer, pos: ArrayLike<number>, uvs:
   touched.length = 0;
 }
 
+/** Bake a relief decal (DECALmachine's): the mark's own normal and height maps, under its mask's red coverage,
+ *  written to Normal and Height. Front-facing surface inside the projector, like an image decal; no ink is laid
+ *  down, so the surface's colour and finish stay. The maps' +X is the mark's right, +Y its up, +Z its facing. */
+export function bakeRelief(s: TexSet, l: PaintLayer, maps: ReliefPixels, pos: ArrayLike<number>, uvs: ArrayLike<number>, span: number) {
+  const d = l.decal;
+  if (!d) return;
+  for (const ch of Object.keys(l.px) as Channel[]) touch(l, ch);
+  ensureShell(s, uvs);
+  const n = s.size;
+  const { cx, cy, cz, nx, ny, nz, uxr, uyr, uzr, vxr, vyr, vzr, width, height, depth } = decalFrame(d, span);
+  for (const ch of Object.keys(l.px) as Channel[]) if (!d.channels.includes(ch)) delete l.px[ch];
+  const nm = d.channels.includes('normal') ? fillBuf(s, l, 'normal') : null;
+  const ht = d.channels.includes('height') ? fillBuf(s, l, 'height') : null;
+  nm?.fill(0); ht?.fill(0);
+  if (!nm && !ht) return;
+  const strength = d.reliefNormal ?? 1, contrast = d.reliefHeight ?? 1;
+  // a flip mirrors the mark, so the slope's own X / Y turns over with the sampled map
+  const fh = d.flipH ? -1 : 1, fv = d.flipV ? -1 : 1;
+  let a = 0, hb = 0, gx = 0, gy = 0, gz = 1, tx = 1, ty = 0, tz = 0, bx = 0, by = 1, bz = 0;
+  ready(n);
+  for (let t = 0; t < pos.length / 9; t++) {
+    const o = t * 9;
+    const e1x = pos[o + 3] - pos[o], e1y = pos[o + 4] - pos[o + 1], e1z = pos[o + 5] - pos[o + 2];
+    const e2x = pos[o + 6] - pos[o], e2y = pos[o + 7] - pos[o + 1], e2z = pos[o + 8] - pos[o + 2];
+    let fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x;
+    const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+    if (fx * nx + fy * ny + fz * nz < 0.12) continue;
+    [tx, ty, tz, bx, by, bz] = tangentOf(pos, uvs, t, fx, fy, fz);
+    raster(n, pos, uvs, t, (x, y, z) => {
+      const dx = x - cx, dy = y - cy, dz = z - cz;
+      if (Math.abs(dx * nx + dy * ny + dz * nz) > depth) return 0;
+      const u = (dx * uxr + dy * uyr + dz * uzr) / width + 0.5;
+      const v = (dx * vxr + dy * vyr + dz * vzr) / height + 0.5;
+      if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+      const su = d.flipH ? 1 - u : u, sv = d.flipV ? 1 - v : v;
+      a = sampleDecal(maps.mask, su, sv)[0] / 255;
+      if (a < 0.004) return 0;
+      hb = sampleDecal(maps.height, su, sv)[2] / 255;
+      const q = sampleDecal(maps.normal, su, sv);
+      const ax = (q[0] / 127.5 - 1) * strength * fh, ay = (q[1] / 127.5 - 1) * strength * fv, az = q[2] / 127.5 - 1;
+      // the mark's tangent space to world, then the triangle's own tangent frame (the texture's space)
+      const wx = ax * uxr + ay * vxr + az * nx, wy = ax * uyr + ay * vyr + az * ny, wz = ax * uzr + ay * vzr + az * nz;
+      gx = wx * tx + wy * ty + wz * tz; gy = wx * bx + wy * by + wz * bz; gz = wx * fx + wy * fy + wz * fz;
+      const gl = Math.hypot(gx, gy, gz) || 1; gx /= gl; gy /= gl; gz /= gl;
+      return a;
+    }, undefined, (_x, _y, _z, i) => {
+      if (nm) { nm[i * 4] = (gx * 0.5 + 0.5) * 255; nm[i * 4 + 1] = (gy * 0.5 + 0.5) * 255; nm[i * 4 + 2] = (gz * 0.5 + 0.5) * 255; nm[i * 4 + 3] = a * 255; }
+      if (ht) { ht[i * 2] = 128 + 127 * Math.max(-1, Math.min(1, (hb - 0.5) * 2 * contrast)); ht[i * 2 + 1] = a * 255; }
+    });
+  }
+  for (const i of touched) weight[i] = 0;
+  touched.length = 0;
+}
+
 /** A part's bevelled edges: per edge `[a xyz, b xyz, na xyz, nb xyz]` (the two faces' normals), and a grid of `radius`
  *  cells listing the edges crossing each. Welded by exact position. Engine: `BevelSrc::new`. */
 export function bevelEdges(pos: ArrayLike<number>, b: Bevel) {
@@ -2283,16 +2361,24 @@ export function canvasOf(s: TexSet, ch: Exclude<Shown, 'material'> | 'shade', si
 }
 export type TexturePreset = 'generic' | 'unreal' | 'unity-hdrp' | 'unity-urp';
 
-/** A layer's thumbnail (its Base Color, or its first painted channel, over a checkerboard where it's empty), as a data URL. */
-export function thumbOf(s: TexSet, l: PaintLayer, size = 32) {
+/** A layer's thumbnail (its Base Color, or its first painted channel, over a checkerboard where it's empty), as a data URL.
+ *  Each pixel averages a 4×4 spread of the texels under it (one texel out of a 2048² set, per pixel, sparkled), at
+ *  64 px so a 30 px row stays sharp on a high-DPI screen. */
+export function thumbOf(s: TexSet, l: PaintLayer, size = 64) {
   const ch = (l.px.color ? 'color' : (Object.keys(l.px)[0] as Channel | undefined));
-  const n = s.size, cv = document.createElement('canvas');
+  const n = s.size, cv = document.createElement('canvas'), Q = 4;
   cv.width = cv.height = size;
   const img = new ImageData(size, size), px = ch && l.px[ch], k = ch ? CHANNELS[ch].k : 0;
+  const v = [0, 0, 0];
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    const o = (y * size + x) * 4, i = Math.floor(((size - 1 - y) / size) * n) * n + Math.floor((x / size) * n);
-    const bg = ((x >> 2) + (y >> 2)) % 2 ? 200 : 255, a = px ? px[i * (k + 1) + k] / 255 : 0;
-    for (let c = 0; c < 3; c++) img.data[o + c] = bg + ((px ? px[i * (k + 1) + Math.min(c, k - 1)] : bg) - bg) * a;
+    const o = (y * size + x) * 4, bg = ((x >> 3) + (y >> 3)) % 2 ? 200 : 255;
+    v[0] = v[1] = v[2] = 0;
+    for (let sy = 0; sy < Q; sy++) for (let sx = 0; sx < Q; sx++) {
+      const i = Math.min(n - 1, Math.floor(((size - 1 - y + (sy + 0.5) / Q) / size) * n)) * n + Math.min(n - 1, Math.floor(((x + (sx + 0.5) / Q) / size) * n));
+      const a = px ? px[i * (k + 1) + k] / 255 : 0;
+      for (let c = 0; c < 3; c++) v[c] += bg + ((px ? px[i * (k + 1) + Math.min(c, k - 1)] : bg) - bg) * a;
+    }
+    for (let c = 0; c < 3; c++) img.data[o + c] = v[c] / (Q * Q);
     img.data[o + 3] = 255;
   }
   cv.getContext('2d')!.putImageData(img, 0, 0);

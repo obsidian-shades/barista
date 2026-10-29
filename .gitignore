@@ -13,7 +13,10 @@ out
 __pycache__/
 *.pyc
 # PBR material maps are fetched locally (tools/fetch-materials.mjs); keep the manifest and previews
-public/materials/*/
+public/assets/materials/core/*/
 # Purchased pack: generated locally from the .blend files, never redistributed
-public/materials-pack/
+public/assets/materials/pack/
 .claude/settings.local.json
+
+# DECALmachine decal maps: imported locally from the purchased addon, never redistributed
+public/assets/geometry/decalmachine/

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Fetch the starter PBR library from ambientCG (CC0) into public/materials.
+// Fetch the starter PBR library from ambientCG (CC0) into public/assets/materials/core.
 //
 //   node tools/fetch-materials.mjs                 # all curated materials
 //   node tools/fetch-materials.mjs --only=metal-gold-polished,wood-oak-light
@@ -9,7 +9,7 @@
 // Each material is one JPG zip on ambientCG (2K for weapon heroes, 1K for support
 // sets, or the per-entry `format` override), unpacked to the maps the painter needs
 // (basecolor, normal GL, roughness, metallic when present, AO, height). The manifest
-// is written to public/materials/index.json. The binary folders are git-ignored: run
+// is written to public/assets/materials/core/index.json. The binary folders are git-ignored: run
 // this script after a fresh clone.
 import { execFileSync } from 'node:child_process';
 import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -19,7 +19,7 @@ import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const LIB = join(ROOT, 'public', 'materials');
+const LIB = join(ROOT, 'public', 'assets', 'materials', 'core');
 const SPEC = JSON.parse(await readFile(join(ROOT, 'tools', 'materials.json'), 'utf8'));
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
@@ -102,7 +102,7 @@ async function readManifest() {
 
 async function verify() {
   const index = await readManifest();
-  if (!index.materials?.length) throw new Error('public/materials/index.json is missing or empty — run without --verify first');
+  if (!index.materials?.length) throw new Error('public/assets/materials/core/index.json is missing or empty — run without --verify first');
   let bad = 0, bytes = 0;
   for (const m of index.materials) {
     const dir = join(LIB, m.id);

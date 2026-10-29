@@ -2,8 +2,8 @@
 // corners are white and black (HSV: the tip–white edge is brightness 1, the black corner brightness 0). Drag the ring
 // for hue, the triangle for saturation and brightness. Below: the swatch, the eyedropper, H S L, hex, and Flow.
 import { useEffect, useRef, useState } from 'react';
-import { setPaint, useApp } from '../store';
-import { ICON } from '../ui/Icon';
+import { setColorOpen, setPaint, useApp } from '../store';
+import { ICON, Icon } from '../ui/Icon';
 
 const SIZE = 160, RING = 14;
 type Hsv = [h: number, s: number, v: number];
@@ -39,7 +39,7 @@ function weights(t: [number, number][], [x, y]: [number, number]) {
 }
 
 export function ColorWheel() {
-  const color = useApp((s) => s.paint.color), flow = useApp((s) => s.paint.flow), tool = useApp((s) => s.paint.tool);
+  const color = useApp((s) => s.paint.color), flow = useApp((s) => s.paint.flow), tool = useApp((s) => s.paint.tool), open = useApp((s) => s.colorOpen);
   // the hue is kept here too: a grey has none, and dragging to grey shouldn't throw the ring back to red
   const [hsv, setHsv] = useState<Hsv>(() => rgbToHsv(...rgbOf(color)));
   const [hex, setHex] = useState(color);
@@ -55,7 +55,9 @@ export function ColorWheel() {
   const pick = (next: Hsv) => { setHsv(next); mine.current = hexOf(hsvToRgb(next)); setPaint({ color: mine.current }); };
 
   useEffect(() => {
-    const el = cv.current!, dpr = devicePixelRatio, x = el.getContext('2d')!, c = SIZE / 2;
+    const el = cv.current;
+    if (!el) return; // folded: no wheel to draw
+    const dpr = devicePixelRatio, x = el.getContext('2d')!, c = SIZE / 2;
     el.width = el.height = SIZE * dpr;
     x.setTransform(dpr, 0, 0, dpr, 0, 0);
     x.clearRect(0, 0, SIZE, SIZE);
@@ -80,7 +82,7 @@ export function ColorWheel() {
     mark(c + rm * Math.cos(a), c + rm * Math.sin(a), RING / 2 - 1, false);
     const w = [s * v, v * (1 - s), 1 - v];
     mark(w[0] * t[0][0] + w[1] * t[1][0] + w[2] * t[2][0], w[0] * t[0][1] + w[1] * t[1][1] + w[2] * t[2][1], 5, v > 0.6 && s < 0.5);
-  }, [hsv]);
+  }, [hsv, open]);
 
   const at = (e: React.PointerEvent): [number, number] => { const r = cv.current!.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
   const move = (e: React.PointerEvent) => {
@@ -101,27 +103,33 @@ export function ColorWheel() {
   };
   const rgb = rgbOf(color), [H, S, L] = hsl(rgb);
   const commitHex = () => { const h = hex.startsWith('#') ? hex : `#${hex}`; if (/^#[0-9a-f]{6}$/i.test(h)) setPaint({ color: h.toLowerCase() }); else setHex(color); };
+  const hexField = <label className="cwhex" title="Hex color">#<input value={hex.replace('#', '').toUpperCase()} maxLength={7} spellCheck={false} onChange={(e) => setHex(e.target.value)} onBlur={commitHex} onKeyDown={(e) => e.key === 'Enter' && commitHex()} /></label>;
   return (
-    <div className="colorwheel">
+    <div className={`colorwheel${open ? '' : ' folded'}`}>
       <div className="cwhead">
-        <span className="caps">Color</span>
+        <button className="cwfold" aria-expanded={open} title={open ? 'Fold the colour wheel to one row' : 'Show the colour wheel'} onClick={() => setColorOpen(!open)}>
+          <Icon name="chevron" size={11} className={open ? 'chev' : 'chev closed'} /><span className="caps">Color</span>
+        </button>
         <div className="cwtop">
+          {!open && hexField}
           <span className="cwswatch" style={{ background: color }} title="The paint color" />
           <button aria-pressed={tool === 'picker'} title="Eyedropper: click the model or the texture to take its color (I)" aria-label="Eyedropper" onClick={() => setPaint({ tool: 'picker', pickMode: 'color' })}>
             {ICON.picker}
           </button>
         </div>
       </div>
-      <canvas ref={cv} style={{ width: SIZE, height: SIZE }} onPointerDown={down} onPointerMove={(e) => drag.current && move(e)} onPointerUp={() => { drag.current = null; }}
-        aria-label="Color wheel: drag the ring for hue, the triangle for saturation and brightness" />
-      <div className="cwread">
-        <span className="num">H: {H}<br />S: {S}<br />L: {L}</span>
-        <label title="Hex color">#<input value={hex.replace('#', '').toUpperCase()} maxLength={7} spellCheck={false} onChange={(e) => setHex(e.target.value)} onBlur={commitHex} onKeyDown={(e) => e.key === 'Enter' && commitHex()} /></label>
-      </div>
-      <label className="cwflow" title="How much each dab lays down; strokes build up">Flow
-        <input type="range" min={0.05} max={1} step={0.05} value={flow} onChange={(e) => setPaint({ flow: +e.target.value })} />
-        <span className="num">{Math.round(flow * 100)} %</span>
-      </label>
+      {open && <>
+        <canvas ref={cv} style={{ width: SIZE, height: SIZE }} onPointerDown={down} onPointerMove={(e) => drag.current && move(e)} onPointerUp={() => { drag.current = null; }}
+          aria-label="Color wheel: drag the ring for hue, the triangle for saturation and brightness" />
+        <div className="cwread">
+          <span className="num">H: {H}<br />S: {S}<br />L: {L}</span>
+          {hexField}
+        </div>
+        <label className="cwflow" title="How much each dab lays down; strokes build up">Flow
+          <input type="range" min={0.05} max={1} step={0.05} value={flow} onChange={(e) => setPaint({ flow: +e.target.value })} />
+          <span className="num">{Math.round(flow * 100)} %</span>
+        </label>
+      </>}
     </div>
   );
 }

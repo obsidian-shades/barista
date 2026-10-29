@@ -12,6 +12,7 @@ import { mapUrl, type MapKind, type MaterialAsset } from './materials.ts';
 import type { DecalAsset } from './decals.ts';
 import { PAINT_TILE, SOLID, compMaps, compSettled, fromTiles, saveSet, tileAt, tilesOf, type Channel, type CompMap, type SavedSet, type TexSet } from './paint.ts';
 import type { Part, State } from './store';
+import { migrateBones } from './rig.ts';
 
 export const PROJECT_VERSION = 2;
 
@@ -104,6 +105,8 @@ type Doc = {
   result: { stats: Output['stats'] } | null; pins: Record<number, number[]>; sets: (SavedSet | null)[];
   /** The mirror plane drawn by hand (world units), or missing/null for automatic. */
   symPlane?: State['symPlane'];
+  /** Geppetto's bones; each part's binding is the blob `rig/<part>` (per soup triangle). */
+  bones?: State['rig']['bones'];
   /** Files that came from outside the app (materials, decals, the map, the reference picture), by blob name. */
   assets?: SavedAssets;
 };
@@ -137,7 +140,7 @@ export interface BlobItem {
 export interface SaveSnapshot {
   doc: Doc;
   items: BlobItem[];
-  stamp: { parts: unknown; uvs: unknown; result: unknown; uvRev: number; paintRev: number; params: unknown; textureResolution: number; sceneHdri: string | null; refImage: unknown };
+  stamp: { rig: unknown; parts: unknown; uvs: unknown; result: unknown; uvRev: number; paintRev: number; params: unknown; textureResolution: number; sceneHdri: string | null; refImage: unknown };
   /** Things that could not be embedded (an imported file that vanished), for the status bar. */
   warnings: string[];
 }
@@ -172,6 +175,7 @@ export function docOf(s: State, setOf: (i: number) => TexSet | null, opts: DocOp
     if (normals) items.push(one(`part/${i}/normals`, keyOf(normals), `part/${i}/normals`, () => bytes(normals)));
     return { ...p, poly: !!poly, sides: !!sides, normals: !!normals };
   });
+  if (s.rig.bones.length) s.rig.bind.forEach((b, i) => { if (b && i < s.parts.length) items.push(one(`rig/${i}`, keyOf(b), `rig/${i}`, () => bytes(b))); });
   // the hand-edited UVs are the one array edited in place: keep the document's tick, unless the file can reuse it
   s.uvs.forEach((uv, i) => {
     if (!uv?.length) return;
@@ -215,11 +219,12 @@ export function docOf(s: State, setOf: (i: number) => TexSet | null, opts: DocOp
     result: s.result ? { stats: s.result.stats } : null,
     pins: Object.fromEntries(Object.entries(s.pins).map(([i, p]) => [i, [...p.corners]])), sets,
     symPlane: s.symPlane,
+    ...(s.rig.bones.length ? { bones: s.rig.bones } : {}),
     ...(assets ? { assets } : {}),
   };
   return {
     doc, items, warnings,
-    stamp: { parts: s.parts, uvs: s.uvs, result: s.result, uvRev: s.uvRev, paintRev: s.paintRev, params: s.params, textureResolution: s.textureResolution,
+    stamp: { rig: s.rig, parts: s.parts, uvs: s.uvs, result: s.result, uvRev: s.uvRev, paintRev: s.paintRev, params: s.params, textureResolution: s.textureResolution,
       sceneHdri: s.scene.hdriUrl, refImage: s.refImage },
   };
 }
@@ -351,12 +356,16 @@ export function docFrom(saved: unknown, packed: Map<string, Uint8Array>, lz4 = f
   // A project saved before the material view's Lift, or with the old Headlight view, gets the current scene fields.
   // Headlight had replaced the key and its shadow: lifting the material does that job now, so a project that used it
   // opens with the shadow back on.
+  // a project saved before the asset tree (public/assets/…) names its built-in environment map by the old path
+  const oldHdri = (u: string | null | undefined) => u?.replace(/^\/hdri\//, '/assets/hdri/') ?? null;
   const hadHeadlight = (doc.scene as { paintHeadlight?: boolean } | undefined)?.paintHeadlight === true;
   const { paintHeadlight: _headlight, ...savedScene } = (doc.scene ?? {}) as typeof doc.scene & { paintHeadlight?: boolean };
   const state = {
     source: doc.source, unit: doc.unit, params: doc.params, textureResolution: doc.textureResolution, workspace: doc.workspace,
-    activePart: Math.min(doc.activePart, Math.max(0, parts.length - 1)), scene: { ...savedScene, paintShadow: hadHeadlight ? true : savedScene.paintShadow ?? true, paintLift: savedScene.paintLift ?? 0.4 }, paint: { ...doc.paint, decalSel: doc.paint.decalSel ?? true, decalMode: doc.paint.decalMode ?? 'edit', pickMode: doc.paint.pickMode ?? 'material', grab: null }, paintChannel: doc.paintChannel,
+    activePart: Math.min(doc.activePart, Math.max(0, parts.length - 1)), scene: { ...savedScene, hdriUrl: oldHdri(savedScene.hdriUrl), paintShadow: hadHeadlight ? true : savedScene.paintShadow ?? true, paintLift: savedScene.paintLift ?? 0.4 }, paint: { ...doc.paint, decalSel: doc.paint.decalSel ?? true, decalMode: doc.paint.decalMode ?? 'edit', pickMode: doc.paint.pickMode ?? 'material', grab: null }, paintChannel: doc.paintChannel,
     paintAO: doc.paintAO, parts, result, uvs, pins, symPlane: doc.symPlane ?? null, symEdit: null,
+    // a binding whose part was since edited (another triangle count) is dropped, not misapplied
+    rig: { bones: migrateBones(doc.bones ?? []), bind: parts.map((p, i) => { const b = blobs.get(`rig/${i}`); return b && b.length / 4 === p.soup.length / 9 ? i32(b) : undefined; }) },
   } satisfies Partial<State>;
   return { state, sets: doc.sets ?? parts.map(() => null), pixels, names, assets: loadedAssets(doc.assets, blobs, warnings), warnings };
 }

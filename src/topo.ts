@@ -43,6 +43,28 @@ export function topoOf(positions: number[]): Topo {
   return t;
 }
 
+/** Where the model's shading breaks, which is where wear and dirt go: per output corner the file's normals (NaN where
+ *  none), else faces bent more than `sharp` degrees (the view's Sharp edges). */
+export interface Hard { normals: Float32Array | null; sharp: number }
+
+/** Is welded edge `e` (triangles `a`, `b`) a hard edge of the shading? With the file's normals: they differ across it
+ *  at either end (the artist's smoothing: a low-poly curve bent 25° a segment is still round). Without: the faces
+ *  meet at more than `hard.sharp`. UV seams play no part. */
+export function isHard(t: Topo, e: number, a: number, b: number, angle: number, hard: Hard) {
+  const N = hard.normals;
+  if (N) {
+    const corner = (f: number, v: number) => (t.vid[f * 3] === v ? f * 3 : t.vid[f * 3 + 1] === v ? f * 3 + 1 : f * 3 + 2);
+    let known = true;
+    for (const v of [t.ends[e * 2], t.ends[e * 2 + 1]]) {
+      const ca = corner(a, v) * 3, cb = corner(b, v) * 3;
+      if (Number.isNaN(N[ca]) || Number.isNaN(N[cb])) { known = false; break; }
+      if (N[ca] * N[cb] + N[ca + 1] * N[cb + 1] + N[ca + 2] * N[cb + 2] < 0.999) return true;
+    }
+    if (known) return false;
+  }
+  return angle > (hard.sharp * Math.PI) / 180;
+}
+
 const polyCache = new WeakMap<number[], { poly: Int32Array | undefined; out: Int32Array }>();
 /** Per output triangle: its polygon in the file (−1: none known, a triangle of its own), from the input triangle's
  *  polygon (`poly`, per soup triangle) through the engine's `source`. */

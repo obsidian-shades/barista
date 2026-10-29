@@ -31,6 +31,7 @@ const bare = {
   parts: [{ name: 'Tri', soup, seams: [0, 0, 0, 1, 0, 0], marked: [], solved: [], visible: true, textured: true, poly: new Int32Array([0]) }],
   uvs: [uv], result: { stats: { islands: 1 }, parts: [{ positions: [...soup], uvs: [...uv], stretch: [0], island: [0], source: [0] }] }, pins: { 0: { of: [], corners: new Set([2]) } },
   materials: [mat], decals: [], refImage: null,
+  rig: { bones: [{ name: 'Root', head: [0, 0, 0], tail: [0, 1, 0], parent: -1, limit: { x: [-30, 30], y: [0, 0], z: [0, 0] }, slide: null }], bind: [new Int32Array([0])] },
 } as unknown as State;
 ts.layers[0] = { ...ts.layers[0], fill: { asset: 'user-brass', projection: 'uv', tiling: 1, tiles: 1, rotation: 0, offset: [0, 0], normalStrength: 1, tint: '#ffffff', channels: ['color'] } };
 const state = bare;
@@ -50,6 +51,7 @@ assert.deepEqual(s2.parts[0].seams, [0, 0, 0, 1, 0, 0]);
 assert.deepEqual(s2.uvs[0], uv);
 assert.deepEqual(s2.result!.parts[0].positions, [...soup]);
 assert.deepEqual([...s2.pins[0].corners], [2]);
+assert.deepEqual(s2.rig, bare.rig, 'the bones and the binding come back');
 assert.equal(assets.materials.length, 1, 'the imported material comes back as bytes');
 assert.deepEqual([...assets.materials[0].maps.basecolor!], [...(back.blobs.get('asset/material/user-brass/basecolor'))!]);
 const soup2 = s2.parts[0].soup, ts2 = restoreSet(soup2, sets[0]!, pixels(0, sets[0]!.size));

@@ -26,6 +26,7 @@ button.wide:hover:not(:disabled) { background: var(--plate-hi); border-color: va
 .layer.on { background: var(--row-on); }
 .layers.doc .layer { grid-template-columns: var(--row) minmax(0, 1fr) auto; } /* Poly Doc: no checker toggle */
 .layer.active { box-shadow: inset 2px 0 var(--accent); }
+.layers.paint .layer.active { box-shadow: none; } /* Van Gogh: the active part is the selected row, one highlight */
 .layer button { height: 100%; min-height: 0; padding: 0; justify-content: center; border-radius: 0; border: 0; border-right: 1px solid var(--line-2); color: var(--icon); }
 .layer button:hover { background: var(--hover); }
 .layer button:last-child { border-right: 0; }
@@ -47,6 +48,15 @@ button.wide:hover:not(:disabled) { background: var(--plate-hi); border-color: va
 .settings output { width: 44px; text-align: right; font: 11px var(--num); color: var(--fg); }
 .settings label.toggle { justify-content: flex-start; }
 .settings select { width: 148px; }
+/* Geppetto's constraint rows: kind, target, influence, remove */
+.settings .crow { display: flex; align-items: center; gap: 4px; min-width: 0; font-size: var(--fs-s); color: var(--muted); }
+.settings .crow .cname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.settings .crow select { flex: 1; width: auto; min-width: 0; }
+.settings .crow input[type="range"] { width: 54px; flex: none; }
+.settings .crow button { padding: 0 6px; }
+/* Geppetto's one-click motion presets: five equal choices under the label */
+.settings .seg.motion { display: flex; width: 100%; }
+.settings .seg.motion button { flex: 1; min-width: 0; padding: 0 2px; font-size: var(--fs-xs); }
 button.primary.wide { justify-content: center; }
 
 /* Collapsible sections in a panel: Photoshop's disclosure triangles, no fake tabs. */
@@ -58,20 +68,17 @@ button.primary.wide { justify-content: center; }
 .tsec-details > summary:hover { color: var(--fg); }
 
 /* Button grids (Mio3-style) */
-.tsec { display: flex; align-items: baseline; justify-content: space-between; margin-top: 2px; }
+.tsec { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 2px; padding-bottom: 3px; border-bottom: 1px solid var(--line-2); }
 .tsec .caps { display: flex; align-items: center; gap: 6px; }
-.tsec .hint { font-size: var(--fs-xs); color: var(--muted); }
+.tsec .hint { font-size: var(--fs-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tsec-details { display: grid; gap: 4px; margin-top: 2px; }
 .tsec-details > summary { padding: 2px 0; }
 .tsec-details[open] > summary { margin-bottom: 2px; }
 .chev { transition: transform .1s; }
 .chev.closed { transform: rotate(-90deg); }
-.layers.paint .layer { grid-template-columns: 22px var(--row) minmax(0, 1fr) auto; }
-.layers.paint .layer:not(.sub) { grid-template-columns: 22px var(--row) 46px minmax(0, 1fr) auto; height: 48px; }
+.layers.paint .layer { grid-template-columns: var(--row) 46px minmax(0, 1fr); height: 48px; }
+.layers.paint .ltype { display: none; }
 .setshot { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 3px; background: #303338; display: block; }
-.layers.paint .layer.sub { grid-template-columns: 22px var(--row) minmax(0, 1fr) auto; }
-.layer .disclosure { width: 22px; border-right: 0; color: var(--muted); }
-.layer .disclosure:hover { color: var(--fg); background: none; }
 .lname-edit { min-width: 0; height: var(--ctl-sm); margin: 0 6px; padding: 0 4px; font: inherit; }
 .readout { display: inline-block; min-width: 38px; text-align: right; }
 .tgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
@@ -100,30 +107,23 @@ button.primary.wide { justify-content: center; }
 .rule .num { min-width: 28px; padding: 0 5px; border-radius: 3px; text-align: center; font-size: var(--fs-xs); color: var(--ink-dark); }
 .rule .rfix { background: var(--bad); color: var(--accent-ink); }
 .rule .rlook { background: var(--warn); }
-/* Van Gogh: a part's channels sit under it; the active layer's opacity */
-.layer.sub .lname { padding-left: 14px; color: var(--muted); }
-.layer.sub.on .lname { color: var(--fg); }
+/* Van Gogh: the active part's channels; the active layer's opacity */
+.layers.channels { max-height: none; }
+.layers.channels .layer { grid-template-columns: minmax(0, 1fr); padding-left: 10px; }
+.layers.channels .layer .lname { color: var(--muted); }
+.layers.channels .layer.on .lname { color: var(--fg); }
 .layer > button.ltype { border: 0; border-left: 1px solid var(--line-2); padding: 0 8px; width: auto; }
-.lopacity { display: flex; align-items: center; gap: 8px; color: var(--muted); }
-.lopacity input { flex: 1; min-width: 0; }
-.lopacity select { margin-left: auto; min-width: 92px; }
 .pslayers { display: flex; flex-direction: column; gap: 6px; min-height: 0; flex: 1; }
 .pslayers .layers { max-height: none; flex: 1; }
 .layers.thumbs .layer { grid-template-columns: var(--row) 36px minmax(0, 1fr) auto; height: 40px; }
-.lthumb { width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 2px; image-rendering: pixelated; }
-.lprops { display: grid; gap: 6px; padding: 8px 10px 10px 12px; background: var(--panel-inset); border-bottom: 1px solid var(--line-2); box-shadow: inset 2px 0 var(--accent); cursor: default; }
-.lprops .gensettings { padding: 0; background: none; border: 0; }
+.lthumb { width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 2px; }
+.lprops { display: grid; gap: 12px; padding: 10px 10px 12px 12px; background: var(--panel-inset); border-bottom: 1px solid var(--line-2); box-shadow: inset 2px 0 var(--accent); cursor: default; }
 .ltype .chev { margin-left: 4px; vertical-align: -1px; }
 .layer.droppable { box-shadow: inset 0 2px var(--accent); }
 .lbar { display: flex; justify-content: flex-end; gap: 2px; border-top: 1px solid var(--line-2); padding-top: 5px; }
 .lbar button { min-height: var(--ctl); width: var(--row); padding: 0; justify-content: center; }
 .lbar button:hover { background: var(--plate); border-color: var(--plate-line); }
-.gensettings { display: grid; gap: 4px; padding: 6px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); }
-.gensettings label { display: grid; grid-template-columns: 64px minmax(0, 1fr) 40px; align-items: center; gap: 6px; color: var(--muted); }
-.gensettings input[type="range"] { min-width: 0; }
-.gensettings .num { text-align: right; }
-.genmark { color: var(--accent); }
-.layer.sub.baked .lname { font-style: italic; }
+.layer.baked .lname { font-style: italic; }
 /* Van Gogh: the colour wheel (Affinity's) */
 .colorwheel { display: grid; justify-items: center; gap: 6px; position: relative; }
 .colorwheel canvas { touch-action: none; cursor: crosshair; }
@@ -135,8 +135,13 @@ button.primary.wide { justify-content: center; }
 .cwtop button:hover { background: var(--plate-hi); border-color: var(--edge-hi); }
 .cwtop button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .cwread { width: 100%; display: flex; justify-content: space-between; align-items: flex-end; font-size: var(--fs-xs); color: var(--muted); }
-.cwread label { display: flex; align-items: center; gap: 4px; }
-.cwread input { width: 70px; font-family: inherit; text-transform: uppercase; }
+.cwhex { display: flex; align-items: center; gap: 4px; font-size: var(--fs-xs); color: var(--muted); }
+.cwhex input { width: 70px; height: var(--ctl); font-family: inherit; text-transform: uppercase; }
+/* the header folds the wheel to this one row (store `colorOpen`), giving the layer list its height back */
+.cwfold { display: flex; align-items: center; gap: 6px; min-height: var(--ctl); padding: 0 4px 0 0; border: 0; background: none; }
+.cwfold:hover .caps { color: var(--fg); }
+.cwfold .chev { color: var(--muted); transition: transform .1s; }
+.colorwheel.folded { gap: 0; }
 .cwflow { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) 44px; align-items: center; gap: 8px; color: var(--muted); }
 /* Van Gogh's dock: color on top, then one tab at a time (Layers / Materials / Maps), so the panels
    never stack into a 300 px column. The tab body is the only scroll container. */
@@ -157,6 +162,19 @@ button.primary.wide { justify-content: center; }
 .vgtab.colorpane { justify-items: center; }
 .vgtab .matgrid { max-height: none; }
 .vgtab .pslayers { min-height: 0; }
+/* the Layers tab: texture sets in their own column on the left, the active part's Layers | Channels on the right.
+   Each column scrolls by itself, and the layer list scrolls inside its column so its bar (Fill … Delete) stays on screen. */
+.layerspane { display: grid; grid-template-columns: var(--parts-w) minmax(0, 1fr); height: 100%; min-height: 0; }
+.vgparts { min-height: 0; overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel-inset); }
+.vgparts .layers { max-height: none; overflow: visible; border: 0; border-radius: 0; background: none; }
+.vgstack { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.vgstack > .asset-tabs { flex: none; }
+.vgstack > .vgtab { flex: 1; min-height: 0; overflow-y: auto; }
+.vgtab.stackpane { display: flex; flex-direction: column; overflow: hidden; }
+.stackpane > * { flex: none; }
+.stackpane > .pslayers { flex: 1; min-height: 120px; }
+.stackpane .pslayers .layers { min-height: 0; }
+.layer.picked { background: var(--accent-soft); }
 .setbar { display: flex; align-items: center; gap: 6px; }
 .setbar select { flex: 1; min-width: 0; }
 .exportpreset { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 6px; color: var(--muted); }
@@ -181,9 +199,6 @@ button.primary.wide { justify-content: center; }
 .matgroups button.on { color: var(--fg); border-color: var(--accent); background: var(--accent-soft); }
 .matgroups .matcount { color: var(--muted); font: 9px var(--num); }
 .matgroups button.on .matcount { color: var(--fg); opacity: .7; }
-.foverride { grid-template-columns: 18px 40px minmax(0, 1fr) 40px !important; }
-.foverride input[type="checkbox"] { margin: 0; }
-.foverride input[type="range"]:disabled { opacity: .3; }
 .mathint { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .mathint .hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .allparts { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
@@ -196,18 +211,7 @@ button.primary.wide { justify-content: center; }
 .mattile img { width: 100%; height: auto; aspect-ratio: 1; object-fit: cover; border-radius: 2px; display: block; }
 .mattile span { font-size: 9px; line-height: 1.2; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .moremats { text-align: center; padding: 6px 0; }
-.fillsettings .seg { display: flex; gap: 2px; justify-self: end; height: auto; border: 0; border-radius: 0; background: none; overflow: visible; }
-.fillsettings .seg button { min-height: var(--ctl-sm); padding: 0 8px; font-size: var(--fs-xs); background: var(--plate); border: 1px solid var(--plate-line); border-radius: 3px; }
-.fillsettings .seg button + button { border-left: 1px solid var(--plate-line); }
-.fillsettings .seg button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.fillchans { display: flex; gap: 10px; color: var(--muted); }
-.fillchans label { display: flex; align-items: center; gap: 3px; }
-.fillmask { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; }
-.fillmask button { min-height: var(--ctl-sm); padding: 0 2px; background: var(--plate); border-color: var(--plate-line); font-size: 10px; justify-content: center; }
-.fillmask button:hover { background: var(--plate-hi); }
 .maskbadge { padding: 2px 8px; border-radius: 3px; background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); font-size: var(--fs-xs); color: var(--fg); }
-.fillmark { color: var(--accent); }
-.decalmark { color: #b388ff; }
 .decalhint { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Van Gogh: the game-first material filters and the smart finish picker */
@@ -215,37 +219,31 @@ button.primary.wide { justify-content: center; }
 /* Van Gogh: decals are transparent marks; show the checker so the art reads on the dark shelf */
 .decalshelf .decalsettings { grid-template-columns: 1fr; }
 .decalsettings { display: grid; gap: 4px; }
-.decalsettings label { display: grid; grid-template-columns: 52px minmax(0, 1fr) 88px; align-items: center; gap: 6px; color: var(--muted); }
+.decalsettings label { display: grid; grid-template-columns: var(--pname) minmax(0, 1fr) var(--pval); align-items: center; gap: 8px; min-height: var(--ctl); color: var(--muted); }
 .decalsettings label input[type="range"] { min-width: 0; }
 .decalsettings label .cswatch { width: 30px; height: 22px; justify-self: start; }
 .decalsettings .num { text-align: right; }
 /* a decal edits by typed values as well as sliders (a marking's width is usually a number, not a guess) */
-.numfield { display: inline-flex; align-items: center; gap: 2px; justify-self: end; }
-.numfield input { width: 54px; padding: 0 3px; text-align: right; font-size: var(--fs-xs); }
+.numfield { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.numfield input { width: 100%; min-width: 0; padding: 0 3px; text-align: right; font-size: var(--fs-xs); }
 .numfield .unit { color: var(--muted); font-size: var(--fs-xs); }
-.decalactions { display: flex; gap: 2px; height: auto; border: 0; border-radius: 0; background: none; overflow: visible; }
-.decalactions button { flex: 1; min-height: var(--ctl-sm); padding: 0 6px; font-size: var(--fs-xs); background: var(--plate); border: 1px solid var(--plate-line); border-radius: 3px; }
-.decalactions button + button { border-left: 1px solid var(--plate-line); }
-.decalactions button:hover { background: var(--plate-hi); }
 /* the Decal tool's Select / Place switch, and the Eyedropper's Materials / Color one: what a click does */
 .options .seg.decalmode, .options .seg.pickmode { display: flex; }
 .decalpreview { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
 .decalpreview .decalimg { flex: 0 0 70px; height: 48px; }
 .decalpreview .hint { line-height: 1.35; }
-.grip-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+.grip-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
 .grip-preset { min-width: 0; display: grid; gap: 2px; padding: 3px; background: var(--well); border: 1px solid var(--line); border-radius: var(--r-s); color: var(--muted); text-align: left; }
 .grip-preset:hover, .grip-preset.on { border-color: var(--accent); color: var(--fg); }
 .grip-preset.on { background: var(--accent-soft); }
-.grip-preset .decalimg { height: 32px; }
-.grip-preset > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
-.grip-patterns { display: grid; grid-template-columns: repeat(auto-fit, minmax(54px, 1fr)); gap: 2px; }
-.grip-patterns button { min-width: 0; min-height: var(--ctl-sm); padding: 0 3px; background: var(--well); color: var(--muted); font-size: 9px; }
+.grip-preset .decalimg { height: 40px; }
+.grip-preset > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); text-align: center; }
+.grip-patterns { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 2px; }
+.grip-patterns button { min-width: 0; min-height: var(--ctl-sm); padding: 0 4px; justify-content: center; background: var(--plate); border-color: var(--plate-line); color: var(--muted); font-size: var(--fs-xs); }
 .grip-patterns button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--fg); }
 /* the active relief on a lit sphere, over its settings */
 .relief-preview { display: flex; justify-content: center; padding: 4px 0; background: radial-gradient(circle at 50% 45%, #2b2d31, var(--well) 70%); border: 1px solid var(--line); border-radius: var(--r-s); }
 .relief-preview img { width: 144px; height: 144px; }
-.grip-advanced { border-top: 1px solid var(--line-2); padding-top: 3px; }
-.grip-advanced summary { color: var(--muted); cursor: pointer; font-size: var(--fs-xs); }
 .grip-advanced-body { display: grid; gap: 4px; padding-top: 4px; }
 .decalimg { display: grid; place-items: center; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-s);
   background-color: #191b1e; background-image: linear-gradient(45deg,#22252a 25%,transparent 25%),linear-gradient(-45deg,#22252a 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#22252a 75%),linear-gradient(-45deg,transparent 75%,#22252a 75%); background-size: 14px 14px; background-position: 0 0,0 7px,7px -7px,-7px 0; }
@@ -259,5 +257,32 @@ button.primary.wide { justify-content: center; }
 .relieftile .decalimg img { width: 92px; height: 92px; max-width: none; max-height: none; }
 .decaltile span:last-child { font-size: 9px; line-height: 1.2; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .allsets { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
-.layers.thumbs .layer.decalrun { grid-template-columns: var(--row) minmax(0, 1fr) auto; height: var(--row); color: var(--muted); cursor: pointer; }
-.layer.decalrun .lname { grid-column: 2; }
+
+/* Layer settings (Van Gogh): every row on one grid — name | control | value — with the same widths in every section,
+   so sliders and readouts line up from Layer to Surface to Projection; a control without a value spans both. */
+.lprops, .decalsettings { --pname: 64px; --pval: 52px; }
+.psettings { display: grid; gap: 12px; }
+.psec { display: grid; gap: 6px; }
+.prow { display: grid; grid-template-columns: var(--pname) minmax(0, 1fr) var(--pval); align-items: center; gap: 8px; min-height: var(--ctl); color: var(--muted); }
+.prow.span > :last-child { grid-column: 2 / 4; }
+.prow .pname { display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; }
+.prow input[type="range"] { min-width: 0; width: 100%; }
+.prow input[type="range"].dim { opacity: .45; }
+.prow .readout { text-align: right; color: var(--fg); }
+.prow select { width: 100%; min-width: 0; }
+.prow .reset { min-height: 0; height: 16px; padding: 0 3px; color: var(--muted); font-size: var(--fs-xs); }
+.prow .reset:hover { color: var(--fg); background: var(--hover); }
+.pcheck { display: flex; align-items: center; gap: 6px; }
+/* a choice in a row is the shell's segmented control (.seg), stretched to the row with even segments */
+.prow .seg { display: flex; width: 100%; height: var(--ctl-sm); }
+.prow .seg button { flex: 1; min-width: 0; justify-content: center; padding: 0 4px; font-size: var(--fs-xs); }
+/* a row of actions (the mask's, a decal's): even plates, one look */
+.pbtns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; height: auto; border: 0; background: none; }
+.pbtns button { min-width: 0; min-height: var(--ctl-sm); padding: 0 4px; justify-content: center; font-size: var(--fs-xs); background: var(--plate); border: 1px solid var(--plate-line); border-radius: var(--r-s); color: var(--muted); }
+.pbtns button:hover { background: var(--plate-hi); color: var(--fg); }
+/* the layer rows: a kind tag instead of glyphs, the decals' own section under the stack */
+.layer .ltype { display: flex; align-items: center; gap: 6px; padding-right: 6px; }
+/* neutral: the blue accent means "selected" everywhere, so a kind tag never borrows it */
+.lkind { padding: 1px 5px; border-radius: 3px; font-size: var(--fs-xs); color: var(--muted); background: var(--plate); }
+.lsec { display: flex; align-items: baseline; gap: 8px; padding: 8px 10px 4px; border-bottom: 1px solid var(--line-2); background: var(--panel); cursor: default; }
+.lsec .hint { margin-left: auto; font-size: var(--fs-xs); }

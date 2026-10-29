@@ -8,7 +8,7 @@ import type { TexSet } from './paint';
 
 /** The bundled plate for the material view: one strong key and a dark falloff, neutral (no sky or ground tint), so planes
  *  read light or dark by where they face, as in Substance's view. */
-export const PAINT_HDRI = '/hdri/studio_small_04_1k.hdr';
+export const PAINT_HDRI = '/assets/hdri/studio_small_04_1k.hdr';
 /** Texture space no island covers, in the material view. */
 export const EMPTY = '#3a3b3d';
 /** The material view's light: `sun` the strength of the key that casts the shadow, on top of the environment (alone it's

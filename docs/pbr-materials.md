@@ -14,7 +14,7 @@ and follow pen pressure. P3 (worker/4K, more projections, parallax) and the P4 S
 still open. The “what shipped” sections at the end of §8 list the exact scope; painting and bake
 timings are in [van-gogh-performance.md](van-gogh-performance.md).
 
-![The 50-material game-first library](../public/materials/contact-sheet.jpg)
+![The 50-material game-first library](../public/assets/materials/core/contact-sheet.jpg)
 
 ---
 
@@ -40,7 +40,7 @@ timings are in [van-gogh-performance.md](van-gogh-performance.md).
   + normal map + mask painting + PBR export). Do not build a Substance graph runtime. Treat
   `.sbsar` as an external map source, with an optional desktop-only SDK bridge later.
 - **Shipped:** the 4,981-material purchased pack (1K browser cache), PBR
-  sphere thumbnails, a manifest and fetch/verify tooling; 20 original CC0 decals in `public/decals/`.
+  sphere thumbnails, a manifest and fetch/verify tooling; 20 original CC0 decals in `public/assets/decals/`.
   See §7.
 
 ---
@@ -272,7 +272,7 @@ export interface MaterialAsset {
 }
 ```
 
-The library is `public/materials/index.json` + `<id>/*.jpg`. The shelf uses the 256 px
+The library is `public/assets/materials/core/index.json` + `<id>/*.jpg`. The shelf uses the 256 px
 `thumb.jpg`, not the 1K base color. A fill bake decodes the maps with
 `createImageBitmap(blob)` → `OffscreenCanvas.getImageData()` (fallback: `Image` + canvas), keeping
 the decoded `Uint8ClampedArray` for the material being baked. An LRU of three materials bounds CPU
@@ -582,7 +582,7 @@ survives outside Van Gogh".
 
 ![Van Gogh's game-first shelf: nine material categories and lit PBR spheres](game-material-library.png)
 
-The core fallback is 50 materials, **CC0 1.0**, 352 MB on disk, in `public/materials/`; it is no longer
+The core fallback is 50 materials, **CC0 1.0**, 352 MB on disk, in `public/assets/materials/core/`; it is no longer
 loaded when the purchased pack is installed. The pack shelf is described in §7.4. The fallback is ordered for this
 project: the weapon surfaces from the reference pistol first, then level surfaces, then the original
 starter sets. **2K** maps for the seventeen weapon heroes; **1K** for environment and support sets. Each
@@ -617,7 +617,7 @@ loader must not assume square maps.
 
 ### 7.1 Decals
 
-20 original **CC0** transparent PNGs in `public/decals/`, drawn by `tools/decals.py`: Garuda wing mark,
+20 original **CC0** transparent PNGs in `public/assets/decals/`, drawn by `tools/decals.py`: Garuda wing mark,
 PROTO_COMP plate, ARTS/R&D, VX-09 serial, unit data plate, micro data strip, high-voltage triangle,
 取扱注意, 試作機, プラズマ, NO STEP, LIFT HERE, hazard stripe, DANGER plate, biohazard, target reticle,
 forward chevrons, neon VX, violet chevrons and a wing insignia. Each has `category`, `tags`, `width`,
@@ -661,8 +661,8 @@ Set `format` per entry in `tools/materials.json` (the heroes are `"2K-JPG"`, sup
 default shelf: a 2K six-map metal decodes to about 84 MB of RGBA, which is why `materials.ts`
 budgets its decoded cache rather than keeping three sets unconditionally.
 
-`public/materials/*/` is git-ignored (the maps and thumbnails are generated). `index.json`,
-`CREDITS.md`, `README.md`, `contact-sheet.jpg`, `maps.jpg` and all of `public/decals/` are tracked.
+`public/assets/materials/core/*/` is git-ignored (the maps and thumbnails are generated). `index.json`,
+`CREDITS.md`, `README.md`, `contact-sheet.jpg`, `maps.jpg` and all of `public/assets/decals/` are tracked.
 A fresh clone runs the fetch and thumb scripts.
 
 ### 7.4 The purchased 5000+ PBR Asset Browser pack
@@ -670,7 +670,7 @@ A fresh clone runs the fetch and thumb scripts.
 ![The installed library: 4,981 materials with visible material categories](purchased-pack.png)
 
 The 13 `.blend` files are a **purchased** library. They are not copied into the repository or a
-build; `public/materials-pack/` is git-ignored and `vite.config.ts` leaves it out of `dist`/Tauri.
+build; `public/assets/materials/pack/` is git-ignored and `vite.config.ts` leaves it out of `dist`/Tauri.
 The app serves it only from the local dev library.
 
 Pipeline:
@@ -679,7 +679,7 @@ Pipeline:
 # 1. read every material out of the .blend files (Blender 5.2; raw 2K pack ~8 GB)
 pwsh tools/extract-pack.ps1 -Source "…\5000+ Pbr Asset Browser V3" -Raw "D:\barista-pack-raw"
 
-# 2. cache 1K maps and write public/materials-pack/index.json
+# 2. cache 1K maps and write public/assets/materials/pack/index.json
 python tools/build-pack.py --raw "D:\barista-pack-raw"
 
 # 3. render the lit PBR sphere thumbnails and update the manifest

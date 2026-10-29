@@ -98,6 +98,21 @@ try {
   store.undoPaint();
   assert.equal(dst.layers.filter((l) => l.fill).length, 1, 'undo takes the island back off');
 
+  // the same held stack on a second face of that part widens the first apply's layers, it does not stack a copy
+  store.setPaint({ by: 'face' });
+  await store.applyGrab(1, 0);
+  const n1 = dst.layers.length, first = dst.layers.find((l) => l.fill?.tint === '#ff0000')!.mask!.reduce((a, v) => a + (v > 0 ? 1 : 0), 0);
+  await store.applyGrab(1, 1);
+  assert.equal(dst.layers.length, n1, 'a second face adds no layers');
+  const reds = dst.layers.filter((l) => l.fill?.tint === '#ff0000');
+  assert.equal(reds.length, 1, 'one layer for the material');
+  assert.ok(reds[0].mask!.reduce((a, v) => a + (v > 0 ? 1 : 0), 0) >= first, 'its mask takes the second face in');
+  assert.equal(dst.layers.filter((l) => l.gen).length, 1, 'one generator too, its clip widened');
+  store.undoPaint();
+  assert.equal(dst.layers.length, n1, 'undo takes the second face back off the same layers');
+  store.undoPaint();
+  assert.equal(dst.layers.filter((l) => l.fill).length, 1, 'and the first apply off');
+
   // the part the materials came from has nowhere to put them whole: it says so
   store.setPaint({ by: 'part' });
   await store.applyGrab(0, 0);
@@ -119,6 +134,32 @@ try {
   assert.equal(store.useApp.getState().activePart, 0, 'a color pick makes the clicked part active');
   assert.equal(store.useApp.getState().paint.color, paint.sample(src, 0.5, 0.5).color, 'and takes its color');
   assert.equal(dst.layers.length, before, 'Color mode copies no layers');
+  // Select by Material: the faces showing the clicked face's material, and only those
+  store.setPaint({ tool: 'picker', pickMode: 'material', by: 'face' });
+  store.paintPress(0, 0, [0.5, 0.5, 0], [0.5, 0.5], m); // pick the red stack up again (Color mode let it go)
+  await store.applyGrab(1, 0);
+  const redTris = dst.layers.find((l) => l.fill?.tint === '#ff0000')!;
+  store.setPaint({ by: 'material' });
+  store.paintHoverAt(1, 0);
+  const sameRed = store.useApp.getState().paintHover!.tris;
+  store.paintHoverAt(-1);
+  assert.ok(sameRed.includes(0), 'the clicked face is in its own material');
+  const uvOf = (t: number) => Math.floor(((uv[t * 6 + 1] + uv[t * 6 + 3] + uv[t * 6 + 5]) / 3) * N) * N + Math.floor(((uv[t * 6] + uv[t * 6 + 2] + uv[t * 6 + 4]) / 3) * N);
+  for (const t of [0, 1]) assert.equal(sameRed.includes(t), redTris.mask![uvOf(t)] > 127, `face ${t} goes with the red only if it shows red`);
+  store.undoPaint();
+  store.setPaint({ by: 'part' });
+
+  // the Eraser on a generator takes wear off where it goes: its mask, not its pixels (the next regenerate would undo those)
+  const wear: PaintLayer = { id: 920, name: 'Wear', visible: true, opacity: 1, px: {}, gen: { kind: 'edge', amount: 0.3, soft: 0.2, width: 0.02, grunge: 0, scale: 0.05, color: '#ffffff', rough: 0.4, metal: 1, clip: null } };
+  dst.layers.push(wear);
+  dst.active = dst.layers.length - 1;
+  store.useApp.setState({ activePart: 1 });
+  store.setPaint({ tool: 'erase', size: 20 });
+  store.paintPress(1, 0, [2.5, 0.5, 0], [0.5, 0.5], m);
+  store.paintEnd();
+  const erased = dst.layers[dst.active];
+  assert.ok(erased.mask?.some((v) => v < 255), 'the Eraser writes the generator’s mask');
+  assert.ok(!erased.px.color || erased.px.color.every((v, i) => i % 4 !== 3 || v === 0), 'and leaves its generated pixels alone');
   console.log('pick ok');
 } finally {
   await vite.close();

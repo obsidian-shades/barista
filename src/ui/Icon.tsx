@@ -72,6 +72,8 @@ export const ICON = {
   island: ico(['M3 4h6l1.5 4.5L8 15H3z', 'A'], ['M12.5 3.5H17v6h-2.5l-2-2.5zM12.5 12.5H17V17h-4.5z', 'f'], 'M12.5 3.5H17v6h-2.5l-2-2.5zM12.5 12.5H17V17h-4.5z'),
   surface: ico(['M4 6v8a6 2.2 0 0 0 12 0V6a6 2.2 0 0 1-12 0z', 'A'], 'M4 6a6 2.2 0 1 0 12 0a6 2.2 0 1 0-12 0M4 6v8a6 2.2 0 0 0 12 0V6'),
   part: ico([CUBE, 'f'], CUBE_IN, [CUBE, 'a']),
+  // a material ball: the shaded sphere with its highlight
+  material: ico([SPHERE, 'A'], SPHERE, [dot(7.5, 7.5, 1.6), 'F']),
   // display: Blender's wireframe globe, solid-shaded ball, MatCap ball, flat disc; the UV checker; a heat ramp for stretch
   wire: ico(SPHERE + 'M10 3a3.2 7 0 1 0 0 14a3.2 7 0 1 0 0-14M3 10h14M4.2 6.2h11.6M4.2 13.8h11.6'),
   smooth: ico([SPHERE, 'f'], SPHERE, [dot(7.5, 7.5, 1.6), 'F']),

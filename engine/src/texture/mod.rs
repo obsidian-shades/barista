@@ -11,7 +11,7 @@ use crate::project::{load, Pack};
 use bake::{Edges, Occlusion};
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
-use layers::{fill_at, gen_at, DecalFrame, Map, Material, Mesh, Texel, Up, NONE};
+use layers::{fill_at, gen_at, DecalFrame, Map, Material, Mesh, ReliefFrame, Texel, Up, NONE};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -63,6 +63,12 @@ pub struct Decal {
     /// A shape's border finish (paint.ts `Decal.rim`; None: the same as inside).
     #[serde(default)]
     pub rim: Option<Rim>,
+    /// A relief from the decal's own maps (paint.ts `Decal.reliefNormal` / `reliefHeight`): the normal map's
+    /// strength (1 = as authored) and the height map's contrast.
+    #[serde(default, rename = "reliefNormal")]
+    pub relief_normal: Option<f32>,
+    #[serde(default, rename = "reliefHeight")]
+    pub relief_height: Option<f32>,
 }
 #[derive(Deserialize, Clone)]
 pub struct Rim { pub tint: String, pub roughness: f32, pub metallic: f32 }
@@ -132,10 +138,13 @@ struct Layer {
 #[derive(Deserialize)]
 struct Set { size: usize, channels: Vec<String>, layers: Vec<Layer> }
 #[derive(Deserialize)]
-struct Part { name: String, #[serde(default = "yes")] visible: bool }
+struct Part { name: String, #[serde(default = "yes")] visible: bool, #[serde(default)] normals: bool }
 fn yes() -> bool { true }
+#[derive(Deserialize, Default)]
+struct DocParams { #[serde(default = "sharp")] sharp: f32 }
+fn sharp() -> f32 { 45.0 }
 #[derive(Deserialize)]
-struct Doc { parts: Vec<Part>, #[serde(default)] sets: Vec<Option<Set>> }
+struct Doc { parts: Vec<Part>, #[serde(default)] sets: Vec<Option<Set>>, #[serde(default)] params: DocParams }
 
 /// What the editor asks for: the project to render, the folder (None: the engine asks), the size, the texture
 /// preset, file names' prefix, which parts, and where each asset's files are (URLs as the editor loads them).
@@ -156,9 +165,15 @@ pub struct ExportReq {
     pub materials: HashMap<String, HashMap<String, String>>,
     #[serde(default)]
     pub decals: HashMap<String, String>,
+    /// A relief decal's own maps (DECALmachine's): normal, ao_curv_height and masks, by decal id.
+    #[serde(default)]
+    pub reliefs: HashMap<String, ReliefMaps>,
     /// The FBX's file name, when the Pack carries one (blob `fbx`).
     pub fbx: Option<String>,
 }
+/// Where a relief decal's three maps are, as the editor loads them.
+#[derive(Deserialize, Clone)]
+pub struct ReliefMaps { pub normal: String, pub height: String, pub mask: String }
 fn generic() -> String { "generic".into() }
 
 #[derive(Serialize)]
@@ -196,7 +211,7 @@ fn blended(d: f32, s: f32, mode: &str) -> f32 {
 }
 
 /// How a layer gets its texels at the export size.
-enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a Map, &'a [String]), Shape(layers::ShapeSrc<'a>), Bevel(layers::BevelSrc), Gen(&'a Gen) }
+enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a Map, &'a [String]), Relief(ReliefFrame, &'a layers::Relief), Shape(layers::ShapeSrc<'a>), Bevel(layers::BevelSrc), Gen(&'a Gen) }
 
 /// One part's maps at size n: composite colour, roughness, metallic, normal, height, AO, and which texels are
 /// painted (for the padding) and on the surface.
@@ -209,7 +224,9 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
     let w_owner = mesh.owners(wn);
     let up = Up { n: wn, on: &w_owner };
     let on = |c: &str| set.channels.iter().any(|x| x == c);
-    let shown: Vec<&Layer> = set.layers.iter().filter(|l| l.visible && l.opacity > 0.0).collect();
+    // decals always on top of the material stack (paint.ts `decalsLast`), whatever order an older file holds
+    let mut shown: Vec<&Layer> = set.layers.iter().filter(|l| l.visible && l.opacity > 0.0).collect();
+    shown.sort_by_key(|l| l.decal.is_some());
     // each layer's working-res buffers, and how it renders here
     let bufs: Vec<HashMap<String, Vec<u8>>> = shown
         .iter()
@@ -225,6 +242,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
         .map(|l| {
             if let Some(f) = &l.fill { if let Some(m) = assets.materials.get(&f.asset) { return Src::Fill(f, m); } }
             if let Some(d) = &l.decal { if let Some(sh) = &d.shape { return Src::Shape(layers::ShapeSrc::new(d, sh, span, mesh, n)); } }
+            if let Some(d) = &l.decal { if let Some(r) = assets.reliefs.get(&d.asset) { return Src::Relief(ReliefFrame::new(d, span), r); } }
             if let Some(d) = &l.decal { if let Some(img) = assets.decals.get(&d.asset) { return Src::Decal(DecalFrame::new(d, span), img, &d.channels); } }
             if let Some(b) = &l.bevel { return Src::Bevel(layers::BevelSrc::new(b, mesh.pos)); }
             if let Some(g) = &l.gen { if occ.is_some() && edges.is_some() { return Src::Gen(g); } }
@@ -261,6 +279,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
                         let mut te = match &srcs[j] {
                             Src::Fill(f, m) => fill_at(f, m, mesh, t, p, x, y, n, span),
                             Src::Decal(fr, img, ch) => fr.at(img, mesh, t, p, ch),
+                            Src::Relief(fr, maps) => fr.at(maps, mesh, t, p),
                             Src::Shape(sh) => sh.at(mesh, t, p),
                             Src::Bevel(b) => b.at(mesh, t, p),
                             Src::Gen(g) => {
@@ -408,7 +427,7 @@ fn png(path: &Path, n: usize, channels: usize, px: impl Fn(usize, &mut [u8]) + S
         .map_err(|e| e.to_string())
 }
 
-struct Assets { materials: HashMap<String, Material>, decals: HashMap<String, Map> }
+struct Assets { materials: HashMap<String, Material>, decals: HashMap<String, Map>, reliefs: HashMap<String, layers::Relief> }
 
 /// Decode every asset the request names that has a file on disk (the rest fall back to working-res pixels).
 fn assets(req: &ExportReq) -> Assets {
@@ -423,7 +442,15 @@ fn assets(req: &ExportReq) -> Assets {
         })
         .collect();
     let decals = req.decals.iter().filter_map(|(id, u)| Some((id.clone(), decode(&file_of(u)?).ok()?))).collect();
-    Assets { materials, decals }
+    let reliefs = req
+        .reliefs
+        .iter()
+        .filter_map(|(id, m)| {
+            let get = |u: &str| file_of(u).and_then(|p| decode(&p).ok());
+            Some((id.clone(), layers::Relief { normal: get(&m.normal)?, height: get(&m.height)?, mask: get(&m.mask)? }))
+        })
+        .collect();
+    Assets { materials, decals, reliefs }
 }
 
 /// Render and write every requested part's maps. Body: a Pack whose JSON is an `ExportReq` (blob `fbx`: the model).
@@ -473,7 +500,17 @@ fn run(req: &ExportReq, dir: &Path, fbx: Option<&[u8]>) -> Result<Vec<String>, S
         progress(format!("Rendering {label} at {n}×{n}…"));
         let uv = floats(&format!("part/{i}/uv"))?;
         let mesh = Mesh::new(&positions[i], &uv);
-        let edges = set.layers.iter().any(|l| l.gen.is_some()).then(|| Edges::new(&positions[i], 0.05 * gen_span));
+        // wear and dirt where the shading breaks (bake.ts `isHard`): the file's normals, else the Sharp edges angle
+        let edges = if set.layers.iter().any(|l| l.gen.is_some()) {
+            let normals = if doc.parts[i].normals {
+                let ints = |name: &str| -> Result<Vec<i32>, String> {
+                    let b = blobs.get(name).ok_or_else(|| format!("the project has no {name}"))?;
+                    Ok(b.chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect())
+                };
+                Some(bake::out_normals(&positions[i], &ints(&format!("out/{i}/source"))?, &floats(&format!("part/{i}/soup"))?, &floats(&format!("part/{i}/normals"))?))
+            } else { None };
+            Some(Edges::new(&positions[i], 0.05 * gen_span, normals.as_deref(), doc.params.sharp))
+        } else { None };
         // tiles back into one working-res buffer per layer channel
         let tiles = |id: u32, what: &str, st: usize| -> Vec<u8> {
             let wn = set.size;
@@ -554,6 +591,35 @@ mod tests {
         assert!(lean(&layers::BevelSrc::new(&b("round", 100.0), &bx), 0.95).is_none(), "under the threshold");
     }
 
+    /// A relief decal's normal / height / mask maps, sampled as paint.check.ts's relief block does: a normal map
+    /// 45° toward the mark's right tilts the Normal, a height of 0.4 lowers the Height, and the mask is the coverage.
+    #[test]
+    fn relief_maps_write_normal_and_height() {
+        let d = Decal {
+            asset: "dm-check".into(), center: [0.5, 0.5, 0.0], normal: [0.0, 0.0, 1.0], up: [0.0, 1.0, 0.0],
+            width: 1.0, rotation: 0.0, aspect: 1.0, tint: "#ffffff".into(), roughness: 0.5, metallic: 0.0,
+            channels: vec!["normal".into(), "height".into()], flip_h: false, flip_v: false, engrave: 0.0,
+            shape: None, wrap: false, rim: None, relief_normal: Some(1.0), relief_height: Some(1.0),
+        };
+        let map = |r: u8, g: u8, b: u8| Map { w: 2, h: 2, data: (0..16).map(|i| [r, g, b, 255][i % 4]).collect() };
+        let maps = layers::Relief { normal: map(255, 128, 255), height: map(255, 0, 102), mask: map(255, 0, 0) };
+        let pos: [f32; 18] = [0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let uv: [f32; 12] = [0., 0., 1., 0., 1., 1., 0., 0., 1., 1., 0., 1.];
+        let mesh = Mesh::new(&pos, &uv);
+        let fr = ReliefFrame::new(&d, 1.0);
+        let te = fr.at(&maps, &mesh, 0, [0.5, 0.5, 0.0]);
+        let (n, a) = te.normal.expect("normal");
+        assert!((n[0] - 217.66).abs() <= 1.0 && (n[1] - 127.85).abs() <= 1.0 && (n[2] - 217.66).abs() <= 1.0, "{n:?}");
+        assert_eq!(a, 1.0);
+        let (h, hc) = te.height.expect("height");
+        assert!((h - 103.0).abs() <= 1.0, "height {h}");
+        assert_eq!(hc, 1.0);
+        // the mask's red channel is the mark: nothing under it, nothing written
+        let off = layers::Relief { normal: map(255, 128, 255), height: map(255, 0, 102), mask: map(0, 0, 0) };
+        let te = fr.at(&off, &mesh, 0, [0.5, 0.5, 0.0]);
+        assert!(te.normal.is_none() && te.height.is_none(), "outside the mask");
+    }
+
     /// The engine draws a grip texture as the editor does: paint.ts `shapeHeight` at the same points (from Node).
     #[test]
     fn shape_relief_matches_the_editor() {
@@ -563,6 +629,7 @@ mod tests {
             ("stipple", [0.003171373, 0.005149145, 0.006135595, 0.004268161, 0.01070719, -0.03]),
             ("grooves", [-0.011727217, -0.002837988, -0.010657637, -0.009618804, -0.010131935, -0.03]),
             ("checker", [0.004714192, 0.010213977, 0.00690817, 0.007445302, 0.004215948, -0.03]),
+            ("pyramid", [0.004484739, 0.012, 0.000145509, 0.012, 0.005550375, -0.03]),
         ];
         for (p, w) in want {
             for (&(x, y), w) in pts.iter().zip(w) {

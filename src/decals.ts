@@ -1,8 +1,8 @@
-// The decal shelf: transparent marks shipped with the app (public/decals) plus PNGs imported this
+// The decal shelf: transparent marks shipped with the app (public/assets/decals) plus PNGs imported this
 // session. A decal is an image and its aspect; Van Gogh projects it onto the model in the layer stack,
 // so it paints and exports like any other layer.
 import { decodeImage, type MapPixels } from './materials';
-import { isLine, shapeHeight, slopeStep, type Shape } from './paint';
+import { isLine, shapeHeight, slopeStep, type ReliefPixels, type Shape } from './paint';
 
 export interface DecalAsset {
   id: string;
@@ -19,6 +19,10 @@ export interface DecalAsset {
   source: string;
   /** A grip texture: no image, a relief drawn from these settings (sizes as shares of the model, made world units when placed). */
   shape?: Shape;
+  /** A relief read from a decal's own maps (DECALmachine assets): normal, height (AO/curvature/height, blue) and
+   *  coverage (masks, red). Sampled through the projector and written to Normal and Height; it puts down no ink, so
+   *  the surface's own colour and finish stay. URLs, like `file`. */
+  relief?: { normal: string; height: string; mask: string };
   /** Where placing it starts: its width as a % of the model (the Decal tool's Size). */
   size?: number;
 }
@@ -27,11 +31,14 @@ export interface DecalAsset {
  *  of the model (a pistol grip panel is about a fifth of the gun's length). */
 const grip = (id: string, name: string, w: number, h: number, shape: Shape, notes: string): DecalAsset =>
   ({ id: `shape-${id}`, name, category: 'Grip', tags: ['grip', 'relief', 'normal', shape.pattern], notes, file: '', width: w, height: h, license: 'CC0', source: 'Barista', shape, size: (GRIP_TALL * w) / h });
+/** The grip textures' patterns (the rest are reliefs: lines, fasteners, pads). */
+const GRIP_PATTERNS: Shape['pattern'][] = ['stipple', 'pyramid', 'grooves', 'checker', 'none'];
 /** Every grip texture starts this tall (% of the model): a pistol's grip panel, whatever its width. */
 const GRIP_TALL = 30;
 export const GRIP_SHAPES: DecalAsset[] = [
   grip('stipple-panel', 'Stipple', 60, 100, { pattern: 'stipple', corner: 0.025, border: 0.006, depth: 0.003, cell: 0.0045, amount: 0.0012 }, 'Raised stipple for a textured grip panel.'),
   grip('grooved-panel', 'Ribs', 30, 100, { pattern: 'grooves', corner: 0.01, border: 0.004, depth: 0.003, cell: 0.012, amount: 0.0025 }, 'Parallel grooves; adjust their spacing after choosing this look.'),
+  grip('nub-panel', 'Polymer frame', 60, 100, { pattern: 'pyramid', corner: 0.025, border: 0.006, depth: 0.003, cell: 0.0055, amount: 0.0011 }, 'A fine grid of small square nubs, the moulded texture of a polymer pistol frame.'),
   grip('checker-panel', 'Checkered', 60, 100, { pattern: 'checker', corner: 0.02, border: 0.006, depth: 0.003, cell: 0.008, amount: 0.0015 }, 'Diamond checkering for a textured grip panel.'),
   grip('groove-frame', 'Border only', 60, 100, { pattern: 'none', corner: 0.025, border: 0.006, depth: 0.003, cell: 0.005, amount: 0 }, 'A simple raised outline with no inner pattern.'),
 ];
@@ -60,10 +67,23 @@ export const RELIEF_SHAPES: DecalAsset[] = [
  *  pits darkened. `sh`, hw and hh share one unit; the shape spans `span` radians of the sphere either way. */
 export function reliefSphere(sh: Shape, hw: number, hh: number, W: number, span = 1): string {
   if (typeof document === 'undefined') return '';
+  // A grip is a texture: shown as the material balls are, its pattern over the whole ball at the panel's scale (a panel
+  // four times the ball, so its edge never shows), never the panel's outline; Border only, which has no pattern, as a square.
+  const grip = GRIP_PATTERNS.includes(sh.pattern), fill = grip && sh.pattern !== 'none';
+  if (grip) hh = hw;
+  const look: Shape = grip ? { ...sh, outline: undefined, ...(fill ? { border: 0, corner: 0 } : {}) } : sh, grow = fill ? 4 : 1;
+  const k = span / Math.max(hw, hh), e = slopeStep(look, hw, hh), top = Math.max(look.depth, Math.abs(look.amount), 1e-9);
+  const at = (x: number, y: number) => shapeHeight(look, x, y, hw * grow, hh * grow) ?? 0;
+  return litBall(W, k, (x, y) => [at(x, y) / top, (at(x + e, y) - at(x - e, y)) / (2 * e), (at(x, y + e) - at(x, y - e)) / (2 * e)]);
+}
+
+/** The shelf's lit ball, one look for every relief preview: the mark lies over the ball's front in the ball's own
+ *  coordinates (arc length along latitude and longitude, `k` radians a unit), and `sample(x, y)` gives its height (as a
+ *  share of its deepest: pits darken) and slope there, which tilt the ball's normal, lit by a key, a cool rim and a soft
+ *  sky on dark gunmetal. */
+function litBall(W: number, k: number, sample: (x: number, y: number) => [number, number, number]): string {
   const c = document.createElement('canvas'); c.width = W; c.height = W;
-  const g = c.getContext('2d')!, img = g.createImageData(W, W), S = W * 0.47, k = span / Math.max(hw, hh);
-  const e = slopeStep(sh, hw, hh), top = Math.max(sh.depth, Math.abs(sh.amount), 1e-9);
-  const at = (x: number, y: number) => shapeHeight(sh, x, y, hw, hh) ?? 0;
+  const g = c.getContext('2d')!, img = g.createImageData(W, W), S = W * 0.47;
   const L = [-0.48, 0.62, 0.62], Lr = [0.75, 0.15, -0.35], Hv = [L[0], L[1], L[2] + 1];
   const hl = Math.hypot(...Hv); Hv[0] /= hl; Hv[1] /= hl; Hv[2] /= hl;
   const lin = (v: number) => Math.round(255 * Math.min(1, Math.max(0, v)) ** (1 / 2.2));
@@ -71,21 +91,65 @@ export function reliefSphere(sh: Shape, hw: number, hh: number, W: number, span 
     const nx = (i + 0.5 - W / 2) / S, ny = (W / 2 - j - 0.5) / S, r2 = nx * nx + ny * ny, cover = Math.min(1, Math.max(0, (1 - Math.sqrt(r2)) * S + 0.5));
     if (cover <= 0) continue;
     const nz = Math.sqrt(Math.max(0, 1 - r2)), lon = Math.atan2(nx, nz), lat = Math.asin(Math.max(-1, Math.min(1, ny)));
-    const x = (lon * Math.cos(lat)) / k, y = lat / k, h = at(x, y);
-    const sx = (at(x + e, y) - at(x - e, y)) / (2 * e), sy = (at(x, y + e) - at(x, y - e)) / (2 * e);
+    const [h, sx, sy] = sample((lon * Math.cos(lat)) / k, lat / k);
     // T along longitude, B along latitude
     const cl = Math.cos(lon), sl = Math.sin(lon), ca = Math.cos(lat), sa = Math.sin(lat);
     let px = nx - sx * cl + sy * sa * sl, py = ny - sy * ca, pz = nz + sx * sl + sy * sa * cl;
     const pl = Math.hypot(px, py, pz) || 1; px /= pl; py /= pl; pz /= pl;
     const dif = Math.max(0, px * L[0] + py * L[1] + pz * L[2]), spec = Math.max(0, px * Hv[0] + py * Hv[1] + pz * Hv[2]) ** 60;
     const rim = (1 - Math.max(0, pz)) ** 2.5 * Math.max(0, px * Lr[0] + py * Lr[1] + pz * Lr[2]);
-    const occ = Math.min(1, 1 + 0.75 * Math.min(0, h) / top), sky = 0.07 + 0.06 * py;
+    const occ = Math.min(1, 1 + 0.75 * Math.min(0, h)), sky = 0.07 + 0.06 * py;
     const v = (0.2 * (dif * 1.15 + sky) + 0.55 * spec) * occ, o = (j * W + i) * 4;
     img.data[o] = lin(v + 0.08 * rim); img.data[o + 1] = lin(v * 1.01 + 0.11 * rim); img.data[o + 2] = lin(v * 1.07 + 0.16 * rim); img.data[o + 3] = 255 * cover;
   }
   g.putImageData(img, 0, 0);
   return c.toDataURL();
 }
+
+/** An imported relief decal (DECALmachine's) on the same lit ball, from its own maps: the normal map's tilt and the
+ *  height map's pits under the mask, so its tile reads like every other relief instead of the asset pack's own render
+ *  (dark on some, grey-mauve on others). Drawn in the background, one decal at a time; '' until then. */
+const reliefThumbs = new Map<string, string>(), reliefWaiting: [DecalAsset, () => void][] = [];
+let reliefDrawing = false;
+export function reliefThumb(a: DecalAsset, ready: () => void): string {
+  const hit = reliefThumbs.get(a.id);
+  if (hit !== undefined || typeof document === 'undefined' || !a.relief) return hit ?? '';
+  if (!reliefWaiting.some(([b]) => b.id === a.id)) reliefWaiting.push([a, ready]);
+  if (!reliefDrawing) void drawReliefs();
+  return '';
+}
+async function drawReliefs() {
+  reliefDrawing = true;
+  for (let job = reliefWaiting.shift(); job; job = reliefWaiting.shift()) {
+    const [a, ready] = job, r = a.relief!;
+    try {
+      const [nm, ht, mk] = await Promise.all([decodeImage(r.normal), decodeImage(r.height), decodeImage(r.mask)]);
+      // a long strip (a trim) is fitted by its short side and repeats along its length, as a trim is laid; else whole
+      const hw = 1, hh = a.height / a.width, strip = Math.max(hw, hh) / Math.min(hw, hh) > 2.5;
+      const k = strip ? 0.45 / Math.min(hw, hh) : 0.8 / Math.max(hw, hh), wrap = (t: number) => t - Math.floor(t);
+      // bilinear like the bake's sampleDecal (row 0 at the top), one channel
+      const tap = (m: MapPixels, u: number, v: number, ch: number) => {
+        const x = Math.min(m.width - 1, Math.max(0, u * m.width - 0.5)), y = Math.min(m.height - 1, Math.max(0, (1 - v) * m.height - 0.5));
+        const x0 = Math.floor(x), y0 = Math.floor(y), x1 = Math.min(m.width - 1, x0 + 1), y1 = Math.min(m.height - 1, y0 + 1), fx = x - x0, fy = y - y0;
+        const p = (xx: number, yy: number) => m.data[(yy * m.width + xx) * 4 + ch];
+        return (p(x0, y0) * (1 - fx) + p(x1, y0) * fx) * (1 - fy) + (p(x0, y1) * (1 - fx) + p(x1, y1) * fx) * fy;
+      };
+      reliefThumbs.set(a.id, litBall(120, k, (x, y) => {
+        let u = x / (2 * hw) + 0.5, v = y / (2 * hh) + 0.5;
+        if (strip) { if (hw > hh) u = wrap(u); else v = wrap(v); }
+        if (u < 0 || u > 1 || v < 0 || v > 1) return [0, 0, 0];
+        const m = tap(mk, u, v, 0) / 255;
+        if (m < 0.004) return [0, 0, 0];
+        const ax = tap(nm, u, v, 0) / 127.5 - 1, ay = tap(nm, u, v, 1) / 127.5 - 1, az = Math.max(0.2, tap(nm, u, v, 2) / 127.5 - 1);
+        return [(tap(ht, u, v, 2) / 255 - 0.5) * 2 * m, (-ax / az) * m, (-ay / az) * m];
+      }));
+    } catch { reliefThumbs.set(a.id, a.file); } // the maps would not load: the pack's own picture, rather than nothing
+    ready();
+    await new Promise((ok) => setTimeout(ok, 0));
+  }
+  reliefDrawing = false;
+}
+
 /** A shape's shelf tile: its relief on the sphere at the size it starts at on the model. */
 const thumbs = new Map<string, string>();
 function shapeThumb(a: DecalAsset): string {
@@ -99,11 +163,14 @@ function shapeThumb(a: DecalAsset): string {
   return url;
 }
 
-const BASE = '/decals';
+const BASE = '/assets/decals';
+/** The locally imported DECALmachine relief decals (tools/dm-decals.mjs). Optional: a checkout without the purchase
+ *  simply has no file there. */
+const RELIEF_BASE = '/assets/geometry/decalmachine';
 let library: DecalAsset[] | null = null;
 let loading: Promise<DecalAsset[]> | null = null;
 
-/** The built-in decal shelf: `public/decals/index.json`. Cached after the first read. */
+/** The built-in decal shelf: `public/assets/decals/index.json` plus the imported relief decals. Cached after the first read. */
 export function loadDecalLibrary(): Promise<DecalAsset[]> {
   if (library) return Promise.resolve(library);
   loading ??= (async () => {
@@ -111,7 +178,11 @@ export function loadDecalLibrary(): Promise<DecalAsset[]> {
     if (!r.ok) throw new Error(`Could not read the decal library (${r.status})`);
     const j = await r.json() as { decals?: DecalAsset[] };
     if (!Array.isArray(j.decals)) throw new Error('The decal library has no decals');
-    library = [...GRIP_SHAPES, ...RELIEF_SHAPES, ...j.decals];
+    const relief = await fetch(`${RELIEF_BASE}/index.json`)
+      .then((x) => (x.ok ? x.json() as Promise<{ decals?: DecalAsset[] }> : { decals: [] }))
+      .then((x) => (Array.isArray(x.decals) ? x.decals : []))
+      .catch(() => []);
+    library = [...GRIP_SHAPES, ...RELIEF_SHAPES, ...relief, ...j.decals];
     return library;
   })();
   loading.catch(() => { loading = null; });
@@ -120,7 +191,30 @@ export function loadDecalLibrary(): Promise<DecalAsset[]> {
 
 export function decalUrl(a: DecalAsset): string {
   if (a.shape) return shapeThumb(a);
+  if (a.relief) return reliefThumbs.get(a.id) || ''; // its lit ball once drawn (`reliefThumb`)
   return /^(blob:|data:|https?:|\/)/.test(a.file) ? a.file : `${BASE}/${a.file}`;
+}
+
+/** A relief decal's three maps, decoded. Kept apart from `pixels`: an image mark samples one texture, a relief samples
+ *  three, and only the last few placed marks are ever read. */
+const reliefs = new Map<string, Promise<ReliefPixels>>();
+const reliefOrder: string[] = [];
+export function reliefPixels(a: DecalAsset): Promise<ReliefPixels> {
+  const hit = reliefs.get(a.id);
+  if (hit) {
+    const i = reliefOrder.indexOf(a.id);
+    if (i >= 0) reliefOrder.splice(i, 1);
+    reliefOrder.push(a.id);
+    return hit;
+  }
+  const r = a.relief!;
+  const job = Promise.all([decodeImage(r.normal), decodeImage(r.height), decodeImage(r.mask)])
+    .then(([normal, height, mask]) => ({ normal, height, mask }));
+  reliefs.set(a.id, job);
+  reliefOrder.push(a.id);
+  job.catch(() => { reliefs.delete(a.id); const i = reliefOrder.indexOf(a.id); if (i >= 0) reliefOrder.splice(i, 1); });
+  while (reliefOrder.length > 3) reliefs.delete(reliefOrder.shift()!);
+  return job;
 }
 
 /** Decoded RGBA of a decal; only the last few are kept, as a decal is sampled only while it is placed. */

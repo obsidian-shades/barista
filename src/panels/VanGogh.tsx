@@ -3,22 +3,22 @@
 // (Brush, Eraser, Bucket) stays inside, on the model and in the texture view alike; the options bar holds the current
 // tool's settings; the panel the parts (collapsible, with their channels: Substance's texture sets) and the active
 // part's Layers, as Photoshop's panel lays them out.
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useDeferredValue, useEffect, useMemo, useReducer, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 
-import { CHANNELS, SOLID, blendOf, thumbOf, type BlendMode, type BrushTip, type Channel, type Bevel, type Decal, type Drive, type Fill, type Head, type Pattern, type Profile, type Shape, isLine, type Gen, type GenKind } from '../paint';
+import { CHANNELS, SOLID, blendOf, thumbOf, type BlendMode, type BrushTip, type Channel, type Bevel, type Decal, type Drive, type Fill, type Head, type Pattern, type Profile, type Shape, isLine, type Gen, type GenKind, type PaintLayer } from '../paint';
 import { MATERIAL_GROUPS, TILE_KINDS, materialGroup, thumbUrl, tileKind } from '../materials';
 import { ColorPick } from '../ui/ColorPick';
-import { GRIP_SHAPES, RELIEF_SHAPES, decalUrl, reliefSphere } from '../decals';
+import { GRIP_SHAPES, RELIEF_SHAPES, decalUrl, reliefSphere, reliefThumb, type DecalAsset } from '../decals';
 import { decalDragOver, decalDrop, shelfDragOver, shelfDrop } from '../views/Viewport3D';
 import { targetInfo } from '../exporting';
-import { Parts, eye } from './Dock';
+import { Channels, Parts, eye } from './Dock';
 import { ColorWheel } from './ColorWheel';
 import { ToolStrip, type ToolDef } from '../shell/PolyTools';
 import { SelectionControls } from '../shell/Chrome';
 import { ico, Icon, ICON } from '../ui/Icon';
 import {
-  activeDecal, addBevel, editBevel, fitDecal, finishDraw, setGripPreset, shelfDrag, addGenerator, addSolidFill, alignDecal, centerDecal, duplicateDecal, setDecalMode, setLinkSets, addMetalLayer, addPaintLayer, assignMaterial, bakeAllPaint, bakePaint, beginPaintEdit, clearFillMask, deletePaintLayer, duplicatePaintLayer, editGen, editPaintLayer, fillPaintSelection, importDecal, importMaterialFiles,
-  invertFillMask, loadDecals, loadMaterials, modelDiagonal, movePaintLayerTo, openExport, pickDecal, pickPaintLayer, pointer, setAssetTab, setFillBlend, setFillMask, setLayerBlend, setPaint, setPaintAO, setPaintTab, setPbr, texSet, undoPaint, updateDecal, updateFill, useApp, type PaintTool,
+  activeDecal, addBevel, editBevel, fitDecal, finishDraw, setGripPreset, shelfDrag, addGenerator, addSolidFill, alignDecal, centerDecal, duplicateDecal, setDecalMode, setLinkSets, addMetalLayer, addPaintLayer, assignMaterial, bakeAllPaint, bakePaint, beginPaintEdit, clearFillMask, deletePaintLayer, deletePickedLayers, duplicatePickedLayers, editGen, editPaintLayer, fillPaintSelection, importDecal, importMaterialFiles,
+  invertFillMask, loadDecals, loadMaterials, modelDiagonal, movePaintLayerTo, openExport, pickDecal, pickPaintLayer, pickedLayers, pointer, setStackView, showPaintLayer, setAssetTab, setFillBlend, setFillMask, setLayerBlend, setPaint, setPaintAO, setPaintTab, setPbr, texSet, undoPaint, updateDecal, updateFill, useApp, type PaintTool,
 } from '../store';
 
 const PAINT_TOOLS: Partial<Record<PaintTool, ToolDef>>[] = [
@@ -187,7 +187,7 @@ function Decals() {
   const armed = useApp((s) => s.paint.decalAsset);
   const [q, setQ] = useState(''), [cat, setCat] = useState('All'), input = useRef<HTMLInputElement>(null);
   useEffect(() => { loadDecals(); }, []);
-  const imageDecals = useMemo(() => list.filter((d) => !d.shape), [list]);
+  const imageDecals = useMemo(() => list.filter((d) => !d.shape && !d.relief), [list]);
   const cats = useMemo(() => ['All', ...Array.from(new Set(imageDecals.map((d) => d.category)))], [imageDecals]);
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -209,7 +209,7 @@ function Decals() {
       <div className="decalgrid">
         {shown.map((d) => (
           <button key={d.id} className={`decaltile${d.id === armed ? ' on' : ''}`} title={`${d.name} — ${d.category}${d.notes ? `\n${d.notes}` : ''}\n${d.width}×${d.height} · ${d.license}`} onPointerDown={(e) => holdTile(e, d.id, decalUrl(d), decalDragOver, decalDrop, false)} onClick={() => { if (!tileDragged) pickDecal(d.id); }}>
-            <span className="decalimg"><img src={decalUrl(d)} alt="" draggable={false} /></span>
+            <span className="decalimg"><DecalImg a={d} /></span>
             <span>{d.shape ? 'Grip texture' : d.name}</span>
           </button>
         ))}
@@ -220,13 +220,13 @@ function Decals() {
   );
 }
 
-/** Shape based grip reliefs are geometry assets, kept separate from image decals. */
+/** Shape based grip reliefs and map based reliefs are geometry assets, kept separate from image decals. */
 function Geometry() {
   const list = useApp((s) => s.decals), loading = useApp((s) => s.decalsLoading), error = useApp((s) => s.decalsError);
   const armed = useApp((s) => s.paint.decalAsset);
   const [q, setQ] = useState(''), [cat, setCat] = useState('All');
   useEffect(() => { loadDecals(); }, []);
-  const shapes = useMemo(() => list.filter((d) => !!d.shape), [list]);
+  const shapes = useMemo(() => list.filter((d) => !!d.shape || !!d.relief), [list]);
   const cats = useMemo(() => ['All', ...Array.from(new Set(shapes.map((d) => d.category)))], [shapes]);
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -240,9 +240,10 @@ function Geometry() {
       </div>
       {error && <div className="hint fix">{error}</div>}
       {loading && !shapes.length && <div className="hint">Loading geometry…</div>}
+      {!loading && !shapes.some((d) => d.relief) && <div className="hint">DECALmachine reliefs: run <code>node tools/dm-decals.mjs "&lt;addon&gt;\assets"</code> to import its decals' normal and height maps into this tab.</div>}
       <div className="decalgrid">
         {shown.map((d) => <button key={d.id} className={`decaltile relieftile${d.id === armed ? ' on' : ''}`} title={`${d.name}${d.notes ? `\n${d.notes}` : ''}`} onPointerDown={(e) => holdTile(e, d.id, decalUrl(d), decalDragOver, decalDrop, false)} onClick={() => { if (!tileDragged) pickDecal(d.id); }}>
-          <span className="decalimg"><img src={decalUrl(d)} alt="" draggable={false} /></span><span>{d.name}</span>
+          <span className="decalimg"><DecalImg a={d} /></span><span>{d.name}</span>
         </button>)}
       </div>
       {!loading && !shown.length && <div className="hint">No geometry matches.</div>}
@@ -250,80 +251,113 @@ function Geometry() {
   );
 }
 
-/** The active fill layer's material, projection, scale and mask. */
-function FillSettings({ f }: { f: Fill }) {
-  const slider = (label: string, key: 'tiling' | 'tiles' | 'rotation' | 'normalStrength', min: number, max: number, step: number, title: string, fmt: (v: number) => string) => (
-    <label title={title}>{label}
-      <input type="range" min={min} max={max} step={step} value={f[key]} onPointerDown={beginPaintEdit} onChange={(e) => updateFill({ [key]: +e.target.value }, false)} />
-      <span className="num readout">{fmt(f[key])}</span>
+/** One settings row on the panel's grid: name | control | value (no value: the control spans both). Every layer's
+ *  settings are built from these, so labels, sliders and readouts line up from section to section. */
+function Row({ label, tip, value, children }: { label: ReactNode; tip?: string; value?: ReactNode; children: ReactNode }) {
+  return (
+    <label className={`prow${value === undefined ? ' span' : ''}`} title={tip}>
+      <span className="pname">{label}</span>
+      {children}
+      {value !== undefined && <span className="num readout">{value}</span>}
     </label>
   );
-  const channel = (ch: Channel) => (
-    <label key={ch}><input type="checkbox" checked={f.channels.includes(ch)} onChange={(e) => updateFill({ channels: e.target.checked ? [...f.channels, ch] : f.channels.filter((x) => x !== ch) })} />{CHANNELS[ch].name}</label>
+}
+/** A titled group of rows. */
+function Sec({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="psec">
+      <div className="tsec"><span className="caps">{title}</span>{hint && <span className="hint">{hint}</span>}</div>
+      {children}
+    </section>
   );
-  const mask = (
-    <>
-      <div className="fillmask">
-        <button title="Make the fill visible everywhere" onClick={() => setFillMask(255)}>White</button>
-        <button title="Hide the fill everywhere" onClick={() => setFillMask(0)}>Black</button>
+}
+/** A slider row: `fmt` shows the value. Dragging is one undo step (the first change takes it). */
+function Slide({ label, tip, value, min, max, step, fmt, set, dim }: { label: ReactNode; tip: string; value: number; min: number; max: number; step: number; fmt: (v: number) => ReactNode; set: (v: number) => void; dim?: boolean }) {
+  return (
+    <Row label={label} tip={tip} value={fmt(value)}>
+      <input type="range" className={dim ? 'dim' : undefined} min={min} max={max} step={step} value={value} onPointerDown={beginPaintEdit} onChange={(e) => set(+e.target.value)} />
+    </Row>
+  );
+}
+const pct = (v: number) => `${Math.round(v * 100)}%`;
+/** One precision for every readout of a size or angle: two significant figures (18 · 4.2 · 0.55), never a trailing "18.". */
+const sig = (v: number) => (Math.abs(v) >= 10 || Math.abs(v) < 5e-4 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(1) : v.toFixed(2));
+
+/** A fill's mask: white / black / invert / clear, the brush paints it. */
+function MaskSec() {
+  return (
+    <Sec title="Mask" hint="Brush shows it, Eraser hides it">
+      <div className="pbtns four">
+        <button title="Make the layer visible everywhere" onClick={() => setFillMask(255)}>White</button>
+        <button title="Hide the layer everywhere, then paint it in with the Brush" onClick={() => setFillMask(0)}>Black</button>
         <button title="Swap what the mask hides and shows" onClick={invertFillMask}>Invert</button>
         <button title="Remove the mask (visible everywhere)" onClick={clearFillMask}>Clear</button>
       </div>
-      <div className="hint">Brush paints the mask white, Eraser black. Start with Black to paint the material in.</div>
-    </>
+    </Sec>
   );
-  if (f.asset === SOLID) return (
-    <div className="gensettings fillsettings">
-      <label title="The fill's colour; change it any time, the layer stays a setting">Color
-        <ColorPick value={f.tint} onStart={beginPaintEdit} onChange={(c) => updateFill({ tint: c }, false)} label="Fill tint" />
-      </label>
-      {(['roughness', 'metallic'] as const).map((key) => (
-        <label key={key} title={key === 'roughness' ? 'Roughness: 0 mirror, 100% chalk' : 'Metallic: 100% for bare or anodized metal'}>{key === 'roughness' ? 'Rough' : 'Metal'}
-          <input type="range" min={0} max={1} step={0.01} value={f[key] ?? 0} onPointerDown={beginPaintEdit} onChange={(e) => updateFill({ [key]: +e.target.value }, false)} />
-          <span className="num readout">{Math.round((f[key] ?? 0) * 100)}%</span>
-        </label>
-      ))}
-      {mask}
-    </div>
+}
+
+/** The active fill layer: its surface (colour, roughness, metallic, normal), projection, the channels it writes, mask. */
+function FillSettings({ f }: { f: Fill }) {
+  const solid = f.asset === SOLID;
+  // roughness / metallic: the material's map, or one value for the whole finish (dragging the slider sets it; the
+  // ↺ beside the name goes back to the map)
+  const finish = (key: 'roughness' | 'metallic', name: string) => {
+    const own = f[key] != null;
+    return (
+      <Slide key={key} tip={solid ? `${name} of the colour` : `${name}: the material's own map, or drag for one value over the whole fill`}
+        label={<>{name}{own && !solid && <button className="reset" title="Back to the material's own map" onClick={(e) => { e.preventDefault(); updateFill({ [key]: undefined }); }}>↺</button>}</>}
+        value={f[key] ?? (solid ? 0 : 0.5)} min={0} max={1} step={0.01} dim={!own && !solid} fmt={(v) => (own || solid ? pct(v) : 'Map')} set={(v) => updateFill({ [key]: v }, false)} />
+    );
+  };
+  const writes = (ch: Channel) => (
+    <button key={ch} className={f.channels.includes(ch) ? 'on' : ''} aria-pressed={f.channels.includes(ch)} title={`Write this material's ${CHANNELS[ch].name} map`}
+      onClick={() => updateFill({ channels: f.channels.includes(ch) ? f.channels.filter((x) => x !== ch) : [...f.channels, ch] })}>{CHANNELS[ch].name}</button>
   );
   return (
-    <div className="gensettings fillsettings">
-      <label title="UV repeats inside each island; Tri-planar projects in world space and has no seams on a packed atlas">Projection
-        <span className="seg">
-          <button className={f.projection === 'uv' ? 'on' : ''} onClick={() => updateFill({ projection: 'uv' })}>UV</button>
-          <button className={f.projection === 'triplanar' ? 'on' : ''} onClick={() => updateFill({ projection: 'triplanar' })}>Tri-planar</button>
-        </span>
-      </label>
-      {f.projection === 'uv'
-        ? slider('Tiling', 'tiling', 0.25, 8, 0.25, 'Repeats inside each UV island: higher = more repeats, a smaller pattern', (v) => `${v}×`)
-        : slider('Tiles', 'tiles', 0.5, 16, 0.5, 'Repeats across the whole model: higher = more repeats, a smaller pattern', (v) => `${v}×`)}
-      {slider('Rotate', 'rotation', -180, 180, 5, 'Rotate the projection', (v) => `${Math.round(v)}°`)}
-      {slider('Strength', 'normalStrength', 0, 2, 0.05, 'Normal map strength', (v) => `${Math.round(v * 100)}%`)}
-      <label title="Tint the material's base color">Tint
-        <ColorPick value={f.tint} onStart={beginPaintEdit} onChange={(c) => updateFill({ tint: c }, false)} label="Fill tint" />
-      </label>
-      {(['roughness', 'metallic'] as const).map((key) => (
-        <label key={key} className="foverride" title={`Override the map's ${key} with one value for this finish`}>
-          <input type="checkbox" checked={f[key] != null} onChange={(e) => updateFill({ [key]: e.target.checked ? (f[key] ?? 0.5) : undefined })} />
-          {key === 'roughness' ? 'Rough' : 'Metal'}
-          <input type="range" min={0} max={1} step={0.01} disabled={f[key] == null} value={f[key] ?? 0.5} onPointerDown={beginPaintEdit} onChange={(e) => updateFill({ [key]: +e.target.value }, false)} />
-          <span className="num readout">{f[key] == null ? 'map' : `${Math.round(f[key]! * 100)}%`}</span>
-        </label>
-      ))}
-      <div className="fillchans">{channel('normal')}{channel('height')}</div>
-      {mask}
+    <div className="psettings">
+      <Sec title="Surface">
+        <Row label={solid ? 'Color' : 'Tint'} tip={solid ? "The fill's colour; change it any time, the layer stays a setting" : "Tint the material's base colour"}>
+          <ColorPick value={f.tint} onStart={beginPaintEdit} onChange={(c) => updateFill({ tint: c }, false)} label="Fill tint" />
+        </Row>
+        {finish('roughness', 'Rough')}
+        {finish('metallic', 'Metal')}
+        {!solid && <Slide label="Normal" tip="How strongly the material's normal map bends the light" value={f.normalStrength} min={0} max={2} step={0.05} fmt={pct} set={(v) => updateFill({ normalStrength: v }, false)} />}
+      </Sec>
+      {!solid && <Sec title="Projection">
+        <Row label="Mode" tip="UV repeats inside each island; Tri-planar projects in world space and has no seams on a packed atlas">
+          <span className="seg">
+            <button className={f.projection === 'uv' ? 'on' : ''} aria-pressed={f.projection === 'uv'} onClick={() => updateFill({ projection: 'uv' })}>UV</button>
+            <button className={f.projection === 'triplanar' ? 'on' : ''} aria-pressed={f.projection === 'triplanar'} onClick={() => updateFill({ projection: 'triplanar' })}>Tri-planar</button>
+          </span>
+        </Row>
+        {f.projection === 'uv'
+          ? <Slide label="Tiling" tip="Repeats inside each UV island: higher = more repeats, a smaller pattern" value={f.tiling} min={0.25} max={8} step={0.25} fmt={(v) => `${v}×`} set={(v) => updateFill({ tiling: v }, false)} />
+          : <Slide label="Tiles" tip="Repeats across the whole model: higher = more repeats, a smaller pattern" value={f.tiles} min={0.5} max={16} step={0.5} fmt={(v) => `${v}×`} set={(v) => updateFill({ tiles: v }, false)} />}
+        <Slide label="Rotate" tip="Rotate the projection" value={f.rotation} min={-180} max={180} step={5} fmt={(v) => `${Math.round(v)}°`} set={(v) => updateFill({ rotation: v }, false)} />
+        <Row label="Writes" tip="Which of the material's relief maps this layer lays down"><span className="seg">{writes('normal')}{writes('height')}</span></Row>
+      </Sec>}
+      <MaskSec />
     </div>
   );
 }
 
+/** A decal's tile picture: its image, a relief's lit ball, or an imported relief's ball once drawn from its maps. */
+function DecalImg({ a }: { a: DecalAsset }) {
+  const [, redraw] = useReducer((n: number) => n + 1, 0);
+  const src = a.relief ? reliefThumb(a, redraw) : decalUrl(a);
+  return src ? <img src={src} alt="" draggable={false} /> : null;
+}
+
 /** A typed number for a decal's size or angle: Enter or blur commits, so typing an exact width moves the mark once. */
-function Num({ value, min, max, step, suffix, onCommit }: { value: number; min: number; max: number; step: number; suffix: string; onCommit: (v: number) => void }) {  const [text, setText] = useState(value.toFixed(1));
-  useEffect(() => setText(value.toFixed(1)), [value]);
+function Num({ value, min, max, step, suffix, onCommit }: { value: number; min: number; max: number; step: number; suffix: string; onCommit: (v: number) => void }) {
+  const [text, setText] = useState(sig(value));
+  useEffect(() => setText(sig(value)), [value]);
   const commit = () => {
     const v = +text;
-    if (!Number.isFinite(v)) { setText(value.toFixed(1)); return; }
+    if (!Number.isFinite(v)) { setText(sig(value)); return; }
     const c = Math.min(max, Math.max(min, v));
-    if (Math.abs(c - value) > 1e-6) onCommit(c); else setText(value.toFixed(1));
+    if (Math.abs(c - value) > 1e-6) onCommit(c); else setText(sig(value));
   };
   return <span className="numfield">
     <input type="number" min={min} max={max} step={step} value={text} onChange={(e) => setText(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && commit()} />
@@ -341,7 +375,7 @@ function DecalSettings({ d }: { d: Decal }) {
   return (
     <div className="decalsettings">
       <div className="decalpreview" title="On the model: drag the mark to slide it (Shift snaps it to the middle), corners scale, side bars stretch, the knob turns it (Shift 15°), arrows nudge and [ ] resize. A click on bare surface deselects; Delete removes the layer.">
-        <span className="decalimg">{a && <img src={decalUrl(a)} alt="" />}</span>
+        <span className="decalimg">{a && <DecalImg a={a} />}</span>
         <span className="hint">{a?.name ?? 'Imported decal'}<br />{Math.round(pct)}% × {Math.round(hpct)}% of the model · {Math.round(d.rotation)}°</span>
       </div>
       <label title="How wide the mark is across the model">Width
@@ -357,13 +391,13 @@ function DecalSettings({ d }: { d: Decal }) {
         <input type="range" min={-180} max={180} step={1} value={d.rotation} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ rotation: +e.target.value }, false)} />
         <Num value={d.rotation} min={-180} max={180} step={1} suffix="°" onCommit={(v) => updateDecal({ rotation: v })} />
       </label>
-      <span className="seg decalactions">
+      <span className="pbtns decalactions">
         <button onClick={centerDecal} title="Middle of the model across the face the mark lies on">Center</button>
         <button onClick={alignDecal} title="Turn the projector onto the surface under the mark">Face</button>
         <button onClick={duplicateDecal} title="Copy the mark just above it, nudged so both are visible (Ctrl+J)">Duplicate</button>
         <button onClick={deletePaintLayer} title="Delete the mark and its layer (Delete with the Decal tool)">Delete</button>
       </span>
-      {d.shape ? <><ShapeSettings d={d} span={span} /><ShapeFinish d={d} /></> : <InkSettings d={d} />}
+      {d.shape ? <><ShapeSettings d={d} span={span} /><ShapeFinish d={d} /></> : a?.relief ? <ReliefMapsSettings d={d} /> : <InkSettings d={d} />}
       <DecalTurns d={d} />
     </div>
   );
@@ -398,7 +432,7 @@ function ReliefPreview({ d }: { d: Decal }) {
     const [sh, w, asp] = JSON.parse(key) as [Shape, number, number];
     return reliefSphere(sh, w / 2, w / 2 / asp, 144, sh.pattern === 'fastener' ? 0.75 : 0.95);
   }, [key]);
-  return <div className="relief-preview" title="The mark on a lit sphere: what its Normal and Height will read as"><img src={url} alt="" width={144} height={144} /></div>;
+  return <div className="relief-preview" title="Its relief on a lit ball (a grip as its texture, a relief as the mark): what its Normal and Height will read as"><img src={url} alt="" width={144} height={144} /></div>;
 }
 function ReliefSettings({ d, span }: { d: Decal; span: number }) {
   const sh = d.shape!, rows = RELIEF_SLIDERS[sh.pattern] ?? [], line = isLine(sh.pattern);
@@ -424,13 +458,13 @@ function ReliefSettings({ d, span }: { d: Decal; span: number }) {
         <label key={key} title={tip}>{name}
           <input type="range" min={min} max={max} step={0.01} value={(sh[key] / span) * 100} onPointerDown={beginPaintEdit}
             onChange={(e) => updateDecal({ shape: { ...sh, [key]: key === 'cell' ? Math.max(1e-4, (span * +e.target.value) / 100) : (span * +e.target.value) / 100 } }, false)} />
-          <span className="num readout">{((sh[key] / span) * 100).toFixed(2)}%</span>
+          <span className="num readout">{sig((sh[key] / span) * 100)}%</span>
         </label>
       ))}
       {line && <label title="Join the line's last point back to its first"><input type="checkbox" checked={!!sh.closed} onChange={(e) => set({ closed: e.target.checked })} />Closed</label>}
       {line && sh.closed && <label title="Round the closed line's corners">Corner
         <input type="range" min={0} max={5} step={0.01} value={(sh.corner / span) * 100} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ shape: { ...sh, corner: (span * +e.target.value) / 100 } }, false)} />
-        <span className="num readout">{((sh.corner / span) * 100).toFixed(2)}%</span>
+        <span className="num readout">{sig((sh.corner / span) * 100)}%</span>
       </label>}
       {!line && <label title="Bend round the model: the relief follows the surface over bevels and curves instead of projecting flat">Wrap
         <input type="checkbox" checked={!!d.wrap} onChange={(e) => updateDecal({ wrap: e.target.checked })} />
@@ -438,6 +472,11 @@ function ReliefSettings({ d, span }: { d: Decal; span: number }) {
     </>
   );
 }
+/** What a grip pattern's cell is, for its slider: [label, tip]. */
+const CELL_OF: Partial<Record<Pattern, [string, string]>> = {
+  grooves: ['Rib spacing', 'Distance between parallel ribs'], stipple: ['Dot size', 'Size of each raised dot'],
+  checker: ['Diamond size', 'Size of each checkered diamond'], pyramid: ['Nub pitch', 'Distance from one nub to the next'],
+};
 function ShapeSettings({ d, span }: { d: Decal; span: number }) {
   const sh = d.shape!;
   if (RELIEF_SHAPES.some((g) => g.shape!.pattern === sh.pattern)) return <ReliefSettings d={d} span={span} />;
@@ -449,28 +488,28 @@ function ShapeSettings({ d, span }: { d: Decal; span: number }) {
           <span className="decalimg"><img src={decalUrl(g)} alt="" /></span><span>{g.name}</span>
         </button>)}
       </div>
-      <span className="seg decalactions">
+      <span className="pbtns decalactions">
         <button onClick={() => fitDecal('faces')} title="Cover the faces picked with Select Faces (W) with the pattern, wrapped round them and stopping at their edges">Fit to faces</button>
         <button onClick={() => fitDecal('part')} title="Cover the whole part with the pattern, wrapped round it">Fit to part</button>
       </span>
-      {sh.pattern !== 'none' && <label title={sh.pattern === 'grooves' ? 'Distance between parallel ribs' : sh.pattern === 'stipple' ? 'Size of each raised dot' : 'Size of each checkered diamond'}>
-        {sh.pattern === 'grooves' ? 'Rib spacing' : sh.pattern === 'stipple' ? 'Dot size' : 'Diamond size'}
+      {sh.pattern !== 'none' && <label title={CELL_OF[sh.pattern]?.[1]}>
+        {CELL_OF[sh.pattern]?.[0] ?? 'Size'}
         <input type="range" min={0} max={3} step={0.02} value={(sh.cell / span) * 100} onPointerDown={beginPaintEdit}
           onChange={(e) => updateDecal({ shape: { ...sh, cell: Math.max(1e-4, (span * +e.target.value) / 100) } }, false)} />
-        <span className="num readout">{((sh.cell / span) * 100).toFixed(2)}%</span>
+        <span className="num readout">{sig((sh.cell / span) * 100)}%</span>
       </label>}
-      <details className="grip-advanced">
-        <summary>Fine tune</summary>
+      <details className="tsec-details grip-advanced">
+        <summary className="tsec"><span className="caps"><Icon name="chevron" size={11} className="chev" />Fine tune</span><span className="hint">pattern, border, wrap</span></summary>
         <div className="grip-advanced-body">
           <div className="grip-patterns" role="group" aria-label="Pattern">
-            {([['stipple', 'Dots'], ['grooves', 'Ribs'], ['checker', 'Crosshatch'], ['none', 'Border only']] as [Pattern, string][]).map(([pattern, label]) =>
+            {([['stipple', 'Dots'], ['pyramid', 'Nubs'], ['grooves', 'Ribs'], ['checker', 'Crosshatch'], ['none', 'Border only']] as [Pattern, string][]).map(([pattern, label]) =>
               <button key={pattern} className={sh.pattern === pattern ? 'on' : ''} aria-pressed={sh.pattern === pattern} onClick={() => updateDecal({ shape: { ...sh, pattern } })}>{label}</button>)}
           </div>
           {SHAPE_SLIDERS.map(([key, name, tip, max]) => (
             <label key={key} title={tip}>{name}
               <input type="range" min={0} max={max} step={0.02} value={(sh[key] / span) * 100} onPointerDown={beginPaintEdit}
                 onChange={(e) => updateDecal({ shape: { ...sh, [key]: Math.max(key === 'cell' ? 1e-4 : 0, (span * +e.target.value) / 100) } }, false)} />
-              <span className="num readout">{((sh[key] / span) * 100).toFixed(2)}%</span>
+              <span className="num readout">{sig((sh[key] / span) * 100)}%</span>
             </label>
           ))}
           <label title="Bend round the model: the panel follows the surface over bevels and curves instead of projecting flat">Wrap
@@ -530,9 +569,26 @@ function ShapeFinish({ d }: { d: Decal }) {
   );
 }
 
-/** An image decal's ink: tint, roughness, metallic and engraving. */
-function InkSettings({ d }: { d: Decal }) {
+/** A relief decal's own maps (DECALmachine's): how hard its normal map reads and how deep its height map is. It lays
+ *  down no ink, so the surface's material shows through and only the detail is added. */
+function ReliefMapsSettings({ d }: { d: Decal }) {
+  const n = d.reliefNormal ?? 1, h = d.reliefHeight ?? 1;
+  const slide = (label: string, tip: string, v: number, key: 'reliefNormal' | 'reliefHeight') =>
+    <label title={tip}>{label}
+      <input type="range" min={0} max={2} step={0.05} value={v} onPointerDown={beginPaintEdit} onChange={(e) => updateDecal({ [key]: +e.target.value }, false)} />
+      <span className="num readout">{sig(v)}×</span>
+    </label>;
   return (
+    <>
+      <p className="hint">Relief maps: the mark's own normal and height, projected onto the surface. No ink, so the material under it stays.</p>
+      {slide('Normal', 'How strongly the normal map tilts the surface (0: flat, 1: as authored)', n, 'reliefNormal')}
+      {slide('Height', 'Contrast of the height map (0: flat, 1: as authored)', h, 'reliefHeight')}
+    </>
+  );
+}
+
+/** An image decal's ink: tint, roughness, metallic and engraving. */
+function InkSettings({ d }: { d: Decal }) {  return (
     <>
       <label title="Tint the mark's ink">Ink
         <ColorPick value={d.tint} onStart={beginPaintEdit} onChange={(c) => updateDecal({ tint: c }, false)} label="Decal tint" />
@@ -657,45 +713,60 @@ function Layers() {
   const rev = useApp((s) => s.paintRev), part = useApp((s) => (s.parts[s.activePart] ? s.activePart : -1));
   useApp((s) => s.paintPanel); // a full recomposite is async; the panel still updates immediately
   const shown = useApp((s) => s.paintChannel);
+  useApp((s) => s.layerPick);
   const [drag, setDrag] = useState<number | null>(null);
   const [renaming, setRenaming] = useState<number | null>(null), [name, setName] = useState('');
-  const [unfolded, setUnfolded] = useState<Set<number>>(new Set()), [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(true);
   const s = part < 0 ? null : texSet(part);
   const thumbs = useMemo(() => (s ? s.layers.map((l) => thumbOf(s, l)) : []), [s, rev]);
   if (!s) return null;
-  const l = s.layers[s.active];
+  const l = s.layers[s.active], picked = pickedLayers(s);
   // Substance's layer stack has one blend per channel, and the stack follows the channel being viewed: so does this.
   const ch: Channel = shown === 'rough' || shown === 'metal' || shown === 'normal' || shown === 'height' ? shown : 'color';
   const mode = blendOf(l, ch);
   const commit = () => { if (renaming !== null && name.trim()) editPaintLayer(renaming, { name: name.trim() }); setRenaming(null); };
-  // Runs of 3+ decal layers fold into one row (a gun's markings are a dozen layers): the run's bottom layer index -> its
-  // size, the rest -> -1 (drawn as nothing). Open when clicked or when the active layer is inside.
-  const folded = new Map<number, number>();
-  for (let j = 0; j < s.layers.length;) {
-    let k = j;
-    while (k < s.layers.length && s.layers[k].decal) k++;
-    if (k - j >= 3 && !unfolded.has(s.layers[j].id) && (s.active < j || s.active >= k)) { folded.set(j, k - j); for (let m = j + 1; m < k; m++) folded.set(m, -1); }
-    j = k > j ? k : j + 1;
-  }
+  // The material stack (top first), then the decals in their own section: they always paint over the stack
+  // (paint.ts `decalsLast` keeps them at its top), so they are listed apart instead of folded in among the fills.
+  const order = s.layers.map((_, j) => j).reverse(), stack = order.filter((j) => !s.layers[j].decal), marks = order.filter((j) => s.layers[j].decal);
+  const kind = (x: PaintLayer) => (x.fill ? (x.fill.asset === SOLID ? 'Solid' : 'Fill') : x.decal ? (x.decal.shape ? (RELIEF_SHAPES.some((g) => g.shape!.pattern === x.decal!.shape!.pattern) ? 'Relief' : 'Grip') : x.decal.reliefNormal != null ? 'Relief' : 'Decal') : x.bevel ? 'Bevel' : x.gen ? 'Generator' : 'Paint');
+  const row = (j: number) => {
+    const x = s.layers[j], same = drag !== null && !s.layers[drag].decal === !x.decal;
+    return [
+      <li key={x.id} className={`layer${j === s.active ? ' on' : picked.includes(j) ? ' picked' : ''}${same && drag !== j ? ' droppable' : ''}`} draggable
+        onDragStart={() => setDrag(j)} onDragEnd={() => setDrag(null)} onDragOver={(e) => { if (same) e.preventDefault(); }}
+        onDrop={() => { if (drag !== null && same) movePaintLayerTo(drag, j); setDrag(null); }}
+        onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey) pickPaintLayer(j, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }); else if (j === s.active && picked.length < 2) setOpen(!open); else { pickPaintLayer(j); setOpen(true); } }} onDoubleClick={() => { setRenaming(j); setName(x.name); }}>
+        <button aria-pressed={x.visible} title={x.visible ? 'Hide layer' : 'Show layer'} onClick={(e) => { e.stopPropagation(); showPaintLayer(j, !x.visible); }}>{eye(x.visible)}</button>
+        <img className="lthumb" src={thumbs[j]} alt="" draggable={false} />
+        {renaming === j ? (
+          <input className="lname-edit" value={name} autoFocus onChange={(e) => setName(e.target.value)} onBlur={commit} onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => { if (e.key === 'Enter') commit(); else if (e.key === 'Escape') setRenaming(null); }} />
+        ) : <span className="lname">{x.name}</span>}
+        <span className="ltype">{x.opacity < 1 && <span className="num">{Math.round(x.opacity * 100)}%</span>}<span className={`lkind k-${kind(x).toLowerCase()}`}>{kind(x)}</span>
+          {j === s.active && <Icon name="chevron" size={11} className={open ? 'chev' : 'chev closed'} />}</span>
+      </li>,
+      ...(j === s.active && open ? [props] : []),
+    ];
+  };
   // the selected layer's settings unfold under its row (a click on it again folds them)
   const props = (
     <li key="props" className="lprops">
-      <label className="lopacity" title="The layer's opacity">Opacity
-        <input type="range" min={0} max={1} step={0.01} value={l.opacity} onPointerDown={beginPaintEdit} onChange={(e) => editPaintLayer(s.active, { opacity: +e.target.value }, false)} />
-        <span className="num readout">{Math.round(l.opacity * 100)}%</span>
-      </label>
-      <label className="lopacity" title={ch === 'normal'
-        ? 'Normals always combine with what is below (the whiteout blend): a plain mix would flatten the detail'
-        : `How this layer's ${CHANNELS[ch].name} meets the layers below. Each channel keeps its own blend (Substance Painter's stack); switch channel in the texture set's list to change another one.`}>
-        Blend <span className="hint">{ch === 'normal' ? '· Combine' : `· ${CHANNELS[ch].name}`}</span>
-        <select value={ch === 'normal' ? 'normal' : mode} disabled={ch === 'normal'} onChange={(e) => setLayerBlend(ch, e.target.value as BlendMode)}>
-          <option value="normal">{ch === 'height' ? 'Replace' : 'Normal'}</option>
-          <option value="multiply">Multiply</option>
-          <option value="screen">Screen</option>
-          <option value="overlay">Overlay</option>
-          <option value="add">{ch === 'height' ? 'Add (Linear Dodge)' : 'Add'}</option>
-        </select>
-      </label>
+      <div className="psettings">
+        <Sec title="Layer" hint={ch === 'normal' ? 'Normal: always combined' : `blend for ${CHANNELS[ch].name}`}>
+          <Slide label="Opacity" tip="The layer's opacity" value={l.opacity} min={0} max={1} step={0.01} fmt={pct} set={(v) => editPaintLayer(s.active, { opacity: v }, false)} />
+          <Row label="Blend" tip={ch === 'normal'
+            ? 'Normals always combine with what is below (the whiteout blend): a plain mix would flatten the detail'
+            : `How this layer's ${CHANNELS[ch].name} meets the layers below. Each channel keeps its own blend (Substance Painter's stack); pick another channel under Channels to set its blend.`}>
+            <select value={ch === 'normal' ? 'normal' : mode} disabled={ch === 'normal'} onChange={(e) => setLayerBlend(ch, e.target.value as BlendMode)}>
+              <option value="normal">{ch === 'height' ? 'Replace' : 'Normal'}</option>
+              <option value="multiply">Multiply</option>
+              <option value="screen">Screen</option>
+              <option value="overlay">Overlay</option>
+              <option value="add">{ch === 'height' ? 'Add (Linear Dodge)' : 'Add'}</option>
+            </select>
+          </Row>
+        </Sec>
+      </div>
       {l.fill && <FillSettings f={l.fill} />}
       {l.decal && <DecalSettings d={l.decal} />}
       {l.gen && <GenSettings g={l.gen} />}
@@ -704,37 +775,18 @@ function Layers() {
   );
   return (
     <div className="pslayers">
-      <ul className="layers doc thumbs" aria-label="Layers (drag to reorder, double-click to rename, click the selected one to fold its settings)">
-        {s.layers.map((x, j) => folded.has(j) ? (folded.get(j)! >= 0 ? [(
-          <li key={`run${x.id}`} className="layer decalrun" title="Decals stacked together; click to show them" onClick={() => setUnfolded(new Set(unfolded).add(x.id))}>
-            <span className="lname"><span className="decalmark">◆ </span>Decals</span>
-            <span className="ltype num">{folded.get(j)} ▸</span>
-          </li>
-        )] : []) : [(
-          <li key={x.id} className={`layer${j === s.active ? ' on' : ''}${drag !== null && drag !== j ? ' droppable' : ''}`} draggable
-            onDragStart={() => setDrag(j)} onDragEnd={() => setDrag(null)} onDragOver={(e) => e.preventDefault()}
-            onDrop={() => { if (drag !== null) movePaintLayerTo(drag, j); setDrag(null); }}
-            onClick={() => { if (j === s.active) setOpen(!open); else { pickPaintLayer(j); setOpen(true); } }} onDoubleClick={() => { setRenaming(j); setName(x.name); }}>
-            <button aria-pressed={x.visible} title={x.visible ? 'Hide layer' : 'Show layer'} onClick={(e) => { e.stopPropagation(); editPaintLayer(j, { visible: !x.visible }); }}>{eye(x.visible)}</button>
-            <img className="lthumb" src={thumbs[j]} alt="" draggable={false} />
-            {renaming === j ? (
-              <input className="lname-edit" value={name} autoFocus onChange={(e) => setName(e.target.value)} onBlur={commit} onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => { if (e.key === 'Enter') commit(); else if (e.key === 'Escape') setRenaming(null); }} />
-            ) : (
-              <span className="lname">{x.fill && <span className="fillmark" title="Fill layer: a PBR material">▤ </span>}{x.decal && <span className="decalmark" title="Decal layer: projected onto the model">◆ </span>}{x.gen && <span className="genmark" title="Generator layer: made from the baked maps">◇ </span>}{x.name}</span>
-            )}
-            <span className="ltype num">{x.fill ? (x.fill.asset === SOLID ? 'Solid' : 'Fill') : x.decal ? (x.decal.shape ? (RELIEF_SHAPES.some((g) => g.shape!.pattern === x.decal!.shape!.pattern) ? 'Relief' : 'Grip') : 'Decal') : x.bevel ? 'Bevel' : x.gen ? 'Gen' : x.opacity < 1 ? `${Math.round(x.opacity * 100)}%` : ''}
-              {j === s.active && <Icon name="chevron" size={11} className={open ? 'chev' : 'chev closed'} />}</span>
-          </li>
-        ), ...(j === s.active && open ? [props] : [])]).reverse().flat()}
+      <ul className="layers doc thumbs" aria-label="Layers (Ctrl / Shift+click picks several, drag to reorder, double-click to rename, click the selected one to fold its settings)">
+        {stack.map(row)}
+        {marks.length > 0 && <li className="lsec" aria-hidden="true"><span className="caps">Decals</span><span className="hint">{marks.length} · always on top</span></li>}
+        {marks.map(row)}
       </ul>
       <div className="lbar">
         <button title="Fill the active layer (or the selection) with the color (Alt+Backspace)" aria-label="Fill" onClick={() => fillPaintSelection()}>{ICON.bucket}</button>
         <button title="Solid fill: a layer of one colour, roughness and metallic (the options bar's, or the brush's) over the selection; it stays editable, so the colour can change later without repainting" aria-label="Solid fill layer" onClick={addSolidFill}>{ICON.solidFill}</button>
         <button title="Metal sheen: a new layer that makes the selection (say islands picked with Select Faces W, Island) shiny metal, Metallic 100% / Roughness 25%, colour untouched; its opacity sets how much" aria-label="Metal sheen layer" onClick={addMetalLayer}>{ICON.metal}</button>
-        <button title="Duplicate the layer (Ctrl+J)" aria-label="Duplicate layer" onClick={duplicatePaintLayer}><Icon name="duplicate" size={16} /></button>
+        <button title={picked.length > 1 ? `Duplicate the ${picked.length} picked layers (Ctrl+J)` : 'Duplicate the layer (Ctrl+J)'} aria-label="Duplicate layer" onClick={duplicatePickedLayers}><Icon name="duplicate" size={16} /></button>
         <button title="New layer (Ctrl+Shift+N)" aria-label="New layer" onClick={addPaintLayer}><Icon name="plus" size={16} /></button>
-        <button title="Delete the layer" aria-label="Delete layer" disabled={s.layers.length < 2} onClick={deletePaintLayer}><Icon name="trash" size={16} /></button>
+        <button title={picked.length > 1 ? `Delete the ${picked.length} picked layers` : 'Delete the layer'} aria-label="Delete layer" disabled={s.layers.length < 2} onClick={deletePickedLayers}><Icon name="trash" size={16} /></button>
       </div>
     </div>
   );
@@ -742,23 +794,23 @@ function Layers() {
 
 /** A generator layer's settings: dragging a slider makes the layer again live (one undo step a drag). */
 function GenSettings({ g }: { g: Gen }) {
-  const slider = (label: string, key: 'amount' | 'soft' | 'width' | 'grunge' | 'scale', max: number, title: string, pct = (v: number) => `${Math.round(v * 100)}%`) => (
-    <label title={title}>{label}
-      <input type="range" min={0} max={max} step={max / 100} value={g[key]} onPointerDown={beginPaintEdit} onChange={(e) => editGen({ [key]: +e.target.value }, false)} />
-      <span className="num readout">{pct(g[key])}</span>
-    </label>
-  );
   const channels = useApp((s) => (s.paintRev, s.parts[s.activePart] ? texSet(s.activePart).channels : []));
+  const share = (v: number) => `${sig(v * 100)}%`;
   return (
-    <div className="gensettings">
-      <label title="What it lays down">Color<ColorPick value={g.color} onChange={(c) => editGen({ color: c })} label="Generator color" /></label>
-      {channels.includes('rough') && <label title="Its roughness">Rough<input type="range" min={0} max={1} step={0.01} value={g.rough} onPointerDown={beginPaintEdit} onChange={(e) => editGen({ rough: +e.target.value }, false)} /><span className="num readout">{Math.round(g.rough * 100)}%</span></label>}
-      {channels.includes('metal') && <label title="Its metallic">Metal<input type="range" min={0} max={1} step={0.01} value={g.metal} onPointerDown={beginPaintEdit} onChange={(e) => editGen({ metal: +e.target.value }, false)} /><span className="num readout">{Math.round(g.metal * 100)}%</span></label>}
-      {slider('Amount', 'amount', 1, 'How much of the surface it covers')}
-      {slider('Softness', 'soft', 1, 'How gradually its border fades')}
-      {g.kind !== 'ao' && slider('Width', 'width', 0.04, 'How far from the edge it reaches, as a share of the model', (v) => `${(v * 100).toFixed(1)}%`)}
-      {slider('Grunge', 'grunge', 1, 'How much noise breaks it up')}
-      {g.grunge > 0 && slider('Scale', 'scale', 0.2, 'The noise\'s size, as a share of the model', (v) => `${(v * 100).toFixed(1)}%`)}
+    <div className="psettings">
+      <Sec title="Surface" hint="what it lays down">
+        <Row label="Color" tip="What it lays down"><ColorPick value={g.color} onChange={(c) => editGen({ color: c })} label="Generator color" /></Row>
+        {channels.includes('rough') && <Slide label="Rough" tip="Its roughness" value={g.rough} min={0} max={1} step={0.01} fmt={pct} set={(v) => editGen({ rough: v }, false)} />}
+        {channels.includes('metal') && <Slide label="Metal" tip="Its metallic" value={g.metal} min={0} max={1} step={0.01} fmt={pct} set={(v) => editGen({ metal: v }, false)} />}
+      </Sec>
+      <Sec title="Coverage" hint="from the baked maps">
+        <Slide label="Amount" tip="How much of the surface it covers" value={g.amount} min={0} max={1} step={0.01} fmt={pct} set={(v) => editGen({ amount: v }, false)} />
+        <Slide label="Softness" tip="How gradually its border fades" value={g.soft} min={0} max={1} step={0.01} fmt={pct} set={(v) => editGen({ soft: v }, false)} />
+        {g.kind !== 'ao' && <Slide label="Width" tip="How far from the edge it reaches, as a share of the model" value={g.width} min={0} max={0.04} step={0.0004} fmt={share} set={(v) => editGen({ width: v }, false)} />}
+        <Slide label="Grunge" tip="How much noise breaks it up" value={g.grunge} min={0} max={1} step={0.01} fmt={pct} set={(v) => editGen({ grunge: v }, false)} />
+        {g.grunge > 0 && <Slide label="Scale" tip="The noise's size, as a share of the model" value={g.scale} min={0} max={0.2} step={0.002} fmt={share} set={(v) => editGen({ scale: v }, false)} />}
+      </Sec>
+      <MaskSec />
     </div>
   );
 }
@@ -767,24 +819,21 @@ function GenSettings({ g }: { g: Gen }) {
 function BevelSettings({ b }: { b: Bevel }) {
   const span = modelDiagonal();
   return (
-    <div className="gensettings">
-      <label title="How far the rounding reaches in from each edge, as a share of the model">Radius
-        <input type="range" min={0.05} max={3} step={0.05} value={(b.radius / span) * 100} onPointerDown={beginPaintEdit} onChange={(e) => editBevel({ radius: (span * +e.target.value) / 100 }, false)} />
-        <span className="num readout">{((b.radius / span) * 100).toFixed(2)}%</span>
-      </label>
-      <label title="Round: a fillet's normals, turning gradually; Chamfer: one flat cut at the halfway angle">Profile
-        <span className="seg">
-          <button className={b.profile === 'round' ? 'on' : ''} onClick={() => editBevel({ profile: 'round' })}>Round</button>
-          <button className={b.profile === 'chamfer' ? 'on' : ''} onClick={() => editBevel({ profile: 'chamfer' })}>Chamfer</button>
-        </span>
-      </label>
-      <label title="Only edges whose faces turn more than this are bevelled; raise it to leave soft curves alone">Angle
-        <input type="range" min={5} max={120} step={1} value={b.angle} onPointerDown={beginPaintEdit} onChange={(e) => editBevel({ angle: +e.target.value }, false)} />
-        <span className="num readout">{Math.round(b.angle)}°</span>
-      </label>
-      <label title="Round the inside corners as well (a fillet where two faces meet in a groove)">Concave
-        <input type="checkbox" checked={b.concave} onChange={(e) => editBevel({ concave: e.target.checked })} />
-      </label>
+    <div className="psettings">
+      <Sec title="Bevel" hint="in the normal map">
+        <Slide label="Radius" tip="How far the rounding reaches in from each edge, as a share of the model" value={(b.radius / span) * 100} min={0.05} max={3} step={0.05} fmt={(v) => `${sig(v)}%`} set={(v) => editBevel({ radius: (span * v) / 100 }, false)} />
+        <Row label="Profile" tip="Round: a fillet's normals, turning gradually; Chamfer: one flat cut at the halfway angle">
+          <span className="seg">
+            <button className={b.profile === 'round' ? 'on' : ''} aria-pressed={b.profile === 'round'} onClick={() => editBevel({ profile: 'round' })}>Round</button>
+            <button className={b.profile === 'chamfer' ? 'on' : ''} aria-pressed={b.profile === 'chamfer'} onClick={() => editBevel({ profile: 'chamfer' })}>Chamfer</button>
+          </span>
+        </Row>
+        <Slide label="Angle" tip="Only edges whose faces turn more than this are bevelled; raise it to leave soft curves alone" value={b.angle} min={5} max={120} step={1} fmt={(v) => `${Math.round(v)}°`} set={(v) => editBevel({ angle: v }, false)} />
+        <Row label="Concave" tip="Round the inside corners as well (a fillet where two faces meet in a groove)">
+          <span className="pcheck"><input type="checkbox" checked={b.concave} onChange={(e) => editBevel({ concave: e.target.checked })} />Inside corners too</span>
+        </Row>
+      </Sec>
+      <MaskSec />
     </div>
   );
 }
@@ -828,27 +877,35 @@ function TextureExport() {
   );
 }
 
-const TABS = [['layers', 'Layers'], ['assets', 'Assets'], ['maps', 'Maps']] as const;
+// the first tab is the texture sets (parts) and their stack; 'Layers' is the stack's own toggle inside it
+const TABS = [['layers', 'Texture sets'], ['assets', 'Assets'], ['maps', 'Maps']] as const;
 const ASSET_TABS = [['materials', 'Materials'], ['tiles', 'Tiles'], ['decals', 'Decals'], ['geometry', 'Geometry']] as const;
 
 /** The texture sets as pictures of their parts (click one to paint it, unfold it for its channels), then the active
  *  set's layers, each one's settings folded under its row. */
 function LayersTab() {
-  const parts = useApp((s) => s.parts.length), active = useApp((s) => s.parts[s.activePart]?.name), link = useApp((s) => s.linkSets);
+  const active = useApp((s) => s.parts[s.activePart]?.name), link = useApp((s) => s.linkSets), view = useApp((s) => s.stackView);
   return (
-    <div className="vgtab layerspane">
-      <details className="tsec-details setlist" open>
-        <summary className="tsec"><span className="caps"><Icon name="chevron" size={11} className="chev" />Texture sets</span><span className="hint">{parts} parts</span></summary>
-        <Parts workspace="paint" />
-      </details>
-      <div className="tsec">
-        <span className="caps">Layers</span><span className="hint">{active}</span>
-        <label className="allsets" title="New fills, solids and generators go on every visible part, and editing a layer edits the layer of the same name on each of them"><input type="checkbox" checked={link} onChange={(e) => setLinkSets(e.target.checked)} />All sets</label>
+    <div className="layerspane">
+      <div className="vgparts" aria-label="Texture sets"><Parts workspace="paint" /></div>
+      <div className="vgstack">
+        <div className="asset-tabs" role="tablist" aria-label="Layers or channels">
+          {STACK_VIEWS.map(([id, label]) => <button key={id} role="tab" aria-selected={view === id} className={view === id ? 'on' : ''} onClick={() => setStackView(id)}>{label}</button>)}
+        </div>
+        {view === 'layers' ? (
+          <div className="vgtab stackpane">
+            <div className="tsec">
+              <span className="hint">{active}</span>
+              <label className="allsets" title="New fills, solids and generators go on every visible part, and editing a layer edits the layer of the same name on each of them"><input type="checkbox" checked={link} onChange={(e) => setLinkSets(e.target.checked)} />All sets</label>
+            </div>
+            <Layers />
+          </div>
+        ) : <div className="vgtab"><Channels /></div>}
       </div>
-      <Layers />
     </div>
   );
 }
+const STACK_VIEWS = [['layers', 'Layers'], ['channels', 'Channels']] as const;
 
 /** The materials held on the Eyedropper: a round chip of the top fill's preview (or its solid colour) follows the
  *  pointer, and the ring lights up while it is over a part, island or face a click would apply it to. */

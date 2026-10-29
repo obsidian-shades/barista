@@ -5,6 +5,7 @@ import { Viewport3D } from './views/Viewport3D';
 import { UVView } from './views/UVView';
 import { Dock } from './panels/Dock';
 import { PolyDoc } from './panels/PolyDoc';
+import { Geppetto, RigOptionsBar, RigToolStrip } from './panels/Geppetto';
 import { PaintOptionsBar, PaintToolStrip, VanGogh } from './panels/VanGogh';
 import { AppTabs } from './shell/AppTabs';
 import { AskDialog } from './shell/AskDialog';
@@ -15,11 +16,12 @@ import { PolyOptionsBar, PolyToolStrip, runTool } from './shell/PolyTools';
 import { Resizer } from './shell/Resizer';
 import { UVOptionsBar, UVToolStrip } from './shell/UVTools';
 import {
-  answerAsk, confirmDiscard, armBox, cancelDocMove, cancelXform, cancelSymPlane, closeExport, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, flipSel, invertSelection, openExport, pickFile, saveProject, pinSelected, pointer, redo, repack,
+  answerAsk, cancelKnife, confirmKnife, knifeBack, startKnife, confirmDiscard, armBox, cancelDocMove, cancelXform, cancelSymPlane, closeExport, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, flipSel, invertSelection, openExport, pickFile, saveProject, pinSelected, pointer, redo, repack,
   applySymPlane, setSymMode,
   pieMenu, scaleSel, cutSelection, stitchSelection, selectAll, selectAllPaint, selectLinked, selectLinkedUnder, setSelectMode, startXform, undo, unwrap, unwrapSelected, useApp, viewOp, viewPie, xformKey, xformSnap, openFile, type SelectMode,
   activeDecal, duplicateDecal, nudgeDecal, updateDecal,
-  type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, growPaintSelection, duplicatePaintLayer, addPaintLayer, movePaintLayer, deletePaintLayer, fillPaintSelection, dropMaterials, finishDraw, cancelDraw, undoDrawPoint, type PaintTool, type FillBy,
+  autoRigModel, armRigConstraint, bonesForParts, cancelRigPick, deleteBone, endChain, redoRig, setRigGizmo, setRigMode, setRigTool, undoRig, updateBone,
+  type ViewOp, type XformKind, setPaint, undoPaint, redoPaint, deselectPaint, invertPaintSelection, growPaintSelection, duplicatePickedLayers, addPaintLayer, movePaintLayer, deletePaintLayer, fillPaintSelection, dropMaterials, finishDraw, cancelDraw, undoDrawPoint, type PaintTool, type FillBy,
 } from './store';
 import { Tooltip } from './ui/Tooltip';
 
@@ -32,7 +34,7 @@ const NUMPAD: Record<string, [ViewOp, ViewOp?]> = {
 
 const XFORMS: Record<string, XformKind> = { g: 'move', r: 'rotate', s: 'scale' };
 /** Van Gogh's tool keys, Photoshop's. */
-const PAINT_BY: Record<string, FillBy> = { Digit1: 'face', Digit2: 'surface', Digit3: 'island', Digit4: 'part' };
+const PAINT_BY: Record<string, FillBy> = { Digit1: 'face', Digit2: 'surface', Digit3: 'island', Digit4: 'material', Digit5: 'part' };
 const PAINT_KEYS: Record<string, PaintTool> = { m: 'marquee', l: 'lasso', w: 'wand', d: 'decal', b: 'brush', e: 'erase', g: 'bucket', i: 'picker' };
 
 /** Where the mouse is (the pie covers the views, so their own tracking stops), and when Z went down. */
@@ -66,7 +68,7 @@ function onKey(e: KeyboardEvent) {
   if (useApp.getState().menu) return;
   // Space: recenter the view under the pointer, in every workspace. Mid-transform it still confirms instead.
   const spaceNow = useApp.getState();
-  if (k === ' ' && !ctrl && !e.altKey && !e.shiftKey && !spaceNow.xform && !spaceNow.docMove) {
+  if (k === ' ' && !ctrl && !e.altKey && !e.shiftKey && !spaceNow.xform && !spaceNow.docMove && !spaceNow.docKnife) {
     return run(() => viewOp(pointer.view, 'all'));
   }
   // Placing the mirror plane: G / R switch the gizmo, Enter applies it, Esc puts it back; every other key still works.
@@ -88,6 +90,28 @@ function onKey(e: KeyboardEvent) {
     if (!e.repeat) { zDown = performance.now(); viewPie(); }
     return;
   }
+  // Geppetto: Tab Edit / Pose; drag bones directly; G / R the optional gizmo; F / T / P arm Follow / Aim / Piston;
+  // V B tools; A a bone for the part; Shift+A auto-rig; C connect; Esc cancels a pick or chain; X deletes; own undo.
+  if (useApp.getState().workspace === 'rig') {
+    const r = useApp.getState();
+    if (k === 'tab' && !ctrl) return run(() => setRigMode(r.rigMode === 'edit' && r.rig.bones.length ? 'pose' : 'edit'));
+    if (k === 'escape') {
+      if (r.rigPick) return run(cancelRigPick);
+      if (r.rigChain) return run(endChain);
+    }
+    if (ctrl && (k === 'z' || k === 'y')) return run(k === 'y' || e.shiftKey ? redoRig : undoRig);
+    if (!ctrl && !e.altKey) {
+      if (k === 'g') return run(() => setRigGizmo('move'));
+      if (k === 'r') return run(() => setRigGizmo('rotate'));
+      if (r.rigSel >= 0 && (k === 'f' || k === 't' || k === 'p')) return run(() => armRigConstraint(k === 'f' ? 'follow' : k === 't' ? 'aim' : 'piston'));
+      const tool = ({ v: 'select', b: 'bone' } as const)[k as 'v' | 'b'];
+      if (tool && r.rigMode === 'edit') return run(() => setRigTool(tool));
+      if (k === 'a' && r.rigMode === 'edit') return run(() => (e.shiftKey ? autoRigModel() : bonesForParts([r.activePart])));
+      if (k === 'c' && r.rigMode === 'edit' && r.rigSel >= 0 && r.rig.bones[r.rigSel]?.parent >= 0) return run(() => updateBone(r.rigSel, { connected: !r.rig.bones[r.rigSel].connected }));
+      if ((k === 'x' || k === 'delete') && r.rigSel >= 0 && r.rigMode === 'edit') return run(deleteBone);
+    }
+    if (!NUMPAD[e.code] && e.code !== 'NumpadDecimal' && k !== 'home' && !(ctrl && k === 'o')) return;
+  }
   // Van Gogh: Photoshop's keys (tools M L W D B E G I; Ctrl+A / Ctrl+D / Ctrl+Shift+I selection; Alt+Backspace fill,
   // Delete clear; Ctrl+J duplicate, Ctrl+Shift+N new layer, Ctrl+[ ] move it; [ ] brush size) and the view keys
   if (useApp.getState().workspace === 'paint') {
@@ -107,7 +131,7 @@ function onKey(e: KeyboardEvent) {
       if (k === 'd') return run(deselectPaint);
       if (k === 'i') return run(invertPaintSelection);
       if (e.shiftKey && (k === '=' || k === '+' || k === '-' || k === '_')) return run(() => growPaintSelection(k === '-' || k === '_' ? -4 : 4));
-      if (k === 'j') return run(() => (activeDecal() ? duplicateDecal() : duplicatePaintLayer()));
+      if (k === 'j') return run(() => (activeDecal() ? duplicateDecal() : duplicatePickedLayers()));
       if (k === 'm') return run(() => setPaint({ tool: 'mirror' }));
       if (k === 'n' && e.shiftKey) return run(addPaintLayer);
       if (k === '[' || k === ']') return run(() => movePaintLayer(k === ']' ? 1 : -1));
@@ -135,10 +159,15 @@ function onKey(e: KeyboardEvent) {
     }
     if (!NUMPAD[e.code] && e.code !== 'NumpadDecimal' && k !== 'home' && !(ctrl && k === 'o')) return;
   }
+  // Poly Doc's knife: while it's on, Enter / Space cut, Backspace takes a point back, Esc cancels (view keys still work)
+  if (useApp.getState().docKnife && ['enter', ' ', 'backspace', 'escape', 'k'].includes(k)) {
+    e.preventDefault();
+    return run(k === 'escape' ? cancelKnife : k === 'backspace' ? knifeBack : confirmKnife);
+  }
   // Poly Doc keeps the selection, view, file and topology keys; the UV ones (G R S, U, P, C V, Q, F…) do nothing there
   if (useApp.getState().workspace === 'doc' && !NUMPAD[e.code] && e.code !== 'NumpadDecimal' && k !== ' ' && k !== 'home' && !SELECT_MODES[e.code]
     && !useApp.getState().docMove
-    && !(ctrl ? ['o', 'z', 'y', 'i', 'l', 'x', 'r'].includes(k) || (k === 'e' && e.shiftKey) : e.altKey ? ['a', 'j'].includes(k) : ['a', 'l', 'b', 'g', 'j', 'm', 'escape'].includes(k))) return;
+    && !(ctrl ? ['o', 'z', 'y', 'i', 'l', 'x', 'r'].includes(k) || (k === 'e' && e.shiftKey) : e.altKey ? ['a', 'j'].includes(k) : ['a', 'l', 'b', 'g', 'j', 'k', 'm', 'escape'].includes(k))) return;
   // Poly Doc's G: while moving, keys belong to it (X Y Z lock an axis, Enter keeps, Esc cancels)
   if (useApp.getState().docMove) {
     e.preventDefault();
@@ -147,6 +176,7 @@ function onKey(e: KeyboardEvent) {
     else if (k === 'x' || k === 'y' || k === 'z') docMoveAxis('xyz'.indexOf(k) as 0 | 1 | 2);
     return;
   }
+  if (useApp.getState().workspace === 'doc' && !ctrl && !e.altKey && k === 'k') return run(startKnife);
   if (useApp.getState().workspace === 'doc' && !ctrl && !e.altKey && k === 'g') return run(() => startDocMove(mouse.x, mouse.y));
   if (useApp.getState().workspace === 'doc' && !e.altKey) {
     // Blender's J (connect vertex path), M (merge at centre), Ctrl+R (loop cut, here through the selected edge)
@@ -199,6 +229,9 @@ function onKey(e: KeyboardEvent) {
   else if (k === 'escape') useApp.setState({ boxArmed: false });
 }
 
+/** Width of Van Gogh's texture-set column. */
+const PARTS_W = 168;
+
 export default function App() {
   useEffect(() => {
     void connect();
@@ -206,6 +239,7 @@ export default function App() {
     const move = (e: PointerEvent) => { mouse.x = e.clientX; mouse.y = e.clientY; pointer.x = e.clientX; pointer.y = e.clientY; if (useApp.getState().docMove) updateDocMove(e.clientX, e.clientY); };
     // while G moves vertices, a click keeps the move and a right-click cancels it (and neither selects nor orbits)
     const press = (e: PointerEvent) => {
+      if (useApp.getState().docKnife && e.button === 2) { e.preventDefault(); e.stopPropagation(); return cancelKnife(); }
       if (!useApp.getState().docMove) return;
       e.preventDefault(); e.stopPropagation();
       if (e.button === 2) cancelDocMove(); else if (e.button === 0) confirmDocMove();
@@ -231,26 +265,28 @@ export default function App() {
   useEffect(() => { document.title = source ? `${source} — Barista` : 'Barista'; }, [source]);
   const rect = () => work.current!.getBoundingClientRect();
   // the panel's divider sets its width; the one between the 3D and UV views their shares of what's left (40 px strip, 2 × 6 px dividers)
-  const dock = <Resizer label="Resize the panel" onDrag={(x) => setDockWidth(rect().right - x)} onStep={(d) => setDockWidth(dockW - d * 16)} />;
+  // Van Gogh's panel adds its texture-set column to the left of the panel the divider sizes
+  const extra = workspace === 'paint' ? PARTS_W : 0, dw = dockW + extra;
+  const dock = <Resizer label="Resize the panel" onDrag={(x) => setDockWidth(rect().right - x - extra)} onStep={(d) => setDockWidth(dockW - d * 16)} />;
   return (
     <div className="app" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) void openFile(f); }}>
       <MenuBar />
       <AppTabs />
       {/* one frame for both tools, so switching never moves anything: options bar, then strip | views | panel */}
       <div className="space">
-        {workspace === 'doc' ? <PolyOptionsBar /> : workspace === 'paint' ? <PaintOptionsBar /> : <UVOptionsBar />}
-        {workspace === 'doc' ? (
+        {workspace === 'doc' ? <PolyOptionsBar /> : workspace === 'paint' ? <PaintOptionsBar /> : workspace === 'rig' ? <RigOptionsBar /> : <UVOptionsBar />}
+        {workspace === 'doc' || workspace === 'rig' ? (
           <div className="work doc" ref={work} style={{ gridTemplateColumns: `40px minmax(0, 1fr) 6px ${dockW}px` }}>
-            <PolyToolStrip />
+            {workspace === 'rig' ? <RigToolStrip /> : <PolyToolStrip />}
             <Viewport3D />
             {dock}
-            <PolyDoc />
+            {workspace === 'rig' ? <Geppetto /> : <PolyDoc />}
           </div>
         ) : (
-          <div className="work" ref={work} style={{ gridTemplateColumns: `40px minmax(0, ${split}fr) 6px minmax(0, ${1 - split}fr) 6px ${dockW}px` }}>
+          <div className="work" ref={work} style={{ gridTemplateColumns: `40px minmax(0, ${split}fr) 6px minmax(0, ${1 - split}fr) 6px ${dw}px`, ['--parts-w' as string]: `${PARTS_W}px` }}>
             {workspace === 'paint' ? <PaintToolStrip /> : <UVToolStrip />}
             <Viewport3D />
-            <Resizer label="Resize the 3D and UV views" onDrag={(x) => setViewSplit((x - rect().left - 40) / (rect().width - 52 - dockW))} onStep={(d) => setViewSplit(split + d * 0.03)} />
+            <Resizer label="Resize the 3D and UV views" onDrag={(x) => setViewSplit((x - rect().left - 40) / (rect().width - 52 - dw))} onStep={(d) => setViewSplit(split + d * 0.03)} />
             <UVView />
             {dock}
             {workspace === 'paint' ? <VanGogh /> : <Dock />}

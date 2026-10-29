@@ -203,6 +203,8 @@ export function UVView() {
       c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
       const x = c.getContext('2d')!;
       x.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // the texture is drawn scaled (1–2K into a few hundred px): the browser's default 'low' skips texels and shimmers
+      x.imageSmoothingQuality = 'high';
       x.clearRect(0, 0, w, h);
       const S = v.size, X = (u: number) => v.ox + u * S, Y = (t: number) => v.oy + (v.H - t) * S;
       // A live stroke only needs the texture; walking every UV triangle in a dense model was the

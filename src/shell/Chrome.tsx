@@ -14,13 +14,13 @@ const MODE_NAMES: [SelectMode, string, string][] = [['vert', 'Vertex', '1'], ['e
 /** Blender's select mode buttons, in the same slot in every workspace that has mesh selection. Poly Doc has no UV
  *  islands, so its Island button is disabled rather than dropped: the row never changes width or position. */
 export function SelectModes() {
-  const m = useApp((s) => s.selectMode), doc = useApp((s) => s.workspace === 'doc');
+  const m = useApp((s) => s.selectMode), doc = useApp((s) => s.workspace === 'doc' || s.workspace === 'rig');
   return (
     <span className="seg modes" role="group" aria-label="Select mode" title="What a click selects (1–4)">
       {MODE_NAMES.map(([k, name, key]) => {
         const off = doc && k === 'island';
         return <button key={k} aria-pressed={m === k} disabled={off} onClick={() => setSelectMode(k)}
-          title={off ? 'UV islands (UV Magician only)' : `${name} select (${key})`}><span className="mico">{MODE_ICON[k]}</span>{name}</button>;
+          title={off ? 'UV islands (UV Magician and Van Gogh only)' : `${name} select (${key})`}><span className="mico">{MODE_ICON[k]}</span>{name}</button>;
       })}
     </span>
   );
@@ -31,12 +31,14 @@ const PAINT_KINDS: [FillBy, string, string][] = [
   ['face', 'Face', 'One face (its whole polygon)'],
   ['surface', 'Surface', 'The connected surface up to edges sharper than the angle: a panel, a flank, a bore'],
   ['island', 'Island', 'The UV island'],
+  ['material', 'Material', 'Every face of the part showing the same material as the clicked one (its top fill or solid)'],
   ['part', 'Part', 'The whole part'],
 ];
 const PAINT_ICON: Record<FillBy, ReactNode> = {
   face: MODE_ICON.face,
   surface: ICON.surface,
   island: MODE_ICON.island,
+  material: ICON.material,
   part: ICON.part,
 };
 function PaintSelectModes() {
@@ -59,10 +61,10 @@ function PaintSelectModes() {
  *  View › Display. */
 const DISPLAY_ICON: Record<string, ReactNode> = {
   wire: ICON.wire, smooth: ICON.smooth, health: ICON.health, checker: ICON.checker, stretch: ICON.stretch, islands: ICON.islands,
-  studio: ICON.studio, matcap: ICON.matcap, flat: ICON.flat,
+  studio: ICON.studio, matcap: ICON.matcap, flat: ICON.flat, bones: ICON.islands, plain: ICON.smooth,
 };
 export function DisplayModes({ compact = false }: { compact?: boolean }) {
-  const current = useApp((s) => (s.workspace === 'doc' ? s.docView : s.workspace === 'paint' ? s.scene.lighting : s.mode));
+  const current = useApp((s) => (s.workspace === 'doc' ? s.docView : s.workspace === 'paint' ? s.scene.lighting : s.workspace === 'rig' ? s.rigView : s.mode));
   const choices = displayChoices();
   return (
     <span className={`seg modes${compact ? ' compact' : ''}`} role="group" aria-label="Display" title="What the view shows (Z)">

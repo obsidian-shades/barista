@@ -7,6 +7,7 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import type { PartOut } from './api';
 import { fbxPolygons, polygonOfTriangles, type Polygons } from './fbxpoly.ts';
+import { boneLength, restMatrix, vertexWeights, type Bone } from './rig.ts';
 
 /** `poly`: per soup triangle, the file's polygon it came from, and `sides`: per polygon, its corner count (FBX);
  *  absent when the file has triangles only. `normals`: the file's own normals per soup corner (world space), what
@@ -77,7 +78,8 @@ function bakeNormals(m: THREE.Mesh): Float32Array | undefined {
 /** FBX material slots an image can feed, as Blender's importer reads them (and its exporter writes them). */
 export type FbxSlot = 'DiffuseColor' | 'ReflectionFactor' | 'ShininessExponent' | 'NormalMap';
 /** `maps`: image file names (beside the FBX) linked into the part's material, so an importer wires the textures itself. */
-export interface ExportPart { name: string; material: string; out: PartOut; uv: Float32Array; faces?: Int32Array; normals?: Float32Array; maps?: Partial<Record<FbxSlot, string>> }
+/** `bone`: per output triangle, the rig bone it follows (-1 none), when the model is rigged (Geppetto). */
+export interface ExportPart { name: string; material: string; out: PartOut; uv: Float32Array; faces?: Int32Array; normals?: Float32Array; maps?: Partial<Record<FbxSlot, string>>; bone?: Int32Array }
 
 /** A part as an indexed mesh: positions welded (it imports as one connected mesh), UVs and normals indexed per corner.
  *  Normals are the file's own (`fileN`) where it had them, else smooth across edges flatter than `sharp` degrees and hard
@@ -219,11 +221,14 @@ function fbxBytes(nodes: Node[]): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-/** All parts in one binary FBX: a mesh object per part, one material per distinct `material` (one Painter texture set each). */
-export function toFbx(parts: ExportPart[], sharp: number, unit: number): Uint8Array<ArrayBuffer> {
+/** All parts in one binary FBX: a mesh object per part, one material per distinct `material` (one Painter texture set each).
+ *  With `bones`, an armature too (a Null with LimbNode bones, Y along each bone as Blender's importer reads them), each
+ *  rigged part skinned to it (a Skin with a Cluster per bone, and the BindPose), as Blender's own exporter writes it. */
+export function toFbx(parts: ExportPart[], sharp: number, unit: number, bones: Bone[] = []): Uint8Array<ArrayBuffer> {
   const D = (d: number) => ({ d }), P = (...p: Prop[]): Node => ['P', p], name = (s: string, cls: string) => `${s.replace(/[\0\x01]/g, '')}\0\x01${cls}`;
   const element = (type: string, kids: Node[]): Node => [`LayerElement${type}`, [0], [['Version', [101]], ['Name', [type === 'UV' ? 'UVMap' : '']], ...kids]];
   const objects: Node[] = [], links: Node[] = [], mats = new Map<string, bigint>();
+  const skins: { name: string; geo: bigint; model: bigint; vi: number[]; verts: number; bone: Int32Array }[] = [];
   let next = 1000n;
   for (const part of parts) {
     const w = weld(part.out, part.uv, sharp, part.normals), geo = next++, model = next++, loops = faceLoops(w.vi, w.ti, part.faces);
@@ -257,6 +262,43 @@ export function toFbx(parts: ExportPart[], sharp: number, unit: number): Uint8Ar
     ]]);
     objects.push(['Model', [model, name(part.name, 'Model'), 'Mesh'], [['Version', [232]], ['Properties70', []]]]);
     links.push(['C', ['OO', geo, model]], ['C', ['OO', model, 0n]], ['C', ['OO', mat, model]]);
+    if (bones.length && part.bone) skins.push({ name: part.name, geo, model, vi: w.vi, verts: w.xyz.length / 3, bone: part.bone });
+  }
+  if (bones.length) {
+    const rest = bones.map(restMatrix), f64 = (m: THREE.Matrix4) => new Float64Array(m.elements), V = (v: THREE.Vector3 | THREE.Euler) => [D(v.x), D(v.y), D(v.z)];
+    const arm = next++, armAttr = next++, ids = bones.map(() => next++);
+    objects.push(['NodeAttribute', [armAttr, name('Armature', 'NodeAttribute'), 'Null'], [['TypeFlags', ['Null']]]]);
+    objects.push(['Model', [arm, name('Armature', 'Model'), 'Null'], [['Version', [232]], ['Properties70', []]]]);
+    links.push(['C', ['OO', armAttr, arm]], ['C', ['OO', arm, 0n]]);
+    bones.forEach((b, i) => {
+      // each bone relative to its parent; FBX's Euler XYZ is three's ZYX order (Rz·Ry·Rx)
+      const attr = next++, t = new THREE.Vector3(), q = new THREE.Quaternion();
+      (b.parent >= 0 ? rest[b.parent].clone().invert().multiply(rest[i]) : rest[i]).decompose(t, q, new THREE.Vector3());
+      const e = new THREE.Euler().setFromQuaternion(q, 'ZYX'), deg = new THREE.Euler(THREE.MathUtils.radToDeg(e.x), THREE.MathUtils.radToDeg(e.y), THREE.MathUtils.radToDeg(e.z));
+      objects.push(['NodeAttribute', [attr, name(b.name, 'NodeAttribute'), 'LimbNode'], [['Properties70', [], [P('Size', 'double', 'Number', '', D(boneLength(b)))]], ['TypeFlags', ['Skeleton']]]]);
+      objects.push(['Model', [ids[i], name(b.name, 'Model'), 'LimbNode'], [['Version', [232]], ['Properties70', [], [
+        P('Lcl Translation', 'Lcl Translation', '', 'A', ...V(t)), P('Lcl Rotation', 'Lcl Rotation', '', 'A', ...V(deg)), P('Lcl Scale', 'Lcl Scale', '', 'A', D(1), D(1), D(1)),
+      ]]]]);
+      links.push(['C', ['OO', attr, ids[i]]], ['C', ['OO', ids[i], b.parent >= 0 ? ids[b.parent] : arm]]);
+    });
+    for (const sk of skins) {
+      const skin = next++, wt = vertexWeights(sk.vi, sk.verts, sk.bone);
+      objects.push(['Deformer', [skin, name(sk.name, 'Deformer'), 'Skin'], [['Version', [101]], ['Link_DeformAcuracy', [D(50)]]]]);
+      links.push(['C', ['OO', skin, sk.geo]]);
+      bones.forEach((b, i) => {
+        const idx: number[] = [], ws: number[] = [];
+        for (let v = 0; v < sk.verts; v++) for (let k = wt.start[v]; k < wt.start[v + 1]; k++) if (wt.bone[k] === i) { idx.push(v); ws.push(wt.w[k]); }
+        if (!idx.length) return;
+        const cl = next++;
+        // the mesh sits at the origin: Transform is the bone's bind matrix inverted, TransformLink the bone's own
+        objects.push(['Deformer', [cl, name(b.name, 'SubDeformer'), 'Cluster'], [['Version', [100]], ['UserData', ['', '']],
+          ['Indexes', [Int32Array.from(idx)]], ['Weights', [Float64Array.from(ws)]], ['Transform', [f64(rest[i].clone().invert())]], ['TransformLink', [f64(rest[i])]]]]);
+        links.push(['C', ['OO', cl, skin]], ['C', ['OO', ids[i], cl]]);
+      });
+    }
+    const one = new THREE.Matrix4(), nodes: [bigint, THREE.Matrix4][] = [[arm, one], ...skins.map((k): [bigint, THREE.Matrix4] => [k.model, one]), ...ids.map((id, i): [bigint, THREE.Matrix4] => [id, rest[i]])];
+    objects.push(['Pose', [next++, name('BindPose', 'Pose'), 'BindPose'], [['Type', ['BindPose']], ['Version', [100]], ['NbPoseNodes', [nodes.length]],
+      ...nodes.map(([id, m]): Node => ['PoseNode', [], [['Node', [id]], ['Matrix', [f64(m)]]]])]]);
   }
   const axis = (n: string, v: number) => P(n, 'int', 'Integer', '', v);
   return fbxBytes([
@@ -270,7 +312,7 @@ export function toFbx(parts: ExportPart[], sharp: number, unit: number): Uint8Ar
     ['Documents', [], [['Count', [1]], ['Document', [1n, 'Scene', 'Scene'], [['RootNode', [0n]]]]]],
     ['References', []],
     ['Definitions', [], [['Version', [100]], ['Count', [objects.length]],
-      ...(['Model', 'Geometry', 'Material', 'Texture', 'Video'] as const).map((t): Node => ['ObjectType', [t], [['Count', [objects.filter((o) => o[0] === t).length]]]])]],
+      ...(['Model', 'Geometry', 'Material', 'Texture', 'Video', 'NodeAttribute', 'Deformer', 'Pose'] as const).map((t): Node => ['ObjectType', [t], [['Count', [objects.filter((o) => o[0] === t).length]]]])]],
     ['Objects', [], objects],
     ['Connections', [], links],
   ]);

@@ -13,7 +13,9 @@ export interface Geo extends Polys { soup: Float32Array }
 export interface Sel { faces: number[]; verts: number[]; edges: [number, number][] }
 type V3 = [number, number, number];
 /** What a tool made: the geometry, and what to select in it after, by position (faces: soup triangles of the new soup). */
-export interface Done { geo: Geo; faces?: number[]; verts?: V3[]; edges?: [V3, V3][] }
+/** `origin`: per new soup triangle, the old polygon it lies in (the tool moved nothing), so the part's UVs can be
+ *  carried over (`carryUVs`) instead of unwrapping again. */
+export interface Done { geo: Geo; faces?: number[]; verts?: V3[]; edges?: [V3, V3][]; note?: string; origin?: number[] }
 
 /** A polygon's outline as welded vertex ids in winding order, or null if it isn't one simple loop. */
 export function loopOf(t: Topo, tris: number[]): number[] | null {
@@ -80,9 +82,10 @@ function triangulate(pos: (v: number) => V3, loop: number[]): [number, number, n
 
 /** The new part: polygons in `replace` become the loops given (several, or none), `add` loops are new polygons, and any
  *  other polygon's triangle on an edge in `mids` splits at that edge's new vertex (the polygon gains a corner). `pos`
- *  is every vertex's position, old ids first. Returns the geometry and, per new loop, its triangles in the new soup. */
+ *  is every vertex's position, old ids first. Returns the geometry, per new loop its triangles in the new soup, and per
+ *  new triangle the old polygon it came from (−1: an added loop). */
 function rebuild(M: Mesh, pos: V3[], replace: Map<number, number[][]>, mids: Map<string, number>, add: number[][] = []) {
-  const tris: number[][] = [], poly: number[] = [], sides = new Map<number, number>(), grew = new Map<number, Set<string>>();
+  const tris: number[][] = [], poly: number[] = [], origin: number[] = [], sides = new Map<number, number>(), grew = new Map<number, Set<string>>();
   M.g.sides.forEach((n, p) => { if (!replace.has(p)) sides.set(p, n); });
   for (let f = 0; f < M.g.poly.length; f++) {
     const p = M.g.poly[f];
@@ -90,7 +93,7 @@ function rebuild(M: Mesh, pos: V3[], replace: Map<number, number[][]>, mids: Map
     const queue = [[M.t.vid[f * 3], M.t.vid[f * 3 + 1], M.t.vid[f * 3 + 2]]];
     while (queue.length) {
       const tri = queue.pop()!, k = [0, 1, 2].find((k) => mids.has(ekey(tri[k], tri[(k + 1) % 3])));
-      if (k === undefined) { tris.push(tri); poly.push(p); continue; }
+      if (k === undefined) { tris.push(tri); poly.push(p); origin.push(p); continue; }
       const a = tri[k], b = tri[(k + 1) % 3], c = tri[(k + 2) % 3], v = mids.get(ekey(a, b))!;
       (grew.get(p) ?? grew.set(p, new Set()).get(p)!).add(ekey(a, b));
       queue.push([a, v, c], [v, b, c]);
@@ -99,15 +102,15 @@ function rebuild(M: Mesh, pos: V3[], replace: Map<number, number[][]>, mids: Map
   for (const [p, cut] of grew) sides.set(p, sides.get(p)! + cut.size);
   let id = M.g.sides.length;
   const made: number[][] = [];
-  for (const loop of [...[...replace.values()].flat(), ...add]) {
+  for (const [from, loop] of [...[...replace].flatMap(([p, loops]) => loops.map((l) => [p, l] as const)), ...add.map((l) => [-1, l] as const)]) {
     const first = tris.length;
-    for (const tri of triangulate((v) => pos[v], loop)) { tris.push(tri); poly.push(id); }
+    for (const tri of triangulate((v) => pos[v], loop)) { tris.push(tri); poly.push(id); origin.push(from); }
     sides.set(id++, loop.length);
     made.push(Array.from({ length: tris.length - first }, (_, i) => first + i));
   }
   const soup = new Float32Array(tris.length * 9);
   tris.forEach((tri, f) => tri.forEach((v, k) => soup.set(pos[v], f * 9 + k * 3)));
-  return { geo: { soup, ...compact(Int32Array.from(poly), sides) }, made };
+  return { geo: { soup, ...compact(Int32Array.from(poly), sides) }, made, origin };
 }
 
 /** Every vertex's position, as a list rebuild can grow. */
@@ -523,6 +526,215 @@ export function gridFill(g: Geo, s: Sel): Done | null {
   if (!replace.size && !add.length) return null;
   const r = rebuild(M, pos, replace, new Map(), add);
   return { geo: r.geo, faces: r.made.flat() };
+}
+
+/** Clean Vertices: dissolves the vertices that shape nothing, so nothing moves: a dot inside a polygon (every edge round
+ *  it a hidden diagonal) lying on the polygon's plane, and a corner on a straight run of outline (two edges in line within
+ *  `angle`°), which the polygons round it lose. Only the selection's vertices (faces: their corners); none: every vertex. */
+export function cleanVerts(g: Geo, s: Sel, angle = 1): Done | null {
+  const M = new Mesh(g), t = M.t, tan = Math.tan((angle * Math.PI) / 180), cos = Math.cos((angle * Math.PI) / 180);
+  const pick = new Set([...s.verts, ...s.edges.flat(), ...s.faces.flatMap((f) => [0, 1, 2].map((k) => t.vid[f * 3 + k]))]);
+  const loops = new Map<number, number[] | null>(), changed = new Set<number>();
+  const loop = (p: number) => { if (!loops.has(p)) { const l = M.loop(p); loops.set(p, l && [...l]); } return loops.get(p)!; };
+  let n = 0;
+  for (let v = 0; v < t.nv; v++) {
+    if (pick.size && !pick.has(v)) continue;
+    const ps = [...new Set(trisOf(t, v).map((f) => g.poly[f]))], ls = ps.map(loop);
+    if (!ps.length || ls.some((l) => !l)) continue;
+    const on = ls.filter((l) => l!.includes(v)) as number[][];
+    if (!on.length) {
+      // inside its polygon: it goes if it sits on the polygon's plane (a dot lifted off it is a shape, like a cone tip)
+      if (ps.length !== 1) continue;
+      const P = ls[0]!.map((w) => M.pos(w)), nrm = newell(P), area = len(nrm) / 2, c = P.reduce((a, b) => add3(a, b), [0, 0, 0] as V3).map((x) => x / P.length) as V3;
+      if (Math.abs(dot(sub(M.pos(v), c), nrm)) / (len(nrm) || 1) > tan * Math.sqrt(area)) continue;
+      changed.add(ps[0]); n++;
+      continue;
+    }
+    if (on.length !== ps.length || on.some((l) => l.length <= 3)) continue;
+    const nb = new Set<number>();
+    for (const l of on) { const i = l.indexOf(v); nb.add(l[(i + 1) % l.length]); nb.add(l[(i + l.length - 1) % l.length]); }
+    if (nb.size !== 2) continue;
+    const [a, b] = [...nb], u = sub(M.pos(v), M.pos(a)), w = sub(M.pos(b), M.pos(v));
+    if (dot(u, w) < cos * len(u) * len(w)) continue;
+    for (const l of on) l.splice(l.indexOf(v), 1);
+    ps.forEach((p) => changed.add(p)); n++;
+  }
+  if (!n) return null;
+  const r = rebuild(M, positions(M), new Map([...changed].map((p) => [p, [loop(p)!]])), new Map());
+  return { geo: r.geo, faces: r.made.flat(), note: `${n} ${n === 1 ? 'vertex' : 'vertices'} dissolved; the shape stays.`, origin: r.origin };
+}
+
+/** A knife point: where it lies on the surface, its soup triangle, and the view ray through it. */
+export interface KnifePoint { p: V3; f: number; ray: V3 }
+/** Where a knife point sits: on an existing vertex, on a polygon's outline edge, or inside polygon `poly`. */
+type Node = { p: V3; v?: number; e?: [number, number]; poly?: number; via: number };
+
+/** Blender's knife (K) on one part: `snap` puts a point under the mouse onto its polygon's corner or outline within `r`
+ *  (world units), and `cut` cuts the polygons along the clicked points. Each segment runs over the surface in the plane
+ *  through its two points along the view ray, as Blender cuts what you see; where it crosses a polygon's outline the
+ *  edge gains a vertex (and the polygon beyond a corner), and a polygon crossed outline to outline is split in two,
+ *  with a corner at every click inside it. A first or last click inside a polygon carries on straight to its outline,
+ *  so a cut never leaves a slit (a dot that shapes nothing). */
+export function knifeOn(g: Geo) {
+  const M = new Mesh(g), t = M.t;
+  const size = (l: number[]) => Math.max(...l.map((v, i) => len(sub(M.pos(v), M.pos(l[(i + 1) % l.length])))));
+  /** The nearest corner within r, else the nearest point on the outline within r. */
+  const near = (f: number, p: V3, r: number): Omit<Node, 'via'> => {
+    const l = M.loop(g.poly[f]);
+    if (!l) return { p, poly: g.poly[f] };
+    let best: Omit<Node, 'via'> | null = null, bd = r;
+    for (const v of l) { const d = len(sub(p, M.pos(v))); if (d <= bd) { bd = d; best = { p: M.pos(v), v }; } }
+    if (best) return best;
+    l.forEach((a, i) => {
+      const b = l[(i + 1) % l.length], A = M.pos(a), ab = sub(M.pos(b), A), u = dot(sub(p, A), ab) / (dot(ab, ab) || 1);
+      if (u <= 0 || u >= 1) return;
+      const q = lerp(A, M.pos(b), u), d = len(sub(p, q));
+      if (d <= bd) { bd = d; best = { p: q, e: [a, b] }; }
+    });
+    return best ?? { p, poly: g.poly[f] };
+  };
+  const visible = (e: number) => { const fs = t.edgeTris[e]; return fs.length !== 2 || g.poly[fs[0]] !== g.poly[fs[1]]; };
+  /** The outline crossings from A to B over the surface (A, B excluded), each with the polygon of the stretch before it,
+   *  and the polygon of the last stretch; null if the walk runs off the mesh or past B. */
+  const walk = (A: Node, B: Node, fa: number, fb: number, ray: V3, first = false): { nodes: Node[]; last: number } | null => {
+    const ab = sub(B.p, A.p), rl = len(ray) || 1, r: V3 = [ray[0] / rl, ray[1] / rl, ray[2] / rl], n = cross(ab, r);
+    const w = sub(ab, r.map((x) => x * dot(ab, r)) as V3), span = dot(ab, w);
+    if (len(n) < 1e-12 || span <= 0) return null;
+    const d = (v: number) => dot(sub(M.pos(v), A.p), n) >= 0, s = (x: V3) => dot(sub(x, A.p), w) / span;
+    const done = (f: number) => [0, 1, 2].map((k) => t.vid[f * 3 + k]).filter((v) => v === B.v || B.e?.includes(v)).length === (B.v !== undefined ? 1 : B.e ? 2 : 3) || f === fb;
+    /** The edge of f the plane leaves through (not `from`, not touching A's own vertex), farthest toward B. */
+    const exit = (f: number, from: number) => {
+      let best: { e: number; x: V3; s: number } | null = null;
+      for (let k = 0; k < 3; k++) {
+        const e = t.edge[f * 3 + k], a = t.ends[e * 2], b = t.ends[e * 2 + 1];
+        if (e === from || a === A.v || b === A.v || d(a) === d(b)) continue;
+        const da = dot(sub(M.pos(a), A.p), n), db = dot(sub(M.pos(b), A.p), n), x = lerp(M.pos(a), M.pos(b), da / (da - db));
+        if (!best || s(x) > best.s) best = { e, x, s: s(x) };
+      }
+      return best && best.s > 0 ? best : null;
+    };
+    // a start triangle that already holds B first: two corners of one polygon cut straight across it
+    const starts = (A.v !== undefined ? trisOf(t, A.v) : A.e ? t.edgeTris[edgeBetween(t, A.e[0], A.e[1])] : [fa]).sort((x, y) => +done(y) - +done(x));
+    for (const f0 of starts) {
+      const nodes: Node[] = [];
+      let f = f0, from = A.e ? edgeBetween(t, A.e[0], A.e[1]) : -1, ok = !!exit(f0, from) || done(f0);
+      for (let steps = 0; ok && !done(f) && steps < g.poly.length; steps++) {
+        const x = exit(f, from);
+        if (!x || x.s > 1.05) { ok = false; break; }
+        const next = t.edgeTris[x.e].find((h) => h !== f);
+        if (visible(x.e)) {
+          const a = t.ends[x.e * 2], b = t.ends[x.e * 2 + 1], u = len(sub(x.x, M.pos(a))) / (len(sub(M.pos(b), M.pos(a))) || 1);
+          const node: Node = u < 1e-3 ? { p: M.pos(a), v: a, via: g.poly[f] } : u > 1 - 1e-3 ? { p: M.pos(b), v: b, via: g.poly[f] } : { p: x.x, e: [a, b], via: g.poly[f] };
+          const prev = nodes[nodes.length - 1] ?? A;
+          if (node.v === undefined || node.v !== prev.v) nodes.push(node);
+          if (first) return { nodes, last: g.poly[f] };
+        }
+        if (next === undefined) { ok = false; break; }
+        from = x.e; f = next;
+      }
+      if (ok) return { nodes, last: g.poly[f] };
+    }
+    return null;
+  };
+  const cut = (pts: KnifePoint[]): Done | null => {
+    const at = pts.map((k) => near(k.f, k.p, 1e-4 * size(M.loop(g.poly[k.f]) ?? [t.vid[k.f * 3], t.vid[k.f * 3 + 1]])));
+    const path: Node[] = [{ ...at[0], via: -1 }];
+    for (let i = 1; i < pts.length; i++) {
+      const w = walk(path[path.length - 1], { ...at[i], via: -1 }, pts[i - 1].f, pts[i].f, pts[i - 1].ray);
+      if (w) path.push(...w.nodes);
+      const B: Node = { ...at[i], via: w ? w.last : -1 }, prev = path[path.length - 1];
+      if (B.v === undefined || B.v !== prev.v) path.push(B);
+    }
+    // an end left inside a polygon runs on, away from its neighbour, to the polygon's outline
+    const extend = (end: number, nb: number, k: KnifePoint) => {
+      const P = path[end], Q = path[nb];
+      if (P.poly === undefined || path.length < 2) return;
+      const far: Node = { p: add3(P.p, sub(P.p, Q.p).map((x) => x * 1000) as V3), via: -1 };
+      const w = walk(P, far, k.f, -1, k.ray, true), x = w?.nodes[0];
+      if (x && x.via === P.poly && (end ? P.via : path[1].via) === P.poly) path[end] = { ...x, via: end ? P.via : -1 };
+    };
+    extend(0, 1, pts[0]);
+    extend(path.length - 1, path.length - 2, pts[pts.length - 1]);
+    // chords: from an outline point through any clicks inside one polygon to the next outline point
+    const chords: { q: number; nodes: Node[] }[] = [];
+    let open: { q: number; nodes: Node[] } | null = null;
+    for (let i = 1; i < path.length; i++) {
+      const n = path[i], q = n.via, edge = n.poly === undefined;
+      if (!open || open.q !== q) open = q >= 0 && path[i - 1].poly === undefined ? { q, nodes: [path[i - 1]] } : null;
+      if (!open) continue;
+      if (!edge && n.poly !== q) { open = null; continue; }
+      open.nodes.push(n);
+      if (edge) { chords.push(open); open = null; }
+    }
+    const pos = positions(M), mids = new Map<string, number>(), made: [V3, V3][] = [], replace = new Map<number, number[][]>();
+    const id = (n: Node) => {
+      if (n.v !== undefined) return n.v;
+      if (n.e) { const k = ekey(n.e[0], n.e[1]); if (!mids.has(k)) { mids.set(k, pos.length); pos.push(n.p); } return mids.get(k)!; } // ponytail: one new vertex per edge per cut
+      pos.push(n.p); return pos.length - 1;
+    };
+    const ids = chords.map((c) => c.nodes.map(id));
+    const withMids = (l: number[]) => l.flatMap((v, i) => { const m = mids.get(ekey(v, l[(i + 1) % l.length])); return m === undefined ? [v] : [v, m]; });
+    chords.forEach((c, k) => {
+      const L = M.loop(c.q);
+      if (!L) return;
+      const pieces = replace.get(c.q) ?? [withMids(L)], ch = ids[k], u = ch[0], v = ch[ch.length - 1], X = ch.slice(1, -1);
+      const hit = pieces.findIndex((P) => P.includes(u) && P.includes(v));
+      if (hit < 0 || u === v) return;
+      const P = pieces[hit], n = P.length, i = P.indexOf(u), j = P.indexOf(v);
+      if (!X.length && ((i + 1) % n === j || (j + 1) % n === i)) return; // along the outline: nothing to split
+      const run = (a: number, b: number) => { const out = [P[a]]; for (let x = a; x !== b;) { x = (x + 1) % n; out.push(P[x]); } return out; };
+      pieces.splice(hit, 1, [...run(i, j), ...[...X].reverse()], [...run(j, i), ...X]);
+      replace.set(c.q, pieces);
+      ch.forEach((a, m) => { if (m) made.push([f32(pos[ch[m - 1]]), f32(pos[a])]); });
+    });
+    if (!replace.size) return null;
+    // a crossed edge whose chord didn't split anything leaves no stray vertex behind
+    const used = new Set([...replace.values()].flat(2));
+    for (const [k, v] of mids) if (!used.has(v)) mids.delete(k);
+    const r = rebuild(M, pos, replace, mids);
+    return { geo: r.geo, origin: r.origin, edges: made, note: `${made.length} edge${made.length === 1 ? '' : 's'} cut across ${replace.size} polygon${replace.size === 1 ? '' : 's'}.` };
+  };
+  return { snap: (f: number, p: V3, r: number) => near(f, p, r).p, cut };
+}
+
+/** A part's UVs carried onto new triangles that lie on its old surface (a cut or a cleanup moved nothing), as Blender's
+ *  knife keeps them. Each new triangle came from an old polygon (`origin`, old ids as in `oldPoly`, per old soup
+ *  triangle): it sits on that polygon's old triangle holding its centre, and each corner takes the UV of where it lies,
+ *  read on that triangle's island (a corner on a seam takes its own side's UV). Wound as the old output wound it. Null if
+ *  a new triangle came from no old polygon. */
+export function carryUVs(old: { positions: number[]; island: number[]; stretch: number[]; source: number[] }, uvs: ArrayLike<number>, soup: Float32Array, origin: number[], oldPoly: ArrayLike<number>) {
+  const P = old.positions, inPoly = new Map<number, number[]>();
+  old.source.forEach((f, t) => (inPoly.get(oldPoly[f]) ?? inPoly.set(oldPoly[f], []).get(oldPoly[f])!).push(t));
+  const corner = (t: number, k: number): V3 => [P[t * 9 + k * 3], P[t * 9 + k * 3 + 1], P[t * 9 + k * 3 + 2]];
+  const T = new THREE.Triangle(), A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), Q = new THREE.Vector3(), on = new THREE.Vector3(), w = new THREE.Vector3();
+  /** Of these old triangles, the one p lies on (nearest in 3D: a bent polygon's corner can project inside a neighbour),
+   *  and the barycentrics of the point on it. */
+  const holding = (ts: number[], p: V3) => {
+    let best = { t: ts[0], b: [1, 0, 0], d: Infinity };
+    for (const t of ts) {
+      T.set(A.set(...corner(t, 0)), B.set(...corner(t, 1)), C.set(...corner(t, 2)));
+      const d = T.closestPointToPoint(Q.set(...p), on).distanceTo(Q);
+      if (d < best.d) { T.getBarycoord(on, w); best = { t, b: [w.x, w.y, w.z], d }; }
+    }
+    return best;
+  };
+  const n = soup.length / 9, out = { positions: new Array<number>(n * 9), uvs: new Array<number>(n * 6), stretch: new Array<number>(n), island: new Array<number>(n), source: Array.from({ length: n }, (_, f) => f) };
+  const every = old.source.map((_, t) => t);
+  for (let f = 0; f < n; f++) {
+    // a polygon of zero-area triangles only (the engine drops those) has none: the nearest old triangle anywhere
+    const ts = inPoly.get(origin[f]) ?? every;
+    if (!ts.length) return null;
+    const C = [0, 1, 2].map((k) => [soup[f * 9 + k * 3], soup[f * 9 + k * 3 + 1], soup[f * 9 + k * 3 + 2]] as V3);
+    const t0 = holding(ts, C.reduce((a, b) => add3(a, b), [0, 0, 0] as V3).map((x) => x / 3) as V3).t, mine = ts.filter((t) => old.island[t] === old.island[t0]);
+    const flip = dot(cross(sub(C[1], C[0]), sub(C[2], C[0])), cross(sub(corner(t0, 1), corner(t0, 0)), sub(corner(t0, 2), corner(t0, 0)))) < 0;
+    (flip ? [C[0], C[2], C[1]] : C).forEach((p, k) => {
+      const { t, b } = holding(mine, p);
+      out.positions.splice(f * 9 + k * 3, 3, ...p);
+      for (let j = 0; j < 2; j++) out.uvs[f * 6 + k * 2 + j] = b[0] * uvs[t * 6 + j] + b[1] * uvs[t * 6 + 2 + j] + b[2] * uvs[t * 6 + 4 + j];
+    });
+    out.stretch[f] = old.stretch[t0]; out.island[f] = old.island[t0];
+  }
+  return out;
 }
 
 // ---- looking ----

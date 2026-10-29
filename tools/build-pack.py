@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the local web library from the staged Blender pack.
 
-    python tools/build-pack.py --raw D:\barista-pack-raw --out public/materials-pack
+    python tools/build-pack.py --raw D:\barista-pack-raw --out public/assets/materials/pack
 
 Reads `materials.jsonl` written by `tools/blender-extract.py`, downsizes each raw map to
 1024 px, writes content-addressed JPEGs and 256 px thumbnails, and writes the manifest.
@@ -27,6 +27,14 @@ MAX = 1024
 THUMB = 256
 
 
+PUBLIC = Path(__file__).resolve().parent.parent / 'public'
+
+
+def url_of(out: Path) -> str:
+    """The editor's URL for a folder under public/ (the pack sits in public/assets/materials/pack)."""
+    return '/' + out.resolve().relative_to(PUBLIC).as_posix()
+
+
 def atomic_write(path: Path, data: bytes):
     if path.exists():
         return
@@ -48,7 +56,7 @@ def save_map(im: Image.Image, kind: str, out: Path) -> dict:
     digest = hashlib.sha1(data).hexdigest()
     rel = f'assets/{digest}.jpg'
     atomic_write(out / rel, data)
-    return {'path': '/' + out.name + '/' + rel, 'width': im.width, 'height': im.height, 'bytes': len(data)}
+    return {'path': url_of(out) + '/' + rel, 'width': im.width, 'height': im.height, 'bytes': len(data)}
 
 
 def solid_map(kind: str, value, out: Path) -> dict:
@@ -95,7 +103,7 @@ def thumb_for(raw: Path, out: Path) -> str | None:
     digest = hashlib.sha1(data).hexdigest()
     rel = f'thumbs/{digest}.jpg'
     atomic_write(out / rel, data)
-    return '/' + out.name + '/' + rel
+    return url_of(out) + '/' + rel
 
 
 def work(job: tuple[dict, str, int]):
@@ -147,7 +155,7 @@ def work(job: tuple[dict, str, int]):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--raw', type=Path, default=Path(r'D:\barista-pack-raw'))
-    ap.add_argument('--out', type=Path, default=Path(__file__).resolve().parent.parent / 'public' / 'materials-pack')
+    ap.add_argument('--out', type=Path, default=Path(__file__).resolve().parent.parent / 'public' / 'assets' / 'materials' / 'pack')
     ap.add_argument('--size', type=int, default=MAX)
     ap.add_argument('--jobs', type=int, default=max(2, min(8, (os.cpu_count() or 4) - 1)))
     ap.add_argument('--limit', type=int, default=0, help='only the first N materials (a smoke test)')

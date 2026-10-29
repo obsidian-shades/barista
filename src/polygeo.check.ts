@@ -1,6 +1,6 @@
 // node src/polygeo.check.ts: every Poly Doc geometry tool on small flat grids of quads, where the right answer is known.
 import assert from 'node:assert';
-import { addLoops, connect, curveEdges, gridFill, loopCut, merge, meshCheck, poles, relax, rotateEdge, shapeLoop, slide, subdivide, type Geo, type Sel } from './polygeo.ts';
+import { addLoops, carryUVs, cleanVerts, connect, curveEdges, knifeOn, gridFill, loopCut, merge, meshCheck, poles, relax, rotateEdge, shapeLoop, slide, subdivide, type Geo, type Sel } from './polygeo.ts';
 import { dissolveFaces, ownPolygons, topoOfSoup, trisToQuads } from './polyedit.ts';
 
 /** A flat grid of quads with column edges at `xs` and row edges at `ys`, minus the cells in `skip` ("x,y"). */
@@ -142,5 +142,57 @@ assert.ok(vertAt(sp.geo, 1, 0) && vertAt(sp.geo, 2, 0), 'spaced');
   const r = addLoops(g, sel({ faces: all(g) }))!, t = topoOfSoup(r.geo.soup);
   const radii = Array.from({ length: t.nv }, (_, v) => Math.hypot(t.pos[v * 3], t.pos[v * 3 + 1]));
   assert.ok(r.geo.sides.length === 24 && radii.every((x) => Math.abs(x - 1) < 1e-5), `new loops lie on the circle: ${radii.map((x) => x.toFixed(3))}`);
+}
+// Clean Vertices: a dot inside a dissolved 2×2 patch and the in-line corners round its outline go; a quad is left, unmoved
+{
+  const g = grid([0, 1, 2], [0, 1, 2]), ng = { soup: g.soup, ...dissolveFaces(g.soup, g, all(g))! }, r = cleanVerts(ng, sel({}))!;
+  assert.deepEqual(sides(r.geo), [4]); facingUp(r.geo);
+  assert.ok(!vertAt(r.geo, 1, 1) && !vertAt(r.geo, 1, 0) && vertAt(r.geo, 2, 2), 'only the dots that shape nothing go');
+  assert.equal(cleanVerts(grid([0, 1, 2], [0, 1]), sel({})), null, 'a corner two polygons need stays');
+}
+
+// Knife: bottom edge of one quad to the top edge of the next cuts both, crossing the shared edge at its middle
+{
+  const g = grid([0, 1, 2], [0, 1]), k = knifeOn(g), down: [number, number, number] = [0, 0, -1];
+  const tri = (x: number, y: number) => all(g).find((f) => { const p = g.soup.subarray(f * 9, f * 9 + 9), s = (i: number, j: number) => (p[j * 3] - p[i * 3]) * (y - p[i * 3 + 1]) - (p[j * 3 + 1] - p[i * 3 + 1]) * (x - p[i * 3]); return s(0, 1) >= 0 && s(1, 2) >= 0 && s(2, 0) >= 0; })!;
+  const pt = (x: number, y: number) => ({ p: k.snap(tri(x, y), [x, y + 0.01, 0], 0.05) as [number, number, number], f: tri(x, y), ray: down });
+  const r = k.cut([pt(0.5, 0.01), pt(1.5, 0.98)])!;
+  assert.deepEqual(sides(r.geo), [3, 3, 5, 5]); facingUp(r.geo);
+  assert.ok(vertAt(r.geo, 1, 0.5) && vertAt(r.geo, 0.5, 0) && r.edges!.length === 2, 'cut through the middle of the shared edge');
+  // a click inside the first quad bends the cut there: that corner is new and the quad still splits
+  const b = k.cut([pt(0.5, 0.01), { p: [0.4, 0.6, 0], f: tri(0.4, 0.6), ray: down }, pt(0.5, 0.98)])!;
+  assert.ok(vertAt(b.geo, 0.4, 0.6) && b.geo.sides.length === 3, `bent cut: ${sides(b.geo)}`);
+  // two clicks inside one quad: the cut runs on to its edges and splits it, with no dot left where the clicks were
+  const inner = k.cut([{ p: [0.2, 0.5, 0], f: tri(0.2, 0.5), ray: down }, { p: [0.8, 0.5, 0], f: tri(0.8, 0.5), ray: down }])!;
+  assert.ok(inner && vertAt(inner.geo, 0, 0.5) && vertAt(inner.geo, 1, 0.5) && !vertAt(inner.geo, 0.2, 0.5), 'cut runs on to the outline');
+  assert.deepEqual(sides(inner.geo), [4, 4, 5]); facingUp(inner.geo);
+}
+// UVs carried through a cut: a 6×3 grid, each column its own island (10 apart in UV), cut corner to corner across every
+// seam; each corner keeps its own side's UV, a new vertex on a seam gets one per side
+{
+  const g = grid([0, 1, 2, 3, 4, 5, 6], [0, 1, 2, 3]), down: [number, number, number] = [0, 0, -1], k = knifeOn(g);
+  const n = g.soup.length / 9, cx = (f: number) => (g.soup[f * 9] + g.soup[f * 9 + 3] + g.soup[f * 9 + 6]) / 3;
+  const island = Array.from({ length: n }, (_, f) => Math.floor(cx(f)));
+  const uvs = Array.from({ length: n * 6 }, (_, i) => { const f = (i / 6) | 0, c = ((i % 6) / 2) | 0; return i % 2 ? g.soup[f * 9 + c * 3 + 1] : g.soup[f * 9 + c * 3] + 10 * island[f]; });
+  const old = { positions: Array.from(g.soup), island, stretch: Array(n).fill(0), source: all(g) };
+  const tri = (x: number, y: number) => all(g).find((f) => { const p = g.soup.subarray(f * 9, f * 9 + 9), s = (i: number, j: number) => (p[j * 3] - p[i * 3]) * (y - p[i * 3 + 1]) - (p[j * 3 + 1] - p[i * 3 + 1]) * (x - p[i * 3]); return s(0, 1) >= 0 && s(1, 2) >= 0 && s(2, 0) >= 0; })!;
+  const r = k.cut([{ p: [0.5, 0, 0], f: tri(0.5, 0.1), ray: down }, { p: [5.5, 3, 0], f: tri(5.5, 2.9), ray: down }])!;
+  assert.ok(r.origin && r.edges!.length >= 6, 'a cut moves nothing');
+  const c = carryUVs(old, uvs, r.geo.soup, r.origin, g.poly)!;
+  for (let f = 0; f < c.island.length; f++) for (let j = 0; j < 3; j++) {
+    const x = c.positions[f * 9 + j * 3], y = c.positions[f * 9 + j * 3 + 1], side = c.island[f];
+    assert.ok(Math.abs(c.uvs[f * 6 + j * 2] - (x + 10 * side)) < 1e-4 && Math.abs(c.uvs[f * 6 + j * 2 + 1] - y) < 1e-4, `corner (${x}, ${y}) of a triangle on island ${side}`);
+  }
+  assert.equal(new Set(c.island).size, 6);
+  // a polygon the engine left out of the output (all its triangles zero-area) doesn't stop the carry: the rest still
+  // keeps its UVs (Grip_Low had one, and the whole part went mesh-only)
+  const gone = g.poly[tri(5.5, 0.5)], kept = all(g).filter((f) => g.poly[f] !== gone);
+  const lean = { positions: kept.flatMap((f) => Array.from(g.soup.subarray(f * 9, f * 9 + 9))), island: kept.map((f) => island[f]), stretch: kept.map(() => 0), source: kept };
+  const d = carryUVs(lean, kept.flatMap((f) => uvs.slice(f * 6, f * 6 + 6)), r.geo.soup, r.origin, g.poly);
+  assert.ok(d, 'carried past a polygon with no output triangles');
+  for (let f = 0; f < d.island.length; f++) if (r.origin[f] !== gone) for (let j = 0; j < 3; j++) {
+    const x = d.positions[f * 9 + j * 3], y = d.positions[f * 9 + j * 3 + 1];
+    assert.ok(Math.abs(d.uvs[f * 6 + j * 2] - (x + 10 * d.island[f])) < 1e-4 && Math.abs(d.uvs[f * 6 + j * 2 + 1] - y) < 1e-4, `corner (${x}, ${y}) beside the missing polygon`);
+  }
 }
 console.log('polygeo ok');

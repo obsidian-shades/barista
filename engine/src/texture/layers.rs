@@ -362,6 +362,63 @@ impl DecalFrame {
     }
 }
 
+/// A decal's own relief maps (DECALmachine assets): normal, ao_curv_height (blue = height) and masks (red = the
+/// mark's coverage). `paint.ts bakeRelief` samples the same three.
+pub struct Relief { pub normal: Map, pub height: Map, pub mask: Map }
+
+/// A relief decal's projector (`bakeRelief`): the same frame as a decal's, with the maps' own tilt and height instead
+/// of an image's ink.
+pub struct ReliefFrame { c: V3, n: V3, u: V3, v: V3, w: f32, h: f32, depth: f32, flip: (bool, bool), strength: f32, contrast: f32 }
+
+impl ReliefFrame {
+    pub fn new(d: &Decal, span: f32) -> ReliefFrame {
+        let n = norm(d.normal);
+        let vd = dot(d.up, n);
+        let mut v = [d.up[0] - n[0] * vd, d.up[1] - n[1] * vd, d.up[2] - n[2] * vd];
+        if dot(v, v).sqrt() < 1e-6 { v = [1.0, 0.0, 0.0]; }
+        let v = norm(v);
+        let u = norm(cross(v, n));
+        let rad = d.rotation.to_radians();
+        let (co, si) = (rad.cos(), rad.sin());
+        let ur = [0, 1, 2].map(|k| u[k] * co + v[k] * si);
+        let vr = [0, 1, 2].map(|k| -u[k] * si + v[k] * co);
+        let w = d.width.max(1e-5);
+        ReliefFrame {
+            c: d.center, n, u: ur, v: vr, w, h: w / d.aspect.max(1e-4), depth: (w * 0.55).max(span * 0.012),
+            flip: (d.flip_h, d.flip_v), strength: d.relief_normal.unwrap_or(1.0), contrast: d.relief_height.unwrap_or(1.0),
+        }
+    }
+
+    /// The relief at point p on triangle t: the normal map in the triangle's tangent space and the height map's
+    /// blue channel, both under the mask's red coverage.
+    pub fn at(&self, maps: &Relief, mesh: &Mesh, t: usize, p: V3) -> Texel {
+        let mut out = Texel::default();
+        if dot(mesh.nrm[t], self.n) < 0.12 { return out; }
+        let d = sub(p, self.c);
+        if dot(d, self.n).abs() > self.depth { return out; }
+        let (u, v) = (dot(d, self.u) / self.w + 0.5, dot(d, self.v) / self.h + 0.5);
+        if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) { return out; }
+        let (su, sv) = (if self.flip.0 { 1.0 - u } else { u }, if self.flip.1 { 1.0 - v } else { v });
+        let a = sample_decal(&maps.mask, su, sv)[0] / 255.0;
+        if a < 0.004 { return out; }
+        let hb = sample_decal(&maps.height, su, sv)[2] / 255.0;
+        let q = sample_decal(&maps.normal, su, sv);
+        // a flip mirrors the mark, so the slope's own X / Y turns over with the sampled map
+        let (fh, fv) = (if self.flip.0 { -1.0 } else { 1.0 }, if self.flip.1 { -1.0 } else { 1.0 });
+        let (ax, ay, az) = ((q[0] / 127.5 - 1.0) * self.strength * fh, (q[1] / 127.5 - 1.0) * self.strength * fv, q[2] / 127.5 - 1.0);
+        // the mark's tangent space to world, then the triangle's own tangent frame (the texture's space)
+        let wv = [0, 1, 2].map(|k| ax * self.u[k] + ay * self.v[k] + az * self.n[k]);
+        let (tv, bv) = mesh.tan[t];
+        let (mut gx, mut gy, mut gz) = (dot(wv, tv), dot(wv, bv), dot(wv, mesh.nrm[t]));
+        let gl = (gx * gx + gy * gy + gz * gz).sqrt();
+        if gl > 1e-9 { gx /= gl; gy /= gl; gz /= gl; }
+        out.normal = Some(([(gx * 0.5 + 0.5) * 255.0, (gy * 0.5 + 0.5) * 255.0, (gz * 0.5 + 0.5) * 255.0], a));
+        let h = ((hb - 0.5) * 2.0 * self.contrast).clamp(-1.0, 1.0);
+        out.height = Some((128.0 + 127.0 * h, a));
+        out
+    }
+}
+
 /// A grip texture as one layer draws it (paint.ts `bakeShape`): the projector, the outline's rounded polygon and, when
 /// wrapped, the surface's own coordinates per corner (`exp_map`), all worked out once per part.
 pub struct ShapeSrc<'a> { fr: DecalFrame, sh: &'a Shape, poly: Option<Vec<f64>>, map: Option<Vec<f64>>, ch: &'a [String], texel: Vec<f64>, rim: ([f32; 3], f32, f32) }
@@ -736,6 +793,11 @@ fn tri_dist(a: D3, b: D3, c: D3, p: D3) -> f64 {
 fn pattern_at(p: &str, x: f64, y: f64) -> f64 {
     match p {
         "grooves" => { let f = y - y.floor(); if f > 0.25 && f < 0.75 { -(std::f64::consts::PI * (f - 0.25) * 2.0).sin() } else { 0.0 } }
+        "pyramid" => {
+            let d = 2.0 * (x - x.floor() - 0.5).abs().max((y - y.floor() - 0.5).abs());
+            let t = ((0.85 - d) / 0.4).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        }
         "checker" => {
             let tri = |s: f64| 1.0 - 2.0 * (s - s.floor() - 0.5).abs();
             let r = std::f64::consts::FRAC_1_SQRT_2;

@@ -3,7 +3,7 @@
 
     python tools/pack-thumbs.py [--size 256] [--jobs 8] [--limit N]
 
-Reads public/materials-pack/index.json, renders each material's base color / normal /
+Reads public/assets/materials/pack/index.json, renders each material's base color / normal /
 roughness / metallic / AO on a sphere with the same look as the core shelf, and updates
 `thumb` in the manifest. Content-addressed, so unchanged materials are skipped on a rerun.
 """
@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PUBLIC = ROOT / 'public'
-PACK = PUBLIC / 'materials-pack'
+PACK = PUBLIC / 'assets' / 'materials' / 'pack'
 
 # material-thumbs.py has a hyphen in its name on purpose; load it as the shared PBR renderer.
 _spec = importlib.util.spec_from_file_location('barista_material_thumbs', ROOT / 'tools' / 'material-thumbs.py')
@@ -30,8 +30,8 @@ _spec.loader.exec_module(mt)
 def local(url: str | None) -> str | None:
     if not url:
         return None
-    if url.startswith('/materials-pack/'):
-        return str(PACK / url[len('/materials-pack/'):])
+    if url.startswith('/assets/materials/pack/'):
+        return str(PACK / url[len('/assets/materials/pack/'):])
     if url.startswith('/'):
         return str(PUBLIC / url[1:])
     return str(PACK / url)

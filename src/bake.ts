@@ -5,7 +5,7 @@
 // With the viewport's renderer the per-texel tests run there too (gpubake.ts AO, EDGES); the CPU loops are the
 // fallback and the reference.
 import * as THREE from 'three';
-import { topoOf } from './topo';
+import { isHard, topoOf, type Hard } from './topo';
 import { compRenderer } from './gpucomp';
 import { AO, EDGES, cellTable, gpuBake, gpuBakeReady, rows } from './gpubake';
 
@@ -121,14 +121,14 @@ async function aoOnGpu(n: number, { geo, c, R }: ReturnType<typeof modelOf>, sur
 }
 
 /** Bake part `positions` (its texels `surf`) with every part in `all` casting occlusion. */
-export async function bake(n: number, positions: number[], all: ArrayLike<number>[], surf: Surface, progress?: (f: number) => void): Promise<Baked> {
+export async function bake(n: number, positions: number[], all: ArrayLike<number>[], surf: Surface, progress?: (f: number) => void, hard: Hard = { normals: null, sharp: 20 }): Promise<Baked> {
   const { pos, nrm, has } = surf, model = modelOf(all), R = model.R;
   // lifted off its own surface by a depth texel and a half, so it doesn't shadow itself
   const off = (3 * R) / RES;
   const span = 2 * R;
   const gpu = await aoOnGpu(n, model, surf, off, progress && ((f) => progress(f * 0.9)));
   if (gpu) {
-    const [convex, concave] = await edgeDistances(n, positions, surf, 0.05 * span);
+    const [convex, concave] = await edgeDistances(n, positions, surf, 0.05 * span, hard);
     progress?.(1);
     model.geo.dispose();
     return { ...surf, ao: gpu, convex, concave, span };
@@ -147,14 +147,14 @@ export async function bake(n: number, positions: number[], all: ArrayLike<number
     ao[i] = wsum[i] ? ao[i] / wsum[i] : 1;
     if ((i & 262143) === 262143) await new Promise((ok) => setTimeout(ok, 0));
   }
-  const [convex, concave] = await edgeDistances(n, positions, surf, 0.05 * span);
+  const [convex, concave] = await edgeDistances(n, positions, surf, 0.05 * span, hard);
   progress?.(1);
   return { ...surf, ao, convex, concave, span };
 }
 
-/** Per texel, the distance to the nearest sharp (> 20°) convex and concave edge of the part, over the edge's strength
- *  (90° counts full), up to `reach`. Each edge is one segment in the reach-sized cells it crosses. */
-async function edgeDistances(n: number, positions: number[], surf: Surface, reach: number) {
+/** Per texel, the distance to the nearest hard convex and concave edge of the part (`isHard`), over the edge's
+ *  strength (90° counts full), up to `reach`. Each edge is one segment in the reach-sized cells it crosses. */
+async function edgeDistances(n: number, positions: number[], surf: Surface, reach: number, hard: Hard) {
   const t = topoOf(positions), tris = positions.length / 9, fn = new Float64Array(tris * 3), fc = new Float64Array(tris * 3);
   for (let f = 0; f < tris; f++) {
     const o = f * 9, p = positions;
@@ -172,7 +172,7 @@ async function edgeDistances(n: number, positions: number[], surf: Surface, reac
     const [a, b] = t.edgeTris[e];
     if (b === undefined) continue;
     const dot = fn[a * 3] * fn[b * 3] + fn[a * 3 + 1] * fn[b * 3 + 1] + fn[a * 3 + 2] * fn[b * 3 + 2], angle = Math.acos(Math.max(-1, Math.min(1, dot)));
-    if (angle < (20 * Math.PI) / 180) continue;
+    if (!isHard(t, e, a, b, angle, hard)) continue;
     // convex when b's centre lies behind a's plane
     const v0 = t.ends[e * 2], v1 = t.ends[e * 2 + 1], P = t.pos;
     const side = (fc[b * 3] - P[v0 * 3]) * fn[a * 3] + (fc[b * 3 + 1] - P[v0 * 3 + 1]) * fn[a * 3 + 1] + (fc[b * 3 + 2] - P[v0 * 3 + 2]) * fn[a * 3 + 2];

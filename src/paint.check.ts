@@ -1,7 +1,7 @@
 // node src/paint.check.ts: a unit square split at x = 0.5 into two islands far apart in UV. A dab on the seam paints
 // both; a dab paints a flat face evenly (no lines where its triangles meet); layers stack; erase and undo work.
 import assert from 'node:assert';
-import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, bakeShape, bakeBevel, bevelEdges, bevelNormal, hashu, shapeHeight, expMap, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Bevel, type Brush, type Decal, type Fill, type GenKind, type PaintLayer, type Shape } from './paint.ts';
+import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, bakeShape, bakeRelief, bakeBevel, bevelEdges, bevelNormal, hashu, shapeHeight, expMap, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Bevel, type Brush, type Decal, type Fill, type GenKind, type PaintLayer, type Shape } from './paint.ts';
 import type { MaterialPixels } from './materials.ts';
 
 // left half [0,.5] → uv (0..0.25, 0..0.5); right half [.5,1] → uv (0.5..0.75, 0..0.5): the seam is 0.25 apart in UV
@@ -376,4 +376,49 @@ assert.ok(gs.sel!.every((x, i) => !x || gs.shell![i]), 'a grown selection stays 
 // the grunge noise's lattice hash: these values are pinned in the engine too (layers.rs `hashu_matches_the_editor`)
 // and computed the same in gpubake.ts's shader, so a generator looks alike in the CPU, GPU and engine bakes
 assert.deepEqual([hashu(1, 2, 3), hashu(-5, 7, -9), hashu(0, 0, 0)], [72785788, 2634903715, 0], 'the lattice hash');
+{ // wear and dirt follow the shading, not the bend (engine `hard_edges_follow_the_shading`): two faces at 30°
+  const { isHard, topoOf } = await import('./topo.ts');
+  const c = Math.cos(Math.PI / 6), sn = Math.sin(Math.PI / 6);
+  const t = topoOf([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, -c, sn, 1, 0, 0]);
+  const e = t.edgeTris.findIndex((x) => x.length === 2), [a, b] = t.edgeTris[e], ang = Math.PI / 6;
+  const smooth = new Float32Array(18).fill(0).map((_, i) => (i % 3 === 2 ? 1 : 0));
+  const split = smooth.slice(); for (let k = 3; k < 6; k++) split.set([0, sn, c], k * 3);
+  assert.equal(isHard(t, e, a, b, ang, { normals: null, sharp: 45 }), false, '30° under a 45° Sharp edges is smooth');
+  assert.equal(isHard(t, e, a, b, ang, { normals: null, sharp: 20 }), true, '30° over 20° is an edge');
+  assert.equal(isHard(t, e, a, b, ang, { normals: smooth, sharp: 20 }), false, 'one normal across it: smooth, whatever the angle');
+  assert.equal(isHard(t, e, a, b, ang, { normals: split, sharp: 45 }), true, 'normals split across it: an edge');
+}
+{ // decals always paint on top of the material stack: one left under a fill moves up, the active layer stays itself
+  const { decalsLast } = await import('./paint.ts');
+  const mk = (id: number, decal: boolean) => ({ id, name: `${id}`, visible: true, opacity: 1, px: {}, ...(decal ? { decal: {} as Decal } : { fill: {} as Fill }) }) as PaintLayer;
+  const st = { layers: [mk(1, false), mk(2, true), mk(3, false), mk(4, true)], active: 1 };
+  assert.equal(decalsLast(st), true, 'a decal under a fill is moved');
+  assert.deepEqual(st.layers.map((l) => l.id), [1, 3, 2, 4], 'fills first, decals on top, each in its own order');
+  assert.equal(st.layers[st.active].id, 2, 'the active layer is still the same decal');
+  assert.equal(decalsLast(st), false, 'an ordered stack is left alone');
+}
+{ // a relief decal (DECALmachine's): the mark's own normal and height maps, under its mask, into Normal and Height.
+  // Pinned in the engine too (`relief_maps_write_normal_and_height`).
+  const quad = [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0];
+  const quv = [0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1];
+  const solid = (r: number, g: number, b: number, a = 255) => ({ width: 2, height: 2, data: new Uint8ClampedArray(Array.from({ length: 16 }, (_, i) => [r, g, b, a][i % 4])) });
+  const rs = setOf(new Float32Array(quad), 32);
+  const rd: Decal = {
+    asset: 'dm-check', center: [0.5, 0.5, 0], normal: [0, 0, 1], up: [0, 1, 0], width: 1, rotation: 0, aspect: 1,
+    tint: '#ffffff', roughness: 0.5, metallic: 0, channels: ['normal', 'height'], reliefNormal: 1, reliefHeight: 1,
+  };
+  const rl: PaintLayer = { ...newLayer(12), decal: rd };
+  rs.layers = [rl]; rs.active = 0;
+  // a normal 45° toward the mark's right (R = 255, B = 255), a height 0.4 (blue 102), full coverage
+  bakeRelief(rs, rl, { normal: solid(255, 128, 255), height: solid(255, 0, 102), mask: solid(255, 0, 0) }, quad, quv, 1);
+  composite(rs);
+  const rp = (x: number, y: number) => Array.from(rl.px.normal!.subarray((y * 32 + x) * 4, (y * 32 + x) * 4 + 4));
+  const rn = rp(16, 16);
+  assert.ok(Math.abs(rn[0] - 218) <= 1 && Math.abs(rn[1] - 128) <= 1 && Math.abs(rn[2] - 218) <= 1, `a 45° map leans the normal: ${rn}`);
+  assert.equal(rn[3], 255, 'full coverage inside the mask');
+  assert.equal(rl.px.height![(16 * 32 + 16) * 2], 103, 'height 0.4 lowers the map (engine the same)');
+  // no coverage, no relief: the mask's red channel is the mark
+  bakeRelief(rs, rl, { normal: solid(255, 128, 255), height: solid(255, 0, 102), mask: solid(0, 0, 0) }, quad, quv, 1);
+  assert.equal(rp(16, 16)[3], 0, 'outside the mask nothing is written');
+}
 console.log('paint ok');

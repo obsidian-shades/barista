@@ -33,7 +33,7 @@ export function MenuBar() {
   const askOpen = useApp((s) => s.askOnOpen), hasRef = useApp((s) => !!s.refImage);
   const tri = useApp((s) => s.triangulate), workspace = useApp((s) => s.workspace), recent = useApp((s) => s.recent), shapes = useApp((s) => s.shapes);
   // subscribe to the one value the Display radio group shows, then read the same choices the Z pie and options bar use
-  const display = useApp((s) => (s.workspace === 'doc' ? s.docView : s.workspace === 'paint' ? s.scene.lighting : s.mode));
+  const display = useApp((s) => (s.workspace === 'doc' ? s.docView : s.workspace === 'paint' ? s.scene.lighting : s.workspace === 'rig' ? s.rigView : s.mode));
   const choices = displayChoices();
   const doc = workspace === 'doc', paint = workspace === 'paint';
   const canUndo = useApp((s) => s.past.length > 0 || s.partsPast.length > 0), canRedo = useApp((s) => s.future.length > 0 || s.partsFuture.length > 0);

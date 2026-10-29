@@ -8,7 +8,7 @@ import { partShot } from '../matview';
 import {
   alignSeamsSel, averageScalesSel, circleBoundarySel, clearSeams, clearSymPlane, copyShapeSel, editSymPlane, mergeSel, normalizeSel, offsetBoundarySel, orientSel, orientWorldSel,
   pasteShapeSel, pickPaintChannel, pickPaintPart, rectifySel, selectAll, selectFlipped, selectMirror, selectPart, partsMenu, clearAllSeams, selectSide, selectSimilar, selectZeroArea,
-  setAfterAlign, setAfterPack, setParams, setPartTextured, setPartVisible, setPbr, shuffleSel, sortSel, stackSel, stretchSel, straightenSel, symmetrizeSel, texSet, togglePaintOpen,
+  setAfterAlign, setAfterPack, setParams, setPartTextured, setPartVisible, setPbr, shuffleSel, sortSel, stackSel, stretchSel, straightenSel, symmetrizeSel, texSet,
   unwrap, useApp,
 } from '../store';
 
@@ -79,10 +79,11 @@ function PartPic({ i }: { i: number }) {
 export function Parts({ workspace = 'uv' }: { workspace?: 'uv' | 'doc' | 'paint' }) {
   const parts = useApp((s) => s.parts), result = useApp((s) => s.result), layerSel = useApp((s) => s.layerSel), activePart = useApp((s) => s.activePart);
   const paint = workspace === 'paint', doc = workspace === 'doc';
-  const open = useApp((s) => s.paintOpen), shown = useApp((s) => s.paintChannel);
   useApp((s) => s.paintRev);
   const paintParts = useApp((s) => s.parts.length);
-  const isl = result ? islandsOf(result) : [], picked = new Set(layerSel);
+  // Van Gogh has one part in hand, the one painted: UV Magician's part selection (the island tools' scope) is not shown
+  // there as a second highlight beside it
+  const isl = result ? islandsOf(result) : [], picked = new Set(paint ? [activePart] : layerSel);
   const seams = (parts[activePart]?.marked.length ?? 0) / 6;
   const list = useRef<HTMLUListElement>(null);
   // Scroll only the Parts list, never its ancestors: scrollIntoView also moves the dock and hides Materials/Color.
@@ -92,50 +93,56 @@ export function Parts({ workspace = 'uv' }: { workspace?: 'uv' | 'doc' | 'paint'
     const r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
     if (r.top < b.top) box.scrollTop += r.top - b.top;
     else if (r.bottom > b.bottom) box.scrollTop += r.bottom - b.bottom;
-  }, [paint, activePart, open, paintParts]);
+  }, [paint, activePart, paintParts]);
   const counts = (p: (typeof parts)[number], n: number) => {
     const tris = p.soup.length / 9, seams = p.seams.length / 6, marked = p.marked.length / 6;
     return `${tris.toLocaleString()} ${tris === 1 ? 'triangle' : 'triangles'} · ${n} ${n === 1 ? 'island' : 'islands'} · ${seams} ${seams === 1 ? 'seam' : 'seams'}${marked ? ` (${marked} marked)` : ''}`;
   };
-  const activeChannels = paint && parts[activePart] ? texSet(activePart).channels : null;
   return (
     <>
-      {paint && activeChannels && (
-        <div className="partshead">
-          <span className="caps">Texture set</span>
-          <span className="hint">{parts[activePart]?.name}</span>
-          <button className="pbr" aria-pressed={activeChannels.length > 1} title={activeChannels.length > 1 ? 'Back to Base Color only' : 'Add Roughness, Metallic, Normal and Height (PBR metal/rough, what glTF, Unity and Unreal read)'}
-            onClick={() => setPbr(activePart, activeChannels.length === 1)}>{activeChannels.length > 1 ? 'PBR' : '+ PBR'}</button>
-        </div>
-      )}
       <ul className={`layers${doc ? ' doc' : ''}${paint ? ' paint tree' : ''}`} ref={list} aria-label="Parts (right click for more)" onContextMenu={(e) => { e.preventDefault(); partsMenu(e.clientX, e.clientY, null); }}>
         {parts.map((p, i) => {
           const mine = isl.flatMap((x, id) => (x.part === i ? [id] : [])), tex = p.textured !== false;
-          const isOpen = paint && open.includes(i);
-          const chs = paint ? texSet(i).channels : null;
-          return [
+          return (
             <li key={i} aria-selected={picked.has(i)} className={`layer${i === activePart ? ' active' : ''}${picked.has(i) ? ' on' : ''}`}
               onClick={(e) => { if (paint) pickPaintPart(i); else selectPart(i, e.shiftKey, e.ctrlKey || e.metaKey); }}
               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); partsMenu(e.clientX, e.clientY, i); }} title={`${p.name}: ${counts(p, mine.length)}`}>
-              {paint && <button className="disclosure" aria-expanded={isOpen} aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${p.name}`} onClick={(e) => { e.stopPropagation(); togglePaintOpen(i); }}>
-                <Icon name="chevron" size={12} className={isOpen ? 'chev' : 'chev closed'} />
-              </button>}
               <button aria-pressed={p.visible} title={p.visible ? 'Hide part' : 'Show part'} aria-label={`${p.visible ? 'Hide' : 'Show'} ${p.name}`} onClick={(e) => { e.stopPropagation(); setPartVisible(i, !p.visible); }}>{eye(p.visible)}</button>
               {!doc && !paint && <button aria-pressed={tex} title={tex ? 'Hide checker texture' : 'Show checker texture'} aria-label={`${tex ? 'Hide texture on' : 'Show texture on'} ${p.name}`} onClick={(e) => { e.stopPropagation(); setPartTextured(i, !tex); }}>{checker(tex)}</button>}
               {paint && <PartPic i={i} />}
               <span className="lname">{p.name}</span>
-              <span className="ltype num">{paint ? `${chs!.length > 1 ? 'PBR' : 'Base'}` : doc ? `${(p.sides?.length ?? p.soup.length / 9).toLocaleString()} poly` : `${mine.length} isl`}</span>
-            </li>,
-            ...(paint && isOpen ? ['material' as Shown, ...chs!, ...(texSet(i).bake ? ['ao', 'curv'] as Shown[] : [])] : []).map((ch) => (
-              <li key={`${i}${ch}`} className={`layer sub${i === activePart && ch === shown ? ' on' : ''}${ch === 'ao' || ch === 'curv' ? ' baked' : ''}`}
-                onClick={() => pickPaintChannel(i, ch)} title={`Show ${NAMES[ch]} in the texture view`}>
-                <span /><span /><span className="lname">{NAMES[ch]}</span><span />
-              </li>
-            )),
-          ];
+              <span className="ltype num">{paint ? '' : doc ? `${(p.sides?.length ?? p.soup.length / 9).toLocaleString()} poly` : `${mine.length} isl`}</span>
+            </li>
+          );
         })}
       </ul>
       {!paint && seams > 0 && <button className="wide" onClick={clearSeams}>Clear {seams} marked seam{seams > 1 ? 's' : ''} on {parts[activePart]?.name}</button>}
+    </>
+  );
+}
+
+/** Van Gogh's Channels view: the active part's texture set, PBR on or off, and each channel (and bake) to show in the
+ *  texture view. */
+export function Channels() {
+  const i = useApp((s) => s.activePart), part = useApp((s) => s.parts[s.activePart]), shown = useApp((s) => s.paintChannel);
+  useApp((s) => s.paintRev);
+  if (!part) return null;
+  const ts = texSet(i), pbr = ts.channels.length > 1;
+  return (
+    <>
+      <div className="partshead">
+        <span className="caps">Texture set</span>
+        <span className="hint">{part.name}</span>
+        <button className="pbr" aria-pressed={pbr} title={pbr ? 'Back to Base Color only' : 'Add Roughness, Metallic, Normal and Height (PBR metal/rough, what glTF, Unity and Unreal read)'}
+          onClick={() => setPbr(i, !pbr)}>{pbr ? 'PBR' : '+ PBR'}</button>
+      </div>
+      <ul className="layers channels" aria-label="Channels: click one to see it in the texture view">
+        {(['material', ...ts.channels, ...(ts.bake ? ['ao', 'curv'] : [])] as Shown[]).map((ch) => (
+          <li key={ch} className={`layer${ch === shown ? ' on' : ''}${ch === 'ao' || ch === 'curv' ? ' baked' : ''}`} onClick={() => pickPaintChannel(i, ch)} title={`Show ${NAMES[ch]} in the texture view`}>
+            <span className="lname">{NAMES[ch]}</span>
+          </li>
+        ))}
+      </ul>
     </>
   );
 }

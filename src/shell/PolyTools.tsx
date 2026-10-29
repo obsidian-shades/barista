@@ -10,7 +10,7 @@ import { ownPolygons } from '../polyedit';
 import { SelectionControls } from './Chrome';
 import { dot, dots, ico, Icon, ICON } from '../ui/Icon';
 import {
-  addLoopsSel, collapseShortestSel, connectSel, dissolveSel, gridFillSel, limitedDissolveSel, liveSel, loopCutSel, mergeIntoNeighbourSel, mergePolySel, openMenu, pointer,
+  addLoopsSel, cancelKnife, cleanVertsSel, collapseShortestSel, confirmKnife, connectSel, startKnife, dissolveSel, gridFillSel, limitedDissolveSel, liveSel, loopCutSel, mergeIntoNeighbourSel, mergePolySel, openMenu, pointer,
   relaxAroundSel, relaxPolySel, rotateEdgeSel, selectElems, selectLinked, selectPolygons, selectRule, selectionCount, setDocOpt, setSelectMode, shapeLoopSel, slideSel,
   setMoveOnSurface, setSlideBorders, startDocMove, subdivideSel, triangulateSel, trisToQuadsSel, useApp, type DocTool, type MenuItem,
 } from '../store';
@@ -104,12 +104,16 @@ export const POLY_TOOLS: Partial<Record<DocTool, ToolDef>>[] = [
       icon: ico('M3.5 4h13M10 7.5v5M7.8 10.5l2.2 2.2 2.2-2.2', [dots([[3.5, 4], [16.5, 4]], 1.4), 'F'], [dot(10, 16, 2), 'A']) },
     rotate: { name: 'Rotate Edge', tip: 'Turn the selected edge one step round the two polygons beside it', run: rotateEdgeSel, on: ([, e]) => !!e,
       icon: ico(['M2.5 6h11v11h-11z', 'f'], 'M2.5 6h11v11h-11z', ['M2.5 17l11-11', 'd'], ['M2.5 6l11 11', 'a'], 'M12 2.2a5.5 5.5 0 0 1 5.8 5.8M15.8 6.3l2 1.9 1.8-2') },
+    clean: { name: 'Clean Vertices', tip: 'Dissolve the vertices that shape nothing: dots inside a polygon and corners on a straight edge. Works on the selection, or the whole part with nothing selected', run: cleanVertsSel, on: () => true,
+      icon: ico(['M3 5h14v10H3z', 'f'], 'M3 5h14v10H3z', [dots([[10, 5], [8, 10]], 1.6), 'A'], ['M12.5 8.5l4 4M16.5 8.5l-4 4', 'a']) },
     grid: { name: 'Grid Fill', tip: 'Fill an n-gon (face mode) or a hole’s border (edge mode) with a quad grid. Needs an even number of corners, 6 or more', run: gridFillSel, on: ([f, e]) => !!(f || e),
       icon: ico(['M6 3h8l4 7-4 7H6l-4-7z', 'f'], ['M6 3v14M14 3v14M2 10h16M10 3v14', 'a'], 'M6 3h8l4 7-4 7H6l-4-7z') },
   },
   {
     move: { name: 'Move', key: 'G', tip: 'Drag the selected vertices with the mouse, kept on the surface (options bar); X / Y / Z lock an axis, click keeps, Esc cancels. Health updates as you go', run: () => startDocMove(), on: ([f, e, v]) => !!(f || e || v),
       icon: ico('M10 4v12M4 10h12', ['M10 1.5l2.6 3h-5.2zM10 18.5l2.6-3h-5.2zM1.5 10l3-2.6v5.2zM18.5 10l-3-2.6v5.2z', 'F'], [dot(10, 10, 1.8), 'A']) },
+    knife: { name: 'Knife', key: 'K', tip: 'Click points on the model to cut the polygons between them (snaps to corners and edges); Enter or Space cuts, Backspace takes a point back, Esc cancels', run: startKnife, on: () => true,
+      icon: ico(['M3 4h14v12H3z', 'f'], 'M3 4h14v12H3z', ['M3 13l14-6', 'a'], [dots([[3, 13], [10, 10], [17, 7]], 1.5), 'A']) },
     relax: { name: 'Even Out', tip: 'Spread the selected faces’ vertices out evenly without changing the shape: inside ones stay on the surface, border and crease ones slide along their line, corners stay. Rounds and Slide borders in the options bar', run: relaxPolySel, on: ([f]) => !!f,
       icon: ICON.relax },
     subdivide: { name: 'Subdivide', tip: 'Cut each selected polygon into quads at its edge midpoints and center', run: subdivideSel, on: ([f]) => !!f,
@@ -162,15 +166,15 @@ export function ToolStrip<T extends string>({ label, groups, pressed, mode, on, 
 }
 
 export function PolyToolStrip() {
-  const tool = useApp((s) => s.docTool), moving = useApp((s) => !!s.docMove), counts = useCounts();
-  return <ToolStrip label="Poly Doc tools" groups={POLY_TOOLS} pressed={(id) => (id === 'move' ? moving : tool === id)} mode={(id) => id === 'move'} on={(t) => t.on(counts)} pick={(id) => void runTool(id)} />;
+  const tool = useApp((s) => s.docTool), moving = useApp((s) => !!s.docMove), knifing = useApp((s) => !!s.docKnife), counts = useCounts();
+  return <ToolStrip label="Poly Doc tools" groups={POLY_TOOLS} pressed={(id) => (id === 'move' ? moving : id === 'knife' ? knifing : tool === id)} mode={(id) => id === 'move' || id === 'knife'} on={(t) => t.on(counts)} pick={(id) => void runTool(id)} />;
 }
 
 /** Photoshop's options bar: the current tool, then what it selects (the Mode group), then its settings and what it last
  *  did. Display and Shading are view settings: they live in the 3D view header. */
 export function PolyOptionsBar() {
   const tool = useApp((s) => s.docTool), opts = useApp((s) => s.docOpts), note = useApp((s) => s.fixNote), busy = useApp((s) => !!s.loading || !!s.busy);
-  const slideBorders = useApp((s) => s.slideBorders), onSurface = useApp((s) => s.moveOnSurface);
+  const slideBorders = useApp((s) => s.slideBorders), onSurface = useApp((s) => s.moveOnSurface), knife = useApp((s) => s.docKnife?.pts.length ?? -1);
   const t = tool && ALL[tool];
   const what = useApp((s) => { const c = selectionCount(s); return c ? `${c.n} ${c.label}` : ''; });
   const num = (label: string, key: keyof typeof opts, min: number, max: number, step: number, unit: string, title: string) => (
@@ -196,6 +200,11 @@ export function PolyOptionsBar() {
         <label title="Let the selection's border vertices slide along the border too (off: they stay put)"><input type="checkbox" checked={slideBorders} onChange={(e) => setSlideBorders(e.target.checked)} />Slide borders</label>
       </>}
       {tool === 'move' && <label title="Keep moved vertices on the model's surface, so the shape stays (off: they move freely in the view's plane)"><input type="checkbox" checked={onSurface} onChange={(e) => setMoveOnSurface(e.target.checked)} />On surface</label>}
+      {tool === 'knife' && knife >= 0 && <>
+        <span className="hint">{knife} point{knife === 1 ? '' : 's'}</span>
+        <button disabled={busy || knife < 2} title="Cut along the points (Enter)" onClick={() => void confirmKnife()}>Cut</button>
+        <button disabled={busy} title="Drop the cut (Esc)" onClick={cancelKnife}>Cancel</button>
+      </>}
       {note && <span className="hint note" role="status" title={note}>{note}</span>}
     </div>
   );

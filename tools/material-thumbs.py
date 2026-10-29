@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Make 256 px thumbnails and a contact sheet for public/materials.
+"""Make 256 px thumbnails and a contact sheet for public/assets/materials/core.
 
 Run after tools/fetch-materials.mjs:
 
@@ -18,7 +18,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
-LIB = ROOT / "public" / "materials"
+LIB = ROOT / "public" / "assets" / "materials" / "core"
 INDEX = LIB / "index.json"
 BG = (27, 28, 30)
 FG = (232, 232, 230)
@@ -217,7 +217,7 @@ def main() -> int:
 
     INDEX.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     total = sum(p.stat().st_size for p in LIB.rglob("*") if p.is_file())
-    print(f"{len(tiles)} thumbs, {total / 1e6:.1f} MB in public/materials")
+    print(f"{len(tiles)} thumbs, {total / 1e6:.1f} MB in public/assets/materials/core")
     return 0
 
 

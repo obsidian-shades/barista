@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { answerAsk, setAskOnOpen, TEXTURE_RESOLUTIONS, useApp, type OpenOpts, type Workspace } from '../store';
 
-const WORKSPACES: [Workspace, string][] = [['doc', 'Poly Doc'], ['uv', 'UV Magician'], ['paint', 'Van Gogh']];
+const WORKSPACES: [Workspace, string][] = [['doc', 'Poly Doc'], ['uv', 'UV Magician'], ['paint', 'Van Gogh'], ['rig', 'Geppetto']];
 
 const sizeLabel = (n: number) => (n >= 1024 ? `${n / 1024}K` : `${n}`);
 

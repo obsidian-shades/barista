@@ -4,7 +4,7 @@
     python tools/decals.py
 
 Everything here is generated from code: 2048 px masters, downsampled to 1024, transparent PNG. The
-manifest (`public/decals/index.json`) records the aspect, category and default ink so Van Gogh can
+manifest (`public/assets/decals/index.json`) records the aspect, category and default ink so Van Gogh can
 place a decal at the right size and tint. Originals, CC0.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "public" / "decals"
+OUT = ROOT / "public" / "assets" / "decals"
 S = 2048  # draw at 2x the published size, then downsample for crisp edges
 FONT = Path(__file__).resolve().parent / "fonts"
 WHITE = (255, 255, 255, 255)
