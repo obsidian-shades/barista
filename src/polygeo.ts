@@ -8,14 +8,17 @@ import { compact, outline, topoOfSoup, type Polys } from './polyedit.ts';
 import { edgeBetween, trisOf, type Topo } from './topo.ts';
 import { cross, dot, len, shapeBadness, sub } from './quality.ts';
 
-export interface Geo extends Polys { soup: Float32Array }
+/** `normals`: the file's own normals per soup corner, when it has them (the side the artist meant as out). */
+export interface Geo extends Polys { soup: Float32Array; normals?: Float32Array }
 /** A selection in soup terms: triangles, welded vertices, and edges as vertex pairs (only edges you can see). */
 export interface Sel { faces: number[]; verts: number[]; edges: [number, number][] }
 type V3 = [number, number, number];
 /** What a tool made: the geometry, and what to select in it after, by position (faces: soup triangles of the new soup). */
 /** `origin`: per new soup triangle, the old polygon it lies in (the tool moved nothing), so the part's UVs can be
  *  carried over (`carryUVs`) instead of unwrapping again. */
-export interface Done { geo: Geo; faces?: number[]; verts?: V3[]; edges?: [V3, V3][]; note?: string; origin?: number[] }
+/** `wound`: the tool turned faces on purpose (Recalculate Outside, Flip), so the carried output keeps the soup's
+ *  winding instead of the old output's. */
+export interface Done { geo: Geo; faces?: number[]; verts?: V3[]; edges?: [V3, V3][]; note?: string; origin?: number[]; normals?: Float32Array; wound?: boolean }
 
 /** A polygon's outline as welded vertex ids in winding order, or null if it isn't one simple loop. */
 export function loopOf(t: Topo, tris: number[]): number[] | null {
@@ -122,6 +125,33 @@ function moveVerts(M: Mesh, moved: Map<number, V3>): Geo {
     return p ? p[i % 3] : M.g.soup[i];
   });
   return { soup, poly: M.g.poly, sides: M.g.sides };
+}
+
+/** How far `b`'s surface lies from `a`'s: the mean distance from up to 256 of `b`'s corners (spread over it) to the
+ *  nearest point of `a`. A part edited in another app still lies almost on its old self, so this pairs a new file's
+ *  parts with the project's when their names changed. */
+export function surfaceGap(a: Float32Array, b: Float32Array) {
+  const near = onSurface(a), n = b.length / 3, step = Math.max(1, Math.floor(n / 256));
+  let sum = 0, k = 0;
+  for (let i = 0; i < n; i += step, k++) { const p: V3 = [b[i * 3], b[i * 3 + 1], b[i * 3 + 2]], q = near(p); sum += Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); }
+  return k ? sum / k : Infinity;
+}
+
+/** For each triangle of `b`, the triangle of `a` nearest its middle: per-triangle data (a rig's binding) carried from
+ *  a part onto a new version of its mesh. */
+export function nearestTriangles(a: Float32Array, b: Float32Array): Int32Array {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(a.slice(), 3));
+  // the BVH sorts its own index: a hit's triangle is its first corner's soup triangle, not faceIndex
+  const bvh = new MeshBVH(geo), idx = geo.index!.array, q = new THREE.Vector3(), hit = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
+  const out = new Int32Array(b.length / 9);
+  for (let t = 0; t < out.length; t++) {
+    const o = t * 9;
+    q.set((b[o] + b[o + 3] + b[o + 6]) / 3, (b[o + 1] + b[o + 4] + b[o + 7]) / 3, (b[o + 2] + b[o + 5] + b[o + 8]) / 3);
+    out[t] = bvh.closestPointToPoint(q, hit) ? Math.floor(idx[hit.faceIndex * 3] / 3) : 0;
+  }
+  geo.dispose();
+  return out;
 }
 
 /** The part's surface as it was, to put moved points back on. */
@@ -702,7 +732,7 @@ export function knifeOn(g: Geo) {
  *  triangle): it sits on that polygon's old triangle holding its centre, and each corner takes the UV of where it lies,
  *  read on that triangle's island (a corner on a seam takes its own side's UV). Wound as the old output wound it. Null if
  *  a new triangle came from no old polygon. */
-export function carryUVs(old: { positions: number[]; island: number[]; stretch: number[]; source: number[] }, uvs: ArrayLike<number>, soup: Float32Array, origin: number[], oldPoly: ArrayLike<number>) {
+export function carryUVs(old: { positions: number[]; island: number[]; stretch: number[]; source: number[] }, uvs: ArrayLike<number>, soup: Float32Array, origin: number[], oldPoly: ArrayLike<number>, asSoup = false) {
   const P = old.positions, inPoly = new Map<number, number[]>();
   old.source.forEach((f, t) => (inPoly.get(oldPoly[f]) ?? inPoly.set(oldPoly[f], []).get(oldPoly[f])!).push(t));
   const corner = (t: number, k: number): V3 => [P[t * 9 + k * 3], P[t * 9 + k * 3 + 1], P[t * 9 + k * 3 + 2]];
@@ -726,7 +756,8 @@ export function carryUVs(old: { positions: number[]; island: number[]; stretch: 
     if (!ts.length) return null;
     const C = [0, 1, 2].map((k) => [soup[f * 9 + k * 3], soup[f * 9 + k * 3 + 1], soup[f * 9 + k * 3 + 2]] as V3);
     const t0 = holding(ts, C.reduce((a, b) => add3(a, b), [0, 0, 0] as V3).map((x) => x / 3) as V3).t, mine = ts.filter((t) => old.island[t] === old.island[t0]);
-    const flip = dot(cross(sub(C[1], C[0]), sub(C[2], C[0])), cross(sub(corner(t0, 1), corner(t0, 0)), sub(corner(t0, 2), corner(t0, 0)))) < 0;
+    // wound as the old output (the engine's winding), unless the soup was turned on purpose
+    const flip = !asSoup && dot(cross(sub(C[1], C[0]), sub(C[2], C[0])), cross(sub(corner(t0, 1), corner(t0, 0)), sub(corner(t0, 2), corner(t0, 0)))) < 0;
     (flip ? [C[0], C[2], C[1]] : C).forEach((p, k) => {
       const { t, b } = holding(mine, p);
       out.positions.splice(f * 9 + k * 3, 3, ...p);
@@ -735,6 +766,128 @@ export function carryUVs(old: { positions: number[]; island: number[]; stretch: 
     out.stretch[f] = old.stretch[t0]; out.island[f] = old.island[t0];
   }
   return out;
+}
+
+/** Whether triangle `f`'s own normals (summed over its corners) point the way its winding faces; null when either is
+ *  zero (no area, or no normals). */
+function agrees(soup: ArrayLike<number>, normals: ArrayLike<number>, f: number) {
+  const o = f * 9, u = [soup[o + 3] - soup[o], soup[o + 4] - soup[o + 1], soup[o + 5] - soup[o + 2]], v = [soup[o + 6] - soup[o], soup[o + 7] - soup[o + 1], soup[o + 8] - soup[o + 2]];
+  const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  const d = [0, 1, 2].reduce((s, j) => s + n[j] * (normals[o + j] + normals[o + 3 + j] + normals[o + 6 + j]), 0);
+  return d === 0 ? null : d > 0;
+}
+
+/** The soup with triangles `fs` turned over (two corners swapped): the same points, the other side facing out. The
+ *  file's normals swap corners with them, and every face in `settle` whose normals then point against its winding
+ *  has them turned, so the normals always face the way the face does. Returns null when nothing changed. */
+function turned(g: Geo, fs: number[], settle: Iterable<number>): Done | null {
+  const soup = Float32Array.from(g.soup), normals = g.normals && Float32Array.from(g.normals);
+  const swap = (a: Float32Array, f: number) => { for (let j = 0; j < 3; j++) { const x = f * 9 + 3 + j, y = f * 9 + 6 + j; [a[x], a[y]] = [a[y], a[x]]; } };
+  for (const f of fs) { swap(soup, f); if (normals) swap(normals, f); }
+  let fixed = 0;
+  if (normals) for (const f of settle) if (agrees(soup, normals, f) === false) { fixed++; for (let i = f * 9; i < f * 9 + 9; i++) normals[i] = -normals[i]; }
+  if (!fs.length && !fixed) return null;
+  return { geo: { soup, poly: g.poly, sides: g.sides, normals }, faces: fs.length ? fs : undefined, origin: Array.from(g.poly), normals, wound: true };
+}
+
+/** Flip (Blender's Mesh › Normals › Flip): the selected faces turned over. */
+export function flipFaces(g: Geo, s: Sel): Done | null {
+  if (!s.faces.length) return null;
+  return { ...turned(g, s.faces, s.faces)!, note: `${new Set(s.faces.map((f) => g.poly[f])).size} polygons turned over.` };
+}
+
+/** Directions over the +Z hemisphere (a Fibonacci spiral), for rays out of a face. */
+const HEMI: V3[] = Array.from({ length: 16 }, (_, i) => { const z = 1 - (i + 0.5) / 16, r = Math.sqrt(1 - z * z), a = i * 2.39996; return [r * Math.cos(a), r * Math.sin(a), z]; });
+/** How many of 16 rays from point `c` over the hemisphere round unit `n` get out of the soup without hitting it. */
+function escapes(soup: Float32Array, R: number) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(soup.slice(), 3));
+  const bvh = new MeshBVH(geo), ray = new THREE.Ray();
+  return (c: V3, n: V3) => {
+    const a = cross(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]), l = len(a), u: V3 = [a[0] / l, a[1] / l, a[2] / l], v = cross(n, u);
+    let out = 0;
+    for (const [x, y, z] of HEMI) {
+      ray.origin.set(c[0] + n[0] * 1e-5 * R, c[1] + n[1] * 1e-5 * R, c[2] + n[2] * 1e-5 * R);
+      ray.direction.set(u[0] * x + v[0] * y + n[0] * z, u[1] * x + v[1] * y + n[1] * z, u[2] * x + v[2] * y + n[2] * z);
+      if (!bvh.raycastFirst(ray, THREE.DoubleSide)) out++;
+    }
+    return out;
+  };
+}
+
+/** Recalculate Outside (Blender's Shift+N): per connected piece of the selected faces (nothing selected: the part),
+ *  the winding made consistent across every manifold edge, then the piece turned to face out — a closed piece by its
+ *  signed volume; an open one by which side sees out of the part (rays from a sample of its faces over both sides'
+ *  hemispheres: the side whose rays escape more is outside — a barrel's outer wall, a bore's inner wall, a dish's
+ *  open side, where "away from its middle" gets the last two wrong); one that sees nothing either way by the file's
+ *  own normals, then its flux from its middle, then the side most of its faces already face. A closed shell inside
+ *  another is a cavity's wall (as `meshCheck` reads it): only made consistent, never turned. Moves nothing: each
+ *  turned triangle swaps two corners, and the file's normals end up facing the way their faces do. */
+export function recalcOutside(g: Geo, s: Sel): Done | null {
+  const t = topoOfSoup(g.soup), nf = g.poly.length, pick = s.faces.length ? new Set(s.faces) : null;
+  const P = (f: number, k: number): V3 => { const v = t.vid[f * 3 + k]; return [t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]]; };
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let v = 0; v < t.nv; v++) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], t.pos[v * 3 + k]); hi[k] = Math.max(hi[k], t.pos[v * 3 + k]); }
+  const R = 0.5 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
+  const dir = (f: number, a: number, b: number) => [0, 1, 2].some((k) => t.vid[f * 3 + k] === a && t.vid[f * 3 + (k + 1) % 3] === b);
+  const flip = new Int8Array(nf).fill(-1), pieces: { piece: number[]; closed: boolean; volume: number; flux: number; vote: number; sees: number; lo: V3; hi: V3 }[] = [];
+  let seen: ReturnType<typeof escapes> | null = null;
+  for (let f0 = 0; f0 < nf; f0++) {
+    if (flip[f0] >= 0 || (pick && !pick.has(f0))) continue;
+    const piece = [f0], inPiece = new Set([f0]);
+    flip[f0] = 0;
+    for (let i = 0; i < piece.length; i++) for (let k = 0; k < 3; k++) {
+      const f = piece[i], e = t.edge[f * 3 + k];
+      if (t.edgeTris[e].length !== 2) continue;
+      const h = t.edgeTris[e].find((x) => x !== f);
+      if (h === undefined || flip[h] >= 0 || (pick && !pick.has(h))) continue;
+      flip[h] = dir(h, t.vid[f * 3 + k], t.vid[f * 3 + (k + 1) % 3]) ? 1 - flip[f] : flip[f];
+      piece.push(h); inPiece.add(h);
+    }
+    const closed = piece.every((f) => [0, 1, 2].every((k) => { const es = t.edgeTris[t.edge[f * 3 + k]]; return es.length === 2 && inPiece.has(es[0]) && inPiece.has(es[1]); }));
+    // as the flood wound it: area-weighted middle, signed volume, flux out of the middle
+    const mid: V3 = [0, 0, 0], plo: V3 = [Infinity, Infinity, Infinity], phi: V3 = [-Infinity, -Infinity, -Infinity];
+    let area = 0, volume = 0, flux = 0, vote = 0;
+    const wound = piece.map((f) => { const [a, b, c] = [0, 1, 2].map((k) => P(f, k)); return flip[f] ? [a, c, b] : [a, b, c]; });
+    for (const [a, b, c] of wound) {
+      const w = len(cross(sub(b, a), sub(c, a)));
+      for (let j = 0; j < 3; j++) { mid[j] += (w * (a[j] + b[j] + c[j])) / 3; for (const p of [a, b, c]) { plo[j] = Math.min(plo[j], p[j]); phi[j] = Math.max(phi[j], p[j]); } }
+      area += w;
+      volume += dot(a, cross(b, c)) / 6;
+    }
+    if (area > 0) for (let j = 0; j < 3; j++) mid[j] /= area;
+    // the file's normals' say: + where they point the way the flood wound the face
+    if (g.normals) piece.forEach((f, i) => { const o = f * 9, w = wound[i], n = cross(sub(w[1], w[0]), sub(w[2], w[0])); vote += [0, 1, 2].reduce((s, j) => s + n[j] * (g.normals![o + j] + g.normals![o + 3 + j] + g.normals![o + 6 + j]), 0); });
+    for (const [a, b, c] of wound) flux += dot(cross(sub(b, a), sub(c, a)), sub([(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3], mid)) / 2;
+    const isClosed = closed && Math.abs(volume) > 1e-10 * R * R * R;
+    // open: rays from up to 24 of its faces (spread over the piece), area-weighted, + where the wound side sees out more
+    let sees = 0;
+    if (!isClosed) {
+      seen ??= escapes(g.soup, R);
+      const step = Math.max(1, Math.floor(piece.length / 24));
+      for (let i = 0; i < piece.length; i += step) {
+        const [a, b, c] = wound[i], m = cross(sub(b, a), sub(c, a)), w = len(m);
+        if (!w) continue;
+        const n: V3 = [m[0] / w, m[1] / w, m[2] / w], o: V3 = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3];
+        sees += w * (seen(o, n) - seen(o, [-n[0], -n[1], -n[2]]));
+      }
+    }
+    pieces.push({ piece, closed: isClosed, volume, flux, vote, sees, lo: plo, hi: phi });
+  }
+  const inside = (a: typeof pieces[number], b: typeof pieces[number]) =>
+    [0, 1, 2].every((k) => a.lo[k] >= b.lo[k] - 1e-9 * R && a.hi[k] <= b.hi[k] + 1e-9 * R) && [0, 1, 2].some((k) => a.lo[k] > b.lo[k] + 1e-9 * R || a.hi[k] < b.hi[k] - 1e-9 * R);
+  const turn: number[] = [];
+  for (const pc of pieces) {
+    const ones = pc.piece.filter((f) => flip[f]).length, majority = ones * 2 > pc.piece.length;
+    const cavity = pc.closed && pieces.some((o) => o !== pc && o.closed && inside(pc, o));
+    // invert: turn the whole piece as flooded (its seed's side is the wrong one)
+    const invert = cavity ? majority : pc.closed ? pc.volume < 0 : pc.sees ? pc.sees < 0 : pc.vote ? pc.vote < 0 : Math.abs(pc.flux) > 1e-6 * R * R * R ? pc.flux < 0 : majority;
+    for (const f of pc.piece) if ((flip[f] ? 1 : 0) !== (invert ? 1 : 0)) turn.push(f);
+  }
+  const r = turned(g, turn, pieces.flatMap((pc) => pc.piece));
+  if (!r) return null;
+  const polys = new Set(turn.map((f) => g.poly[f])).size, fixed = r.normals ? pieces.flatMap((pc) => pc.piece).filter((f) => !turn.includes(f) && agrees(g.soup, g.normals!, f) === false).length : 0;
+  return { ...r, note: `${polys} polygon${polys === 1 ? '' : 's'} turned to face outward${fixed ? `, ${fixed} faces' normals turned to match` : ''} (${pieces.length} piece${pieces.length === 1 ? '' : 's'} checked).` };
 }
 
 // ---- looking ----
@@ -792,6 +945,8 @@ export function meshCheck(g: Geo) {
       const [a, b, c] = [0, 1, 2].map((k) => { const v = t.vid[f * 3 + k]; return [t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]] as V3; });
       volume += dot(a, cross(flip[f] ? c : b, flip[f] ? b : c)) / 6;
     }
+    // the volume as most faces are wound: flooded from a stray face, the seed's side is the minority one
+    if (piece.filter((f) => flip[f]).length * 2 > piece.length) volume = -volume;
     if (closed && Math.abs(volume) > 1e-10 * R * R * R) {
       const lo: V3 = [Infinity, Infinity, Infinity], hi: V3 = [-Infinity, -Infinity, -Infinity];
       for (const f of piece) for (let k = 0; k < 3; k++) { const v = t.vid[f * 3 + k]; for (let j = 0; j < 3; j++) { lo[j] = Math.min(lo[j], t.pos[v * 3 + j]); hi[j] = Math.max(hi[j], t.pos[v * 3 + j]); } }
@@ -811,6 +966,9 @@ export function meshCheck(g: Geo) {
     const ones = sh.piece.filter((f) => flip[f]);
     flipped.push(...(ones.length * 2 > sh.piece.length ? sh.piece.filter((f) => !flip[f]) : ones));
   }
+  // a face wound against the file's own normals faces in where the artist meant out (an open panel wound backwards
+  // reads as consistent above: only its normals tell)
+  if (g.normals) { const had = new Set([...flipped, ...insideOut.flat()]); for (let f = 0; f < nf; f++) if (!had.has(f) && !isZero.has(f) && agrees(g.soup, g.normals, f) === false) flipped.push(f); }
   // non-manifold vertices: more than one fan of faces meets at the point (a bow-tie), so the link is not one circle.
   // The edge check above catches edges with 3+ faces; this catches two surfaces touching at a single vertex. A vertex
   // on a non-manifold edge is already reported by that edge (and its fans are split by it), so it isn't repeated here.

@@ -84,7 +84,7 @@ export interface OpenProject { path?: string; recover?: boolean }
 export interface SavedProject { path: string | null; rev: number; stale: boolean; written: number }
 /** Full-resolution texture export (engine/src/texture): a Pack in; the folder and files out, null when cancelled. */
 export const textureApi = {
-  export: (pack: Blob): Promise<{ dir: string; files: string[] } | null> => isTauri() ? tauriRaw('texture_export', pack)
+  export: (pack: Blob): Promise<{ dir: string; files: string[]; warning?: string } | null> => isTauri() ? tauriRaw('texture_export', pack)
     : post('texture-export', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: pack }).then((r) => r.json()),
   /** What the running export is on ('' when idle). */
   status: (): Promise<string> => isTauri() ? tauriCall('texture_status', {}) : post('texture-status').then((r) => r.text()),

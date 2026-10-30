@@ -1,5 +1,5 @@
-// The decal shelf: transparent marks shipped with the app (public/assets/decals) plus PNGs imported this
-// session. A decal is an image and its aspect; Van Gogh projects it onto the model in the layer stack,
+// The decal shelf: the Stickers tab's transparent marks shipped with the app (public/assets/decals, drawn by
+// tools/stickers.mjs) plus PNGs imported this session, and the Geometry tab's reliefs. A decal is an image and its aspect; Van Gogh projects it onto the model in the layer stack,
 // so it paints and exports like any other layer.
 import { decodeImage, type MapPixels } from './materials';
 import { isLine, shapeHeight, slopeStep, type ReliefPixels, type Shape } from './paint';
@@ -13,8 +13,10 @@ export interface DecalAsset {
   file: string;
   width: number;
   height: number;
-  /** The ink the mark was drawn in; placing it starts with this colour. */
+  /** The ink placing it starts with (white: a coloured sign keeps its own palette); absent, the brush colour. */
   tint?: string;
+  /** Placed engraved this deep (`Decal.engrave`): roll marks, proof and part stamps. */
+  engrave?: number;
   license: string;
   source: string;
   /** A grip texture: no image, a relief drawn from these settings (sizes as shares of the model, made world units when placed). */

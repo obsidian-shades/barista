@@ -6,7 +6,8 @@ import { meshCheck, meshTopology, poles } from '../polygeo';
 import { ownPolygons } from '../polyedit';
 import { health, healthSummary, healthVerdict, ruleCounts, RULES, type RuleKind } from '../health';
 import { Panel, Parts } from './Dock';
-import { selectFound, selectPolygons, selectRed, selectRule, setDocView, setShowPoles, useApp } from '../store';
+import { partGeo, selectFound, selectPolygons, selectRed, selectRule, setDocView, setShowPoles, useApp } from '../store';
+import { runTool } from '../shell/PolyTools';
 
 /** A count you can click to select what it counts; accented when there's something to look at. */
 const Count = ({ label, n, title, warn, run }: { label: string; n: number; title: string; warn?: boolean; run: () => void }) => (
@@ -18,7 +19,7 @@ const Count = ({ label, n, title, warn, run }: { label: string; n: number; title
 /** The active part as the tools see it: its soup and polygons (one per triangle when the file had none). */
 function useGeo() {
   const part = useApp((s) => s.parts[s.activePart]);
-  return useMemo(() => part && { soup: part.soup, ...(part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9)) }, [part]);
+  return useMemo(() => part && partGeo(part), [part]);
 }
 
 const KIND_LABEL: Record<RuleKind, string> = { broken: 'Broken', bake: 'Bake', craft: 'Craft' };
@@ -83,11 +84,14 @@ function MeshCheck() {
         <Count label="Non-manifold edges" n={m.nonManifold.length} warn run={() => selectFound('nonManifold')} title="Edges with more than two faces on them: bakes and unwraps can't handle these. Select them" />
         <Count label="Non-manifold verts" n={m.nonManifoldVert.length} warn run={() => selectFound('nonManifoldVert')} title="Points where two fans of faces meet only at the vertex (a bow-tie): unwrappers split them apart into a pinhole. Select them" />
         <Count label="Flipped faces" n={m.flipped.length} warn run={() => selectFound('flipped')} title="Faces wound the other way from their neighbours (normals pointing in). Select them" />
-        <Count label="Inside-out shells" n={m.insideOut.length} warn run={() => selectFound('insideOut')} title="Whole closed pieces wound inward (negative volume), unless nested inside another shell (a cavity): they vanish with backface culling and bake inverted. Select their faces and recalculate normals in your DCC" />
+        <Count label="Inside-out shells" n={m.insideOut.length} warn run={() => selectFound('insideOut')} title="Whole closed pieces wound inward (negative volume), unless nested inside another shell (a cavity): they vanish with backface culling and bake inverted. Recalculate Outside turns them" />
         <Count label="Zero-area faces" n={m.zero.length} warn run={() => selectFound('zero')} title="Faces with no area (corners on top of each other or in a line). The unwrap drops them; Merge their corners to clean up" />
         <Count label="Duplicate faces" n={m.duplicate.length} warn run={() => selectFound('duplicate')} title="Faces lying twice on the same corners. Select them" />
         <Count label="Open edges" n={m.open.length} run={() => selectFound('open')} title="Edges with one face: the borders of holes and open shells (fine on purpose, a bug if not). Select them; Grid Fill closes a hole" />
       </div>
+      {(m.flipped.length > 0 || m.insideOut.length > 0) && <div className="pbtns">
+        <button onClick={() => runTool('outside')} title="Wind every face alike and turn each piece to face outward (Shift+N). With faces selected, only those">Recalculate outside</button>
+      </div>}
     </>
   );
 }

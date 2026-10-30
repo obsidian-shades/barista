@@ -23,5 +23,9 @@ export default defineConfig({
   }],
   build: { copyPublicDir: false },
   define: { __VERSION__: JSON.stringify(pkg.version) },
-  server: { proxy: { '/api': 'http://127.0.0.1:3000' } },
+  server: {
+    proxy: { '/api': 'http://127.0.0.1:3000' },
+    // the engine keeps its build and running .exe in engine/target; watching it only made EBUSY reload churn
+    watch: { ignored: ['**/target/**', '**/dist/**'] },
+  },
 });

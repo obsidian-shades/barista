@@ -2,8 +2,8 @@ import * as M from '@radix-ui/react-menubar';
 import type { ReactNode } from 'react';
 import {
   clearRecent, clearSeams, clearSelection, cutSelection, deselectPaint, displayChoices, fillPaintSelection, flipSel, growPaintSelection, pickRefImage, setRefImage, invertPaintSelection, invertSelection,
-  loadShape, openExport, openProject, openRecent, saveProject, selectAllPaint, setAskOnOpen, setDisplay, setTriangulate, pinSelected, unwrapSelected, pickFile, redo, repack, rotateSel, selectAll, selectEdgeLoop, selectLinked,
-  stitchSelection, undo, undoPaint, redoPaint, unwrap, useApp, viewOp, pointer,
+  loadShape, openExport, openProject, openRecent, saveProject, selectAllPaint, setAskOnOpen, setDisplay, setTriangulate, pinSelected, unwrapSelected, pickFile, pickReplaceModel, redo, repack, rotateSel, selectAll, selectEdgeLoop, selectLinked,
+  stitchSelection, undo, undoPaint, redoPaint, undoRig, redoRig, unwrap, useApp, viewOp, pointer,
 } from '../store';
 import { EXPORT_TARGETS, targetTitle } from '../exporting';
 import { Icon, Mark } from '../ui/Icon';
@@ -37,6 +37,7 @@ export function MenuBar() {
   const choices = displayChoices();
   const doc = workspace === 'doc', paint = workspace === 'paint';
   const canUndo = useApp((s) => s.past.length > 0 || s.partsPast.length > 0), canRedo = useApp((s) => s.future.length > 0 || s.partsFuture.length > 0);
+  const rigUndo = useApp((s) => s.rigPast.length > 0), rigRedo = useApp((s) => s.rigFuture.length > 0);
   return (
     <nav className="menubar">
       <Mark size={19} />
@@ -45,6 +46,7 @@ export function MenuBar() {
         <Menu label="File">
           <Item onSelect={() => void openProject()}>Open project…</Item>
           <Item onSelect={() => void pickFile()} kbd="Ctrl+O">Open model…</Item>
+          <Item onSelect={pickReplaceModel}>Replace model… (keep the paint)</Item>
           <M.Sub>
             <M.SubTrigger className="mi subtrigger">Open Recent<span className="subarrow" aria-hidden="true"><Icon name="chevron" size={12} /></span></M.SubTrigger>
             <M.Portal>
@@ -99,6 +101,11 @@ export function MenuBar() {
               <Sep />
               <Item onSelect={() => fillPaintSelection()} disabled={!has} kbd="Alt+Backspace">Fill selection</Item>
               <Item onSelect={() => fillPaintSelection(true)} disabled={!has} kbd="Delete">Clear selection</Item>
+            </>
+          ) : workspace === 'rig' ? (
+            <>
+              <Item onSelect={undoRig} disabled={!rigUndo} kbd="Ctrl+Z">Undo bone or pose</Item>
+              <Item onSelect={redoRig} disabled={!rigRedo} kbd="Ctrl+Shift+Z">Redo bone or pose</Item>
             </>
           ) : (
             <>

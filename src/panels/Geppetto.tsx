@@ -4,10 +4,10 @@
 // the precise values, limits, and constraints (Follow / Aim / Stretch / Piston); G / R adds an axis gizmo when wanted.
 // The FBX export carries the skeleton and the binding to Blender and engines.
 import { Fragment, useState, type ReactNode } from 'react';
-import { boneLength, isAncestor, isDescendant, moveRange, type Bone, type ConstraintKind, type Range, type V3 } from '../rig';
+import { boneLength, isAncestor, isDescendant, motionOf, moveRange, type Bone, type ConstraintKind, type Range, type V3 } from '../rig';
 import type { Motion } from '../autorig';
 import {
-  addConstraint, autoRigModel, bindNearest, bindPart, bonesForParts, boundCounts, deleteBone, endChain, flipBone, partBone, removeConstraint, resetPose, selectBone,
+  addConstraint, autoRigModel, bindNearest, bindPart, bonesForParts, boundCounts, deleteBone, endChain, flipBone, partBone, partsMenu, rangeToPose, rigMenu, rigStep, removeConstraint, resetPose, selectBone,
   setBoneMotion, setPose, setRigMode, setRigTool, toggleRigGizmo, updateBone, updateConstraint, useApp, type RigTool,
 } from '../store';
 import { boneColor } from '../views/RigView';
@@ -65,18 +65,6 @@ export function RigOptionsBar() {
   );
 }
 
-const rangeLocked = (r: Range) => r[0] === r[1];
-const motionOf = (b: Bone): Motion | 'custom' => {
-  const m = moveRange(b), freeRot = (r: Bone['limit']) => (r ? (['x', 'y', 'z'] as const).filter((k) => !rangeLocked(r[k])).length : 3);
-  if (!b.limit && !m) return 'free';
-  if (b.limit && freeRot(b.limit) === 1 && m && freeRot(m) === 0) return 'hinge';
-  if (b.limit && freeRot(b.limit) === 0 && m) {
-    if (freeRot(m) === 0) return 'fixed';
-    if (rangeLocked(m.x) && rangeLocked(m.z) && !rangeLocked(m.y)) return m.y[0] === 0 || m.y[1] === 0 ? 'press' : 'slide';
-  }
-  return 'custom';
-};
-
 /** The bones as a tree: depth by indent, each row in its bone's colour with how many triangles it moves. */
 function BoneTree() {
   const rig = useApp((s) => s.rig), sel = useApp((s) => s.rigSel);
@@ -91,6 +79,7 @@ function BoneTree() {
         const b = rig.bones[i], motion = motionOf(b);
         return (
           <button key={i} role="option" aria-selected={i === sel} className={`rule${i === sel ? ' on' : ''}`} style={{ paddingLeft: 8 + depth * 14 }} onClick={() => selectBone(i)}
+            onContextMenu={(e) => { e.preventDefault(); selectBone(i); rigMenu(e.clientX, e.clientY); }}
             title={`${counts[i] ? `${counts[i].toLocaleString()} triangles follow ${b.name}` : 'Nothing is bound to this bone yet'}${motion === 'custom' ? '' : ` · ${motion}`}${b.constraints?.length ? ` · ${b.constraints.length} constraint${b.constraints.length > 1 ? 's' : ''}` : ''}`}>
             <span className="swatch" style={{ background: `#${boneColor(i).getHexString()}`, width: 10, height: 10, borderRadius: 2, flex: 'none' }} />
             <span className="rname">{b.name}</span>
@@ -126,9 +115,9 @@ const CONSTRAINTS: { kind: ConstraintKind; label: string; tip: string }[] = [
 ];
 const MOTIONS: { kind: Motion; label: string; tip: string }[] = [
   { kind: 'free', label: 'Free', tip: 'No limits: it turns and moves freely' },
-  { kind: 'hinge', label: 'Hinge', tip: 'Turns about its own X, ±90°; it does not translate' },
-  { kind: 'slide', label: 'Slide', tip: 'Locked rotation, translation along its own length (a magazine, a rail)' },
-  { kind: 'press', label: 'Press', tip: 'Locked rotation, a short press inward (a button)' },
+  { kind: 'hinge', label: 'Hinge', tip: 'Turns about its own X, ±90°; it does not translate. Lays the bone on its part so it swings across the part’s thin side, pivot at the contact' },
+  { kind: 'slide', label: 'Slide', tip: 'Locked rotation, translation along its part’s length (a magazine, a rail); the bone is laid along the part' },
+  { kind: 'press', label: 'Press', tip: 'Locked rotation, a short press inward (a button); the bone is laid across the part' },
   { kind: 'fixed', label: 'Fixed', tip: 'Locked rotation and translation: it rides its parent rigidly' },
 ];
 
@@ -233,14 +222,17 @@ function BoneSettings() {
 
       {mode === 'pose' && (
         <>
-          <div className="tsec"><span className="caps">Pose</span><button onClick={() => resetPose(false)} title="This bone back to its rest pose">Reset</button></div>
+          <div className="tsec"><span className="caps">Pose</span><span className="pbtns">
+            <button disabled={!pose || (!lim && !mr)} onClick={() => rangeToPose(i)} title="Make where it is now the end of its travel: each axis it is turned or moved on gets rest … here as its range. Pull the slide back, the trigger in, the magazine out, then click">Range to here</button>
+            <button onClick={() => resetPose(false)} title="This bone back to its rest pose">Reset</button>
+          </span></div>
           {(drivenRot || aimed || drivenLoc) && <p className="hint">Driven by a constraint: {drivenRot || drivenLoc ? 'pose its target' : 'only the twist about its own Y is free'}.</p>}
           {!drivenRot && AXES.map((k, a) => {
             if (aimed && k !== 'y') return null;
             const r = lim ? lim[k] : [-180, 180];
             if (r[0] === r[1]) return null;
             return <Fragment key={`rot-${k}`}>{row(k.toUpperCase(), <>
-              <input type="range" min={Math.min(...r)} max={Math.max(...r)} step={1} value={rot[a]} onChange={(e) => { const v = [...rot] as typeof rot; v[a] = +e.target.value; setPose(i, { rot: v, slide, loc }); }} />
+              <input type="range" min={Math.min(...r)} max={Math.max(...r)} step={1} value={rot[a]} onPointerDown={rigStep} onChange={(e) => { const v = [...rot] as typeof rot; v[a] = +e.target.value; setPose(i, { rot: v, slide, loc }); }} />
               <output>{Math.round(rot[a])}°</output>
             </>)}</Fragment>;
           })}
@@ -248,7 +240,7 @@ function BoneSettings() {
             const r = mr ? mr[k] : [-Math.max(boneLength(b), 1e-3), Math.max(boneLength(b), 1e-3)];
             if (r[0] === r[1]) return null;
             return <Fragment key={`loc-${k}`}>{row(`Move ${k.toUpperCase()}`, <>
-              <input type="range" min={Math.min(...r)} max={Math.max(...r)} step={(Math.abs(r[1] - r[0]) || 1) / 200} value={loc[a]}
+              <input type="range" min={Math.min(...r)} max={Math.max(...r)} step={(Math.abs(r[1] - r[0]) || 1) / 200} value={loc[a]} onPointerDown={rigStep}
                 onChange={(e) => { const v = [...loc] as typeof loc; v[a] = +e.target.value; setPose(i, { rot, slide, loc: v }); }} />
               <output>{+loc[a].toPrecision(3)}</output>
             </>)}</Fragment>;
@@ -274,7 +266,7 @@ function RigParts() {
       {parts.map((p, i) => {
         const b = partBone(rig, i);
         return (
-          <label key={i} title={b === -2 ? 'Its pieces follow different bones (Skin part); picking one binds the whole part' : `The bone ${p.name} moves with`}>
+          <label key={i} onContextMenu={(e) => { e.preventDefault(); partsMenu(e.clientX, e.clientY, i); }} title={b === -2 ? 'Its pieces follow different bones (Skin part); picking one binds the whole part' : `The bone ${p.name} moves with`}>
             <span role="button" style={{ cursor: 'pointer', color: i === active ? 'var(--fg)' : undefined }} onClick={(e) => { e.preventDefault(); useApp.setState({ activePart: i, rigSel: b >= 0 ? b : -1, rigEnd: 'body' }); }}>
               {b >= 0 && <span style={{ background: `#${boneColor(b).getHexString()}`, width: 8, height: 8, borderRadius: 2, flex: 'none' }} />}{p.name}
             </span>

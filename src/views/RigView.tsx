@@ -285,7 +285,7 @@ export function RigBones() {
       d.lastX = e.clientX; d.lastY = e.clientY;
       if (d.part !== 'tail') {
         const delta = view3d.worldDelta?.(dx, dy, d.pivot.toArray() as [number, number, number]) ?? [0, 0, 0];
-        if (d.pose) translatePose(d.i, delta);
+        if (d.pose) translatePose(d.i, delta, !d.moved);
         else if (d.part === 'body') translateBone(d.i, delta, !d.moved);
         else {
           const bone = useApp.getState().rig.bones[d.i];
@@ -303,7 +303,7 @@ export function RigBones() {
         if (d.pose) {
           const rot = [...d.startPose.rot] as V3;
           rot[d.hinge] = d.startPose.rot[d.hinge] + (da * 180) / Math.PI;
-          setPose(d.i, { rot, slide: d.startPose.slide, loc: d.startPose.loc });
+          setPose(d.i, { rot, slide: d.startPose.slide, loc: d.startPose.loc }, !d.moved);
         } else {
           const tail = d.head.clone().add(d.startTail.clone().sub(d.head).applyAxisAngle(d.axis, da));
           moveJoint(d.i, 'tail', [tail.x, tail.y, tail.z], !d.moved);
@@ -311,7 +311,7 @@ export function RigBones() {
       } else if (d.pose) {
         const n = camera.getWorldDirection(new THREE.Vector3());
         const p = pointerOnPlane(e.clientX, e.clientY, camera, gl.domElement, d.head, n);
-        if (p) aimPoseAt(d.i, [p.x, p.y, p.z]);
+        if (p) aimPoseAt(d.i, [p.x, p.y, p.z], !d.moved);
       } else {
         const n = camera.getWorldDirection(new THREE.Vector3());
         const p = pointerOnPlane(e.clientX, e.clientY, camera, gl.domElement, d.startTail, n);
@@ -438,7 +438,7 @@ export function RigBones() {
           onMouseDown={() => { dragged.current = false; last.current.copy(handle.position); }}
           onObjectChange={() => {
             handle.updateMatrix();
-            if (posing) poseTo(sel, handle.matrix);
+            if (posing) poseTo(sel, handle.matrix, !dragged.current);
             else if (gizmo === 'rotate') rotateBone(sel, handle.matrix, !dragged.current);
             else if (moveEnd === 'body') {
               const d = handle.position.clone().sub(last.current);

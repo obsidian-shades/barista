@@ -10,7 +10,7 @@ import { ownPolygons } from '../polyedit';
 import { SelectionControls } from './Chrome';
 import { dot, dots, ico, Icon, ICON } from '../ui/Icon';
 import {
-  addLoopsSel, cancelKnife, cleanVertsSel, collapseShortestSel, confirmKnife, connectSel, startKnife, dissolveSel, gridFillSel, limitedDissolveSel, liveSel, loopCutSel, mergeIntoNeighbourSel, mergePolySel, openMenu, pointer,
+  addLoopsSel, cancelKnife, cleanVertsSel, flipFacesSel, partGeo, recalcOutsideSel, collapseShortestSel, confirmKnife, connectSel, startKnife, dissolveSel, gridFillSel, limitedDissolveSel, liveSel, loopCutSel, mergeIntoNeighbourSel, mergePolySel, openMenu, pointer,
   relaxAroundSel, relaxPolySel, rotateEdgeSel, selectElems, selectLinked, selectPolygons, selectRule, selectionCount, setDocOpt, setSelectMode, shapeLoopSel, slideSel,
   setMoveOnSurface, setSlideBorders, startDocMove, subdivideSel, triangulateSel, trisToQuadsSel, useApp, type DocTool, type MenuItem,
 } from '../store';
@@ -38,6 +38,8 @@ const CURES: Partial<Record<RuleId, [string, () => unknown][]>> = {
   quadJacobian: [['Triangulate', triangulateSel], ['Relax Around', relaxAroundSel]],
   faceted: [['Add Loops on Curve', addLoopsSel], ['Relax Around', relaxAroundSel]],
   outline: [['Triangulate', triangulateSel]],
+  flipped: [['Recalculate Outside', recalcOutsideSel], ['Flip', flipFacesSel]],
+  insideOut: [['Recalculate Outside', recalcOutsideSel]],
 };
 
 /** Poly Doc's right-click menu: what's wrong with the face under the mouse (Health's rules, with why and the limit),
@@ -53,7 +55,7 @@ export function polyContextMenu() {
   }
   const c = liveSel(s), partIx = c?.part ?? s.activePart, part = s.parts[partIx], out = s.result?.parts[partIx];
   if (!part || !out) return;
-  const g = { soup: part.soup, ...(part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9)) };
+  const g = partGeo(part);
   const tri = hovering && pointer.part === partIx ? pointer.tri : c && c.faces.size ? [...c.faces][0] : -1;
   const p = tri >= 0 ? g.poly[out.source[tri]] : -1, sides = p >= 0 ? g.sides[p] : 0;
   const issues = p >= 0 ? [...(healthReport(g).issues.get(p) ?? [])].sort((a, b) => b.score - a.score).filter((i, k, all) => all.findIndex((j) => j.rule === i.rule) === k) : [];
@@ -106,6 +108,10 @@ export const POLY_TOOLS: Partial<Record<DocTool, ToolDef>>[] = [
       icon: ico(['M2.5 6h11v11h-11z', 'f'], 'M2.5 6h11v11h-11z', ['M2.5 17l11-11', 'd'], ['M2.5 6l11 11', 'a'], 'M12 2.2a5.5 5.5 0 0 1 5.8 5.8M15.8 6.3l2 1.9 1.8-2') },
     clean: { name: 'Clean Vertices', tip: 'Dissolve the vertices that shape nothing: dots inside a polygon and corners on a straight edge. Works on the selection, or the whole part with nothing selected', run: cleanVertsSel, on: () => true,
       icon: ico(['M3 5h14v10H3z', 'f'], 'M3 5h14v10H3z', [dots([[10, 5], [8, 10]], 1.6), 'A'], ['M12.5 8.5l4 4M16.5 8.5l-4 4', 'a']) },
+    outside: { name: 'Recalculate Outside', key: 'Shift+N', tip: 'Wind every face alike and turn each piece to face outward (closed pieces by their volume, a cavity’s wall stays facing in). Works on the selection, or the whole part with nothing selected', run: recalcOutsideSel, on: () => true,
+      icon: ico(['M6 6h8v8H6z', 'f'], 'M6 6h8v8H6z', ['M10 6V1.5M8.2 3.3L10 1.5l1.8 1.8M14 10h4.5M16.7 8.2l1.8 1.8-1.8 1.8M10 14v4.5M8.2 16.7l1.8 1.8 1.8-1.8M6 10H1.5M3.3 8.2L1.5 10l1.8 1.8', 'a']) },
+    flip: { name: 'Flip', key: 'Alt+N', tip: 'Turn the selected faces over, so they face the other way', run: flipFacesSel, on: ([f]) => !!f,
+      icon: ico(['M3 15L10 4l7 11z', 'f'], 'M3 15L10 4l7 11z', ['M6.5 18.5a5 5 0 0 0 7 0M13.5 18.5l-.3-2.4M13.5 18.5l-2.3.4', 'a']) },
     grid: { name: 'Grid Fill', tip: 'Fill an n-gon (face mode) or a hole’s border (edge mode) with a quad grid. Needs an even number of corners, 6 or more', run: gridFillSel, on: ([f, e]) => !!(f || e),
       icon: ico(['M6 3h8l4 7-4 7H6l-4-7z', 'f'], ['M6 3v14M14 3v14M2 10h16M10 3v14', 'a'], 'M6 3h8l4 7-4 7H6l-4-7z') },
   },

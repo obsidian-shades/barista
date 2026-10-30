@@ -20,7 +20,7 @@ import { poles } from '../polygeo';
 import { matcapTexture, studioShader, studioUniforms, THEME_BG } from '../shading';
 import { outNormals, ownPolygons, topoOfSoup } from '../polyedit';
 import { RefImage } from './RefImage';
-import { activeDecal, assignMaterial, dragDecal, dropDecal, beginPaintEdit, finishDecalEdit, mirrorHover, modelDiagonal, moveSymPlane, paintHoverAt, shelfDrag, updateDecal, brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, deselectDecal, texSet, type PaintMods, clearSelection, contextMenu, kindOf, knifeClick, knifeHover, liveSel, openRecent, pickFile, pointer, sceneGrade, selectElems, selectLoop, setSceneHdri, endChain, selectBone, rigMenu, cancelRigPick, useApp, view3d, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
+import { activeDecal, partGeo, partMenu, resetPartOffsets, setPartOffset, toggleMoveParts, viewOffset, assignMaterial, dragDecal, dropDecal, beginPaintEdit, finishDecalEdit, mirrorHover, modelDiagonal, moveSymPlane, paintHoverAt, shelfDrag, updateDecal, brushRadius, paintDrag, paintEnd, paintPress, painting, selectPaintOnModel, deselectPaint, deselectDecal, texSet, type PaintMods, clearSelection, contextMenu, kindOf, knifeClick, knifeHover, liveSel, openRecent, pickFile, pointer, sceneGrade, selectElems, selectLoop, setSceneHdri, endChain, selectBone, rigMenu, cancelRigPick, useApp, view3d, type Mode, type Part, type Scene, type SelOp, type ViewOp } from '../store';
 import { setPaintRenderer } from '../gpupaint';
 import { topoOf, polygonsOf, trisOf } from '../topo';
 import { polyContextMenu } from '../shell/PolyTools';
@@ -251,6 +251,7 @@ export function Viewport3D() {
             </>
           )}
           <SceneSettings />
+          {(doc || uvWs) && <MoveParts />}
           {uvWs && (
             <label className="slider" title="Roll the model out into its UV layout (double-click to put it back)">
               Unfold
@@ -261,7 +262,7 @@ export function Viewport3D() {
         </div>
       </header>
       <div className="vbody" onPointerMove={track} onPointerDown={(e) => { track(e); if (paintWs) lightDrag(e); }}
-        onContextMenu={(e) => { e.preventDefault(); if (paintWs) return; if (rigWs) { const s = useApp.getState(); if (s.rigPick) { cancelRigPick(); return; } if (s.rigChain) { endChain(); return; } rigMenu(e.clientX, e.clientY); return; } if (doc) polyContextMenu(); else contextMenu(); }}>
+        onContextMenu={(e) => { e.preventDefault(); if (paintWs) { if (!e.shiftKey) partMenu(e.clientX, e.clientY); return; } if (rigWs) { const s = useApp.getState(); if (s.rigPick) { cancelRigPick(); return; } if (s.rigChain) { endChain(); return; } rigMenu(e.clientX, e.clientY); return; } if (doc) polyContextMenu(); else contextMenu(); }}>
         {/* drawn only when something changed (orbit, a store update), not 60 times a second: an idle view costs no GPU */}
         <ViewBoundary>
         <div className="r3f">
@@ -323,6 +324,18 @@ export function Viewport3D() {
         {box && <div className="boxsel" style={{ left: Math.min(box.x0, box.x1), top: Math.min(box.y0, box.y1), width: Math.abs(box.x1 - box.x0), height: Math.abs(box.y1 - box.y0) }} />}
       </div>
     </section>
+  );
+}
+
+/** Move parts (3D header, Poly Doc and UV Magician): while on, dragging a part slides it across the view to see
+ *  between parts; Reset puts every part back. The mesh never moves. */
+function MoveParts() {
+  const on = useApp((s) => s.moveParts), moved = useApp((s) => Object.keys(s.partOffset).length > 0);
+  return (
+    <span className="seg" role="group" aria-label="Move parts">
+      <button aria-pressed={on} onClick={toggleMoveParts} title="Drag parts apart to see between them (the view only: the mesh never moves). Click again to select as usual">Move parts</button>
+      <button disabled={!moved} onClick={resetPartOffsets} title="Every part back where it is in the model">Reset</button>
+    </span>
   );
 }
 
@@ -599,7 +612,7 @@ function Navigation({ setBox, setLasso }: { setBox: (b: Box | null) => void; set
       const s = useApp.getState();
       if (s.workspace === 'paint') return paintShape(e);
       if (s.workspace === 'rig') return; // no face selection in Geppetto: a drag only orbits or moves the gizmo
-      if (e.button !== 0 || e.altKey || s.unfold > 0 || !s.result || s.docKnife) return;
+      if (e.button !== 0 || e.altKey || s.unfold > 0 || !s.result || s.docKnife || s.moveParts) return;
       if (s.boxArmed) useApp.setState({ boxArmed: false });
       const r = el.getBoundingClientRect(), x0 = e.clientX - r.left, y0 = e.clientY - r.top;
       let b: Box | null = null;
@@ -756,8 +769,19 @@ function framePoints(selected: boolean): number[] {
     for (const v of c.verts) out.push(t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]);
     return out;
   }
-  return s.result ? s.result.parts.flatMap((p, i) => (s.parts[i]?.visible ? p.positions : [])) : [];
+  return s.result ? s.result.parts.flatMap((p, i) => {
+    if (!s.parts[i]?.visible) return [];
+    const o = viewOffset(s, i);
+    return o ? Array.from(p.positions, (x, k) => x + o[k % 3]) : p.positions;
+  }) : [];
 }
+
+/** Face orientation (Blender's overlay): blue over a face seen from its front, red from its back, over the shading. */
+const FACE_SIDES = new THREE.ShaderMaterial({
+  side: THREE.DoubleSide, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+  vertexShader: 'void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: 'void main() { gl_FragColor = gl_FrontFacing ? vec4(0.16, 0.36, 1.0, 0.55) : vec4(1.0, 0.12, 0.12, 0.65); }',
+});
 
 /** Layer the part meshes are also on, so the depth pass draws just them. */
 const SOLID = 1;
@@ -803,13 +827,13 @@ function boxSelect(camera: THREE.Camera, w: number, h: number, b: Box, op: SelOp
   let best: { part: number; ids: number[] } | null = null;
   s.result?.parts.forEach((p, part) => {
     if (!s.parts[part]?.visible) return;
-    const t = topoOf(p.positions), vin = new Uint8Array(t.nv), ids: number[] = [];
-    for (let i = 0; i < t.nv; i++) vin[i] = +inside(t.pos[i * 3], t.pos[i * 3 + 1], t.pos[i * 3 + 2]);
+    const t = topoOf(p.positions), vin = new Uint8Array(t.nv), ids: number[] = [], [ox, oy, oz] = viewOffset(s, part) ?? [0, 0, 0];
+    for (let i = 0; i < t.nv; i++) vin[i] = +inside(t.pos[i * 3] + ox, t.pos[i * 3 + 1] + oy, t.pos[i * 3 + 2] + oz);
     if (kind === 'verts') for (let i = 0; i < t.nv; i++) { if (vin[i]) ids.push(i); }
     else if (kind === 'edges') for (let e = 0; e < t.ends.length / 2; e++) { if (vin[t.ends[e * 2]] && vin[t.ends[e * 2 + 1]]) ids.push(e); }
     else for (let f = 0; f < t.vid.length / 3; f++) {
       const q = p.positions, o = f * 9;
-      if (inside((q[o] + q[o + 3] + q[o + 6]) / 3, (q[o + 1] + q[o + 4] + q[o + 7]) / 3, (q[o + 2] + q[o + 5] + q[o + 8]) / 3)) ids.push(f);
+      if (inside((q[o] + q[o + 3] + q[o + 6]) / 3 + ox, (q[o + 1] + q[o + 4] + q[o + 7]) / 3 + oy, (q[o + 2] + q[o + 5] + q[o + 8]) / 3 + oz)) ids.push(f);
     }
     if (ids.length && (!best || ids.length > best.ids.length)) best = { part, ids };
   });
@@ -850,6 +874,9 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
     sharp = useApp((s) => s.params.sharp);
   const uvReady = !loading || !!loading.done[index];
   const invalidate = useThree((s) => s.invalidate), camera = useThree((s) => s.camera);
+  // Move parts: drawn slid by the offset; a hit point comes back into the part's own space for every pick
+  const off = useApp((s) => viewOffset(s, index));
+  const local = (p: THREE.Vector3) => (off ? p.clone().sub(new THREE.Vector3(...off)) : p);
 
   const { geo, p3, stretch, islands } = useMemo(() => {
     const p3 = new Float32Array(out.positions), geo = new THREE.BufferGeometry();
@@ -899,7 +926,7 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   const healthy = docView === 'health' && uvReady;
   const healthAttr = useMemo(() => {
     if (!healthy) return null;
-    const g = { soup: part.soup, ...(part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9)) };
+    const g = partGeo(part);
     const score = health(out, g), a = new Float32Array(out.positions.length);
     for (let t = 0; t < score.length; t++) { const rgb = healthColor(score[t]); for (let k = 0; k < 3; k++) a.set(rgb, t * 9 + k * 3); }
     return new THREE.BufferAttribute(a, 3);
@@ -936,43 +963,7 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   // n-gon that isn't quite flat; runs after the positions effect above, which only resets normals when unfolding
   useEffect(() => {
     if (unfold !== 0 || pose) return;
-    const sum = new Map<number, number[]>(), n = new Float32Array(p3.length), tris = p3.length / 9;
-    const cross = (t: number) => {
-      const o = t * 9, ux = p3[o + 3] - p3[o], uy = p3[o + 4] - p3[o + 1], uz = p3[o + 5] - p3[o + 2], vx = p3[o + 6] - p3[o], vy = p3[o + 7] - p3[o + 1], vz = p3[o + 8] - p3[o + 2];
-      return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
-    };
-    for (let t = 0; t < tris; t++) {
-      const c = cross(t), key = pid[t] < 0 ? -1 - t : pid[t], s = sum.get(key);
-      if (s) for (let k = 0; k < 3; k++) s[k] += c[k]; else sum.set(key, c);
-    }
-    const unit = new Map<number, number[]>();
-    for (const [key, s] of sum) { const l = Math.hypot(s[0], s[1], s[2]) || 1; unit.set(key, [s[0] / l, s[1] / l, s[2] / l]); }
-    const keyOf = (t: number) => (pid[t] < 0 ? -1 - t : pid[t]), cos = Math.cos((sharp * Math.PI) / 180);
-    // Smooth with the file's own normals (Blender's shading: its smoothing, sharp edges, custom normals): each output
-    // triangle's corner takes the normal of the nearest corner of the file triangle it came from
-    const fileN = smooth && part.normals?.length === part.soup.length ? outNormals(p3, out.source, part.soup, part.normals) : null;
-    for (let t = 0; t < tris; t++) {
-      const own = unit.get(keyOf(t))!;
-      for (let k = 0; k < 3; k++) {
-        let v = own;
-        const o = t * 9 + k * 3;
-        if (fileN && !Number.isNaN(fileN[o])) v = [fileN[o], fileN[o + 1], fileN[o + 2]];
-        else if (smooth) {
-          // the polygons round this corner that meet its own at less than Sharp edges, each once, by area
-          const s = [0, 0, 0], seen = new Set<number>();
-          for (const f of trisOf(topo, topo.vid[t * 3 + k])) {
-            const key = keyOf(f), u = unit.get(key)!;
-            if (seen.has(key) || u[0] * own[0] + u[1] * own[1] + u[2] * own[2] < cos) continue;
-            seen.add(key);
-            const w = sum.get(key)!;
-            for (let i = 0; i < 3; i++) s[i] += w[i];
-          }
-          const l = Math.hypot(s[0], s[1], s[2]);
-          if (l) v = [s[0] / l, s[1] / l, s[2] / l];
-        }
-        n.set(v, t * 9 + k * 3);
-      }
-    }
+    const n = shadingNormals(p3, pid, topo, smooth, sharp, smooth && part.normals?.length === part.soup.length ? outNormals(p3, out.source, part.soup, part.normals) : null);
     geo.setAttribute('normal', new THREE.BufferAttribute(n, 3));
   }, [geo, p3, pid, unfold, uvs, uvRev, smooth, sharp, topo, out.source, part.normals, part.soup, pose]);
   const flatNow = unfold === 0;
@@ -980,7 +971,7 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   const showPoles = useApp((s) => s.showPoles && s.workspace === 'doc');
   const poleDots = useMemo(() => {
     if (!showPoles || !flatNow) return null;
-    const g = { soup: part.soup, ...(part.poly && part.sides ? { poly: part.poly, sides: part.sides } : ownPolygons(part.soup.length / 9)) };
+    const g = partGeo(part);
     const p = poles(g), t = topoOfSoup(part.soup), xyz: number[] = [], rgb: number[] = [];
     for (const [vs, c] of [[p.low, [0.25, 0.6, 1]], [p.high, [1, 0.3, 0.25]]] as const) for (const v of vs) { xyz.push(t.pos[v * 3], t.pos[v * 3 + 1], t.pos[v * 3 + 2]); rgb.push(...c); }
     const geo = new THREE.BufferGeometry();
@@ -1026,7 +1017,7 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
     // every hit) would otherwise overwrite the pointer, the brush cursor and the pick outline with the farthest
     e.stopPropagation();
     pointer.part = index; pointer.tri = e.faceIndex ?? -1;
-    if (doc && useApp.getState().docKnife && e.faceIndex != null) { knifeHover(index, e.faceIndex, e.point.toArray(), e.ray.direction.toArray()); setHot(null); return; }
+    if (doc && useApp.getState().docKnife && e.faceIndex != null) { knifeHover(index, e.faceIndex, local(e.point).toArray(), e.ray.direction.toArray()); setHot(null); return; }
     hotAt(e);
     if (paint && e.face) { cursor.on = true; cursor.p.copy(e.point); cursor.n.copy(e.face.normal); bench.dirty = true; invalidate(); }
     if (shelfDrag.id) return; // a material held from the shelf: the drag outlines, it doesn't paint
@@ -1045,6 +1036,19 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   };
   // Van Gogh: the nearest hit takes the stroke; it ends wherever the button comes up
   const press = (e: ThreeEvent<PointerEvent>) => {
+    // Move parts: drag the part under the pointer across the view's plane (the nearest hit takes it)
+    if (!paint && !rig && e.button === 0 && useApp.getState().moveParts) {
+      e.stopPropagation();
+      const from: [number, number, number] = off ?? [0, 0, 0], x0 = e.nativeEvent.clientX, y0 = e.nativeEvent.clientY, at = e.point.toArray() as [number, number, number];
+      const move = (m: PointerEvent) => {
+        const d = view3d.worldDelta?.(m.clientX - x0, m.clientY - y0, at);
+        if (d) setPartOffset(index, [from[0] + d[0], from[1] + d[1], from[2] + d[2]]);
+      };
+      const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+      return;
+    }
     // Geppetto: drag a part to move (or, for a hinge, turn) its own bone. A click without movement selects it.
     if (rig && e.button === 0 && e.faceIndex != null) {
       const s = useApp.getState();
@@ -1096,7 +1100,8 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   const hotAt = (e: ThreeEvent<PointerEvent>) => {
     const m = useApp.getState().selectMode, t = e.faceIndex;
     if (paint || rig || !uvReady || t == null || e.buttons || (!flat && (m === 'vert' || m === 'edge'))) { setHot(null); return; }
-    const id = m === 'vert' ? nearest(t, e.point).vert : m === 'edge' ? nearest(t, e.point).edge : m === 'island' ? out.island[t] : pid[t] < 0 ? -1 - t : pid[t];
+    if (useApp.getState().moveParts) { setHot(null); return; }
+    const id = m === 'vert' ? nearest(t, local(e.point)).vert : m === 'edge' ? nearest(t, local(e.point)).edge : m === 'island' ? (doc ? 0 : out.island[t]) : pid[t] < 0 ? -1 - t : pid[t];
     setHot((h) => (h?.kind === m && h.id === id ? h : { kind: m, id, t }));
   };
   type V3 = [number, number, number];
@@ -1105,7 +1110,7 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
     const at = (v: number) => [topo.pos[v * 3], topo.pos[v * 3 + 1], topo.pos[v * 3 + 2]] as [number, number, number];
     if (hot.kind === 'vert') return { dot: lineGeo(new Float32Array(at(hot.id))) };
     if (hot.kind === 'edge') return { line: [at(topo.ends[hot.id * 2]), at(topo.ends[hot.id * 2 + 1])] };
-    const tris = hot.kind === 'island' ? Array.from(out.island.keys()).filter((f) => out.island[f] === hot.id) : polygonOf(hot.t);
+    const tris = hot.kind === 'island' ? Array.from(out.island.keys()).filter((f) => doc || out.island[f] === hot.id) : polygonOf(hot.t);
     return outlined(tris);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hot, selectMode, topo, out]);
@@ -1113,20 +1118,21 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
 
   const click = (e: ThreeEvent<MouseEvent>) => {
     if (paint || (rig && rigMeshClick(index, e)) || pose) return;
+    if (useApp.getState().moveParts) { e.stopPropagation(); return; } // the press slid the part
     if (e.delta > 4 || e.faceIndex == null || e.button !== 0) return; // a drag, not a click
-    if (doc && useApp.getState().docKnife) { e.stopPropagation(); knifeClick(index, e.faceIndex, e.point.toArray(), e.ray.direction.toArray()); return; }
+    if (doc && useApp.getState().docKnife) { e.stopPropagation(); knifeClick(index, e.faceIndex, local(e.point).toArray(), e.ray.direction.toArray()); return; }
     const progress = useApp.getState().loading;
     if (progress && !progress.done[index]) return;
     e.stopPropagation();
     const t = e.faceIndex, m = useApp.getState().selectMode;
     if (!flat && (m === 'vert' || m === 'edge')) return; // unfolded, the corners aren't where the model has them
-    const { vert, edge } = nearest(t, e.point);
+    const { vert, edge } = nearest(t, local(e.point));
     if (e.altKey) { if (m === 'vert' || m === 'edge') void selectLoop(index, edge, e.shiftKey); return; }
     selectElems(index, m === 'vert' ? [vert] : m === 'edge' ? [edge] : polygonOf(t), opOf(e, true));
   };
 
   return (
-    <group>
+    <group position={off ?? [0, 0, 0]}>
       <mesh geometry={geo} castShadow={paint} receiveShadow={paint} onUpdate={(m) => m.layers.enable(SOLID)} onClick={click} onPointerDown={press} onPointerMove={hover} userData={{ part: index }} onPointerOut={() => { setHot(null); if (pointer.part === index) { pointer.part = -1; cursor.on = false; if (useApp.getState().docKnife) knifeHover(-1, -1, [0, 0, 0], [0, 0, 0]); }if (useApp.getState().paintHover?.part === index) paintHoverAt(-1); if (useApp.getState().mirrorAim?.part === index) mirrorHover(-1); invalidate(); }}>
         {(() => {
           // Blender's Lighting: Studio (lights and the environment), MatCap (a lit sphere by normal), Flat (unlit)
@@ -1151,6 +1157,7 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
         })()}
       </mesh>
       {flat && editing && showEdges && !smooth && <lineSegments geometry={wire}><lineBasicMaterial color="#000000" transparent opacity={0.35} /></lineSegments>}
+      {flat && docView === 'faces' && <mesh geometry={geo} renderOrder={1} raycast={() => null} material={FACE_SIDES} />}
       {poleDots && <points geometry={poleDots} renderOrder={4}><pointsMaterial size={7} sizeAttenuation={false} vertexColors /></points>}
       {/* Van Gogh in MatCap or Flat: the baked AO multiplied over the model (Studio takes it as the material's AO map) */}
       {flat && paintAO && ts?.aoTex && sc.lighting !== 'studio' && <mesh geometry={geo} renderOrder={1} raycast={() => null}><meshBasicMaterial map={ts.aoTex} blending={THREE.MultiplyBlending} premultipliedAlpha transparent toneMapped={false} depthWrite={false} polygonOffset polygonOffsetFactor={-1} side={THREE.DoubleSide} /></mesh>}
@@ -1178,6 +1185,47 @@ function PartMesh({ index, result, part, frame, mode, unfold, studio, wireframe,
   );
 }
 
+
+/** Each polygon shades as one face (its triangles' area-weighted normal), as Blender draws a quad or an n-gon that isn't
+ *  quite flat; Smooth takes the file's own normals (`fileN`: each corner from the nearest corner of the file triangle it
+ *  came from) or, without them, smooths across polygons meeting at less than Sharp edges. Da Vinci shades with it too. */
+export function shadingNormals(p3: Float32Array, pid: ArrayLike<number>, topo: ReturnType<typeof topoOf>, smooth: boolean, sharp: number, fileN: Float32Array | null) {
+  const sum = new Map<number, number[]>(), n = new Float32Array(p3.length), tris = p3.length / 9;
+  const cross = (t: number) => {
+    const o = t * 9, ux = p3[o + 3] - p3[o], uy = p3[o + 4] - p3[o + 1], uz = p3[o + 5] - p3[o + 2], vx = p3[o + 6] - p3[o], vy = p3[o + 7] - p3[o + 1], vz = p3[o + 8] - p3[o + 2];
+    return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+  };
+  for (let t = 0; t < tris; t++) {
+    const c = cross(t), key = pid[t] < 0 ? -1 - t : pid[t], s = sum.get(key);
+    if (s) for (let k = 0; k < 3; k++) s[k] += c[k]; else sum.set(key, c);
+  }
+  const unit = new Map<number, number[]>();
+  for (const [key, s] of sum) { const l = Math.hypot(s[0], s[1], s[2]) || 1; unit.set(key, [s[0] / l, s[1] / l, s[2] / l]); }
+  const keyOf = (t: number) => (pid[t] < 0 ? -1 - t : pid[t]), cos = Math.cos((sharp * Math.PI) / 180);
+  for (let t = 0; t < tris; t++) {
+    const own = unit.get(keyOf(t))!;
+    for (let k = 0; k < 3; k++) {
+      let v = own;
+      const o = t * 9 + k * 3;
+      if (fileN && !Number.isNaN(fileN[o])) v = [fileN[o], fileN[o + 1], fileN[o + 2]];
+      else if (smooth) {
+        // the polygons round this corner that meet its own at less than Sharp edges, each once, by area
+        const s = [0, 0, 0], seen = new Set<number>();
+        for (const f of trisOf(topo, topo.vid[t * 3 + k])) {
+          const key = keyOf(f), u = unit.get(key)!;
+          if (seen.has(key) || u[0] * own[0] + u[1] * own[1] + u[2] * own[2] < cos) continue;
+          seen.add(key);
+          const w = sum.get(key)!;
+          for (let i = 0; i < 3; i++) s[i] += w[i];
+        }
+        const l = Math.hypot(s[0], s[1], s[2]);
+        if (l) v = [s[0] / l, s[1] / l, s[2] / l];
+      }
+      n.set(v, t * 9 + k * 3);
+    }
+  }
+  return n;
+}
 
 function lineGeo(xyz: Float32Array) {
   const g = new THREE.BufferGeometry();
@@ -1354,13 +1402,13 @@ function DrawnLine() {
 }
 /** Poly Doc's knife: the points clicked so far joined up, and a rubber band to the snapped point under the mouse. */
 function KnifeLine() {
-  const k = useApp((s) => s.docKnife);
+  const k = useApp((s) => s.docKnife), off = useApp((s) => (s.docKnife ? viewOffset(s, s.docKnife.part) : null));
   const dots = useMemo(() => lineGeo(new Float32Array([...(k?.pts ?? []), ...(k?.aim ? [k.aim] : [])].flatMap((q) => q.p))), [k]);
   useEffect(() => () => dots.dispose(), [dots]);
   if (!k) return null;
   const pts = k.pts.map((q) => q.p), aim = k.aim?.p;
   return (
-    <group>
+    <group position={off ?? [0, 0, 0]}>
       {pts.length > 1 && <Line points={pts} color={SEL} lineWidth={2} depthTest={false} renderOrder={12} raycast={() => null} />}
       {aim && pts.length > 0 && <Line points={[pts[pts.length - 1], aim]} color={SEL} lineWidth={1.5} dashed dashSize={modelDiagonal() * 0.01} gapSize={modelDiagonal() * 0.006} depthTest={false} renderOrder={12} raycast={() => null} />}
       <points geometry={dots} renderOrder={13} raycast={() => null}><pointsMaterial color="#ffffff" size={7} sizeAttenuation={false} depthTest={false} /></points>
@@ -1533,6 +1581,8 @@ function DecalGizmo() {
   // the slide disc in the outline's middle: a drawn line is framed on one of its corners, which the disc would hide
   const mid: [number, number, number] = ob ? [(ob[0] + ob[2]) / 2, (ob[1] + ob[3]) / 2, 0] : [0, 0, 0];
   const solo: [number, number, number] = ob ? [ob[2] + px * 18, ob[3] + px * 18, 0] : [w / 2 + px * 18, h / 2 + px * 18, 0];
+  // a thin mark (a serial line) still stretches: its two stretch handles stand outside it, right of it and under it
+  const soloU: [number, number, number] = [w / 2 + px * 20, -px * 10, 0], soloV: [number, number, number] = [0, -h / 2 - px * 26, 0];
   const planeWorld = (at: [number, number, number]) => new THREE.Vector3(...at).applyQuaternion(q).add(c);
   // the outline's points are pulled onto the part's surface: a ray along the projector's normal, so on a curved grip
   // they land where the relief's own border is instead of a flat rectangle floating over it. A point past the part
@@ -1709,6 +1759,7 @@ function DecalGizmo() {
       handles.push({ key: 'u0', mode: 'u', world: planeWorld([w / 2, 0, 0]), r: 12 }, { key: 'u1', mode: 'u', world: planeWorld([-w / 2, 0, 0]), r: 12 });
     } else {
       handles.push({ key: 's1', mode: 'uniform', world: planeWorld(solo), r: 14 });
+      handles.push({ key: 'u0', mode: 'u', world: planeWorld(soloU), r: 12 }, { key: 'v0', mode: 'v', world: planeWorld(soloV), r: 12 });
     }
   }
   decalHandles.hit = tool === 'decal' ? (x, y) => {
@@ -1743,6 +1794,8 @@ function DecalGizmo() {
         {!pts && roomy && handle('u0', 'u', planeWorld([w / 2, 0, 0]), 11, 'barV')}
         {!pts && roomy && handle('u1', 'u', planeWorld([-w / 2, 0, 0]), 11, 'barV')}
         {!pts && !roomy && handle('s1', 'uniform', planeWorld(solo), 14, 'square')}
+        {!pts && !roomy && handle('u0', 'u', planeWorld(soloU), 11, 'barV')}
+        {!pts && !roomy && handle('v0', 'v', planeWorld(soloV), 11, 'barU')}
         {pts && handle('s1', 'uniform', onSurface(solo), 14, 'square')}
         {pts?.map((p, k) => handle(`c${k}`, 'corner', onSurface(local(p)), 12, 'dot', k))}
         {edges.map(([p, e], k) => handle(`m${k}`, 'insert', onSurface(local([(p[0] + e[0]) / 2, (p[1] + e[1]) / 2])), 10, 'plus', k))}

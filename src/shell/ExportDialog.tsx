@@ -5,7 +5,7 @@
 import { EXPORT_TARGETS, targetInfo } from '../exporting';
 import { setIfAny } from '../paint';
 import {
-  closeExport, runExport, scopeIndices, setExportKind, setExportModel, setExportPadding, setExportScope, setExportSize, setExportTarget, setTriangulate,
+  closeExport, runExport, scopeIndices, setExportKind, setExportModel, setExportPadding, setExportScope, setExportSize, setExportTarget, setTriangulate, setExportShowcase,
   useApp, type ExportModel, type ExportScope, type ExportTarget,
 } from '../store';
 
@@ -17,7 +17,7 @@ const PAD = [4, 8, 16, 32, 64, 128];
 export function ExportDialog() {
   const open = useApp((s) => s.exportOpen), kind = useApp((s) => s.exportKind), model = useApp((s) => s.exportModel);
   const scope = useApp((s) => s.exportScope), size = useApp((s) => s.exportSize), padding = useApp((s) => s.exportPadding);
-  const preset = useApp((s) => s.texturePreset), fbx = useApp((s) => s.exportFbx), tri = useApp((s) => s.triangulate);
+  const preset = useApp((s) => s.texturePreset), fbx = useApp((s) => s.exportFbx), tri = useApp((s) => s.triangulate), showcase = useApp((s) => s.exportShowcase);
   const parts = useApp((s) => s.parts);
   useApp((s) => s.layerSel); useApp((s) => s.activePart); // scopeIndices reads them
   const src = useApp((s) => s.source), res = useApp((s) => s.textureResolution), has = useApp((s) => !!s.result), busy = useApp((s) => !!s.busy);
@@ -84,6 +84,9 @@ export function ExportDialog() {
                 </select>
               </label>
             </div>
+            {target === 'blender' && <label className="toggle" title="Blender (installed, or BARISTA_BLENDER) builds a self-contained .blend beside the FBX: Da Vinci's turntable, open / close to Geppetto's pose, softboxes, floor, haze, dust, the same compositor grade, Cycles on the GPU with denoising, motion blur, depth of field and a 4K MP4 output. Textures are packed into the .blend, so it can be sent as one file. Open it and Render › Render Animation.">
+              <input type="checkbox" checked={showcase} onChange={(e) => setExportShowcase(e.target.checked)} />Showcase scene for rendering in Blender (Da Vinci’s turntable, Cycles, packed .blend)
+            </label>}
             <div className="exp-files">
               <div className="caps">What gets written</div>
               <ul>
@@ -91,6 +94,7 @@ export function ExportDialog() {
                   <li key={m.file}><span className="fn">{m.file}</span><span>{m.holds}{m.when ? ` · only when the set has ${m.when}` : ''}</span></li>
                 ))}
                 {target === 'blender' && <li><span className="fn">{base}.fbx</span><span>One material per part, its maps linked (Diffuse, Shininess, Reflection, NormalMap)</span></li>}
+                {target === 'blender' && showcase && <li><span className="fn">{base}.blend</span><span>Turntable, open / close, studio, haze, dust, grade, packed textures; Cycles (GPU, blur + DOF) — Render Animation writes render/{base}-….mp4</span></li>}
               </ul>
               <p className="hint">
                 {textured} of {count} parts in scope have a texture set; the engine renders those, into a folder it asks for.

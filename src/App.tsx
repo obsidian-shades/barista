@@ -5,6 +5,8 @@ import { Viewport3D } from './views/Viewport3D';
 import { UVView } from './views/UVView';
 import { Dock } from './panels/Dock';
 import { PolyDoc } from './panels/PolyDoc';
+import { DaVinci, ShowOptionsBar } from './panels/DaVinci';
+import { RenderView } from './views/RenderView';
 import { Geppetto, RigOptionsBar, RigToolStrip } from './panels/Geppetto';
 import { PaintOptionsBar, PaintToolStrip, VanGogh } from './panels/VanGogh';
 import { AppTabs } from './shell/AppTabs';
@@ -16,7 +18,7 @@ import { PolyOptionsBar, PolyToolStrip, runTool } from './shell/PolyTools';
 import { Resizer } from './shell/Resizer';
 import { UVOptionsBar, UVToolStrip } from './shell/UVTools';
 import {
-  answerAsk, cancelKnife, confirmKnife, knifeBack, startKnife, confirmDiscard, armBox, cancelDocMove, cancelXform, cancelSymPlane, closeExport, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, flipSel, invertSelection, openExport, pickFile, saveProject, pinSelected, pointer, redo, repack,
+  answerAsk, askRenamePart, cancelKnife, confirmKnife, knifeBack, startKnife, confirmDiscard, armBox, cancelDocMove, cancelXform, cancelSymPlane, closeExport, confirmDocMove, dissolveSel, docMoveAxis, setDockWidth, setViewSplit, startDocMove, updateDocMove, clearSelection, closeMenu, confirmXform, connect, edgeMenu, flipSel, invertSelection, openExport, pickFile, saveProject, pinSelected, pointer, redo, repack,
   applySymPlane, setSymMode,
   pieMenu, scaleSel, cutSelection, stitchSelection, selectAll, selectAllPaint, selectLinked, selectLinkedUnder, setSelectMode, startXform, undo, unwrap, unwrapSelected, useApp, viewOp, viewPie, xformKey, xformSnap, openFile, type SelectMode,
   activeDecal, duplicateDecal, nudgeDecal, updateDecal,
@@ -82,10 +84,12 @@ function onKey(e: KeyboardEvent) {
   if (ctrl && k === 'e' && e.shiftKey) return run(() => openExport());
   // Ctrl+S / Ctrl+Shift+S: the project, from every workspace
   if (ctrl && k === 's' && !e.altKey) return run(() => saveProject(e.shiftKey));
+  // F2: rename the active part, from every workspace (every right-click menu offers it too)
+  if (k === 'f2' && !ctrl) return run(() => void askRenamePart());
   // Z: the Display pie, in every workspace: hold and release toward a view, or tap and click one. (Mid G/R/S and mid
   // Poly Doc move, Z belongs to the transform instead. Ctrl+Z stays undo everywhere.)
   const now = useApp.getState();
-  if (!ctrl && !e.altKey && !e.shiftKey && k === 'z' && !now.xform && !now.docMove) {
+  if (!ctrl && !e.altKey && !e.shiftKey && k === 'z' && !now.xform && !now.docMove && now.workspace !== 'render') {
     e.preventDefault();
     if (!e.repeat) { zDown = performance.now(); viewPie(); }
     return;
@@ -167,7 +171,7 @@ function onKey(e: KeyboardEvent) {
   // Poly Doc keeps the selection, view, file and topology keys; the UV ones (G R S, U, P, C V, Q, F…) do nothing there
   if (useApp.getState().workspace === 'doc' && !NUMPAD[e.code] && e.code !== 'NumpadDecimal' && k !== ' ' && k !== 'home' && !SELECT_MODES[e.code]
     && !useApp.getState().docMove
-    && !(ctrl ? ['o', 'z', 'y', 'i', 'l', 'x', 'r'].includes(k) || (k === 'e' && e.shiftKey) : e.altKey ? ['a', 'j'].includes(k) : ['a', 'l', 'b', 'g', 'j', 'k', 'm', 'escape'].includes(k))) return;
+    && !(ctrl ? ['o', 'z', 'y', 'i', 'l', 'x', 'r'].includes(k) || (k === 'e' && e.shiftKey) : e.altKey ? ['a', 'j', 'n'].includes(k) : ['a', 'l', 'b', 'g', 'j', 'k', 'm', 'n', 'escape'].includes(k))) return;
   // Poly Doc's G: while moving, keys belong to it (X Y Z lock an axis, Enter keeps, Esc cancels)
   if (useApp.getState().docMove) {
     e.preventDefault();
@@ -184,7 +188,10 @@ function onKey(e: KeyboardEvent) {
     if (!ctrl && k === 'm') return run(() => runTool('merge'));
     if (ctrl && k === 'r') return run(() => runTool('loopcut'));
     if (ctrl && k === 'x') return run(() => runTool('dissolve'));
+    // Blender's Shift+N (Recalculate Outside); Alt+N below flips
+    if (!ctrl && k === 'n' && e.shiftKey) return run(() => runTool('outside'));
   }
+  if (useApp.getState().workspace === 'doc' && e.altKey && !ctrl && k === 'n') return run(() => runTool('flip'));
   if (useApp.getState().menu) { if (k === 'escape') run(closeMenu); return; }
   // mid G R S every key belongs to the transform
   if (useApp.getState().xform) {
@@ -274,8 +281,14 @@ export default function App() {
       <AppTabs />
       {/* one frame for both tools, so switching never moves anything: options bar, then strip | views | panel */}
       <div className="space">
-        {workspace === 'doc' ? <PolyOptionsBar /> : workspace === 'paint' ? <PaintOptionsBar /> : workspace === 'rig' ? <RigOptionsBar /> : <UVOptionsBar />}
-        {workspace === 'doc' || workspace === 'rig' ? (
+        {workspace === 'doc' ? <PolyOptionsBar /> : workspace === 'paint' ? <PaintOptionsBar /> : workspace === 'rig' ? <RigOptionsBar /> : workspace === 'render' ? <ShowOptionsBar /> : <UVOptionsBar />}
+        {workspace === 'render' ? (
+          <div className="work doc" ref={work} style={{ gridTemplateColumns: `minmax(0, 1fr) 6px ${dockW}px` }}>
+            <RenderView />
+            {dock}
+            <DaVinci />
+          </div>
+        ) : workspace === 'doc' || workspace === 'rig' ? (
           <div className="work doc" ref={work} style={{ gridTemplateColumns: `40px minmax(0, 1fr) 6px ${dockW}px` }}>
             {workspace === 'rig' ? <RigToolStrip /> : <PolyToolStrip />}
             <Viewport3D />

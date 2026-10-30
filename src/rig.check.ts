@@ -5,8 +5,8 @@
 import assert from 'node:assert';
 import { writeFileSync } from 'node:fs';
 import * as THREE from 'three';
-import { autoRig, looseUnits } from './autorig.ts';
-import { boneFromFrame, boneLength, clampPose, constraintOffset, deform, moveRange, partAxis, poseFrom, poseMatrices, removeBone, restMatrix, rollFor, skinMatrices, vertexWeights, type Bone, type V3 } from './rig.ts';
+import { autoRig, fitPart, looseUnits, namedMotion } from './autorig.ts';
+import { boneFromFrame, boneLength, clampPose, constraintOffset, deform, motionOf, moveRange, partAxis, poseFrom, poseMatrices, removeBone, restMatrix, rollFor, skinMatrices, vertexWeights, type Bone, type V3 } from './rig.ts';
 import { toFbx } from './files.ts';
 
 const near = (a: ArrayLike<number>, b: ArrayLike<number>, eps = 1e-5) => assert.ok(Array.from(a).every((x, i) => Math.abs(x - b[i]) < eps), `${Array.from(a)} ≠ ${Array.from(b)}`);
@@ -100,7 +100,7 @@ const assembled = [
   { name: 'Trigger', positions: box(0, -5.5, 3, 0.8, 3, 2) }, // flat, hanging under the frame's face
   { name: 'Mag', positions: box(0, 7, 0, 1.2, 6, 1.2) }, // long and inserted into the frame
   { name: 'Button', positions: box(5.3, 0, 0, 0.6, 1, 1) }, // small and flush on the side
-  { name: 'Shell', positions: box(0, 0, 5.4, 4, 4, 0.8) }, // fixed housing
+  { name: 'Housing', positions: box(0, 0, 5.4, 4, 4, 0.8) }, // fixed housing
 ];
 const rig = autoRig(assembled);
 const byName = (n: string) => rig.bones.findIndex((b) => b.name === n);
@@ -123,8 +123,37 @@ for (const [i, part] of [[trigger, 1], [mag, 2], [button, 3]] as const) {
   for (let k = 0; k < p.length; k += 3) for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], p[k + a]); hi[a] = Math.max(hi[a], p[k + a]); }
   assert.ok(b.head.every((x, a) => x >= lo[a] - 0.05 && x <= hi[a] + 0.05), `${b.name} head ${b.head} outside its part`);
 }
+// an unnamed flat plate held in the frame's middle plane (a trigger called "Cube") swings; one on the skin presses
+// (the frame carries a slot whose walls hug the first plate along its length, and a pad under the second)
+const join = (...a: Float32Array[]) => Float32Array.from(a.flatMap((x) => Array.from(x)));
+const slotted = { name: 'Frame', positions: join(box(0, 0, 0, 10, 10, 10), box(-0.45, -6, 3, 0.5, 2, 1.6), box(0.45, -6, 3, 0.5, 2, 1.6), box(4.9, 0, 0, 0.2, 1, 1)) };
+const unnamed = autoRig([slotted, { name: 'Cube', positions: box(0, -6, 3, 0.4, 2, 1.6) }, { name: 'Cube.001', positions: box(5.2, 0, 0, 0.4, 1, 1) }]);
+assert.equal(unnamed.bones.find((b) => b.name === 'Cube')?.limit?.x[0], -90, 'a plate in the frame’s middle hinges');
+assert.equal(unnamed.bones.find((b) => b.name === 'Cube.001')?.move?.y[1], 0, 'a plate on the frame’s side presses');
+// the Hinge preset refits: whatever the guess, it swings across the plate's thin side (local X = world X here)
+const hinged = fitPart({ name: 'Cube', positions: box(0, -5.6, 3, 0.4, 2, 1.6) }, assembled[0], undefined, 'hinge');
+const hx = new THREE.Vector3().setFromMatrixColumn(restMatrix({ name: 'h', head: hinged.head, tail: hinged.tail, roll: hinged.roll, parent: -1, limit: null, slide: null }), 0);
+assert.ok(Math.abs(hx.x) > 0.99, `hinge pin ${hx.toArray()}`);
+// a slide pulled back to its stop (Range to here) still reads as a slide; a short inward push on a short bone is a press
+const LOCKED = { x: [0, 0], y: [0, 0], z: [0, 0] } as Bone['limit'];
+assert.equal(motionOf({ ...bones[0], head: [0, 0, 0], tail: [0, 10, 0], limit: LOCKED, move: { x: [0, 0], y: [-2, 0], z: [0, 0] } }), 'slide');
+assert.equal(motionOf({ ...bones[0], head: [0, 0, 0], tail: [0, 1, 0], limit: LOCKED, move: { x: [0, 0], y: [-0.5, 0], z: [0, 0] } }), 'press');
+assert.equal(motionOf({ ...bones[0], limit: LOCKED, move: { x: [0, 0], y: [0, 3], z: [0, 0] } }), 'slide');
+assert.ok(namedMotion('Slider_Low') && !namedMotion('Cube'), 'a part named for its motion keeps its pieces together');
 const withDetails = autoRig(assembled, { details: true });
-assert.ok(withDetails.bones.some((b) => b.name === 'Shell'), 'details get their own bone when asked');
+assert.ok(withDetails.bones.some((b) => b.name === 'Housing'), 'details get their own bone when asked');
+// a pistol: the held root's bone sits in the handle hanging under the barrel, pointing up it, and a shell slides
+const handle = join(...[-4, -3, -2, -1, 0].map((y) => box(0, y, -3, 1, 1, 1.5)));
+const pistol = autoRig([
+  { name: 'Grip', positions: join(box(0, 1, 0, 1, 1, 8), handle) },
+  { name: 'Slide', positions: box(0, 2, 0, 1, 1, 10) },
+  { name: 'Shell', positions: box(0, 2.6, 1, 0.4, 0.2, 1) },
+]);
+const grip = pistol.bones.find((b) => b.name === 'Grip')!, gd = new THREE.Vector3(...grip.tail).sub(new THREE.Vector3(...grip.head)).normalize();
+assert.ok(Math.abs(grip.head[2] + 3) < 0.6 && grip.head[1] < -2, `grip head in the handle: ${grip.head}`);
+assert.ok(gd.y > 0.9, `grip bone runs up the handle: ${gd.toArray()}`);
+assert.ok(Math.abs(new THREE.Vector3().setFromMatrixColumn(restMatrix(grip), 0).x) > 0.99, 'its X runs across the gun');
+assert.ok(pistol.bones.find((b) => b.name === 'Shell')?.move?.y[1]! > 0, 'a shell slides');
 // a mesh holding two rigid shells splits into two auto-rig units; one shell does not
 const twin = new Float32Array(box(0, 0, 0, 2, 1, 1).length * 2);
 twin.set(box(0, 0, 0, 2, 1, 1)); twin.set(box(4, 0, 0, 2, 1, 1), twin.length / 2);

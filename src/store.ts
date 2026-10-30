@@ -13,14 +13,14 @@ import { clearRecentFiles, forgetRecent, pickWithHandle, recentFiles, remember, 
 import { carryNormals, dissolve, dissolveFaces, limitedDissolve, link, outNormals, ownPolygons, topoOfSoup, triangulate, trisToQuads, type Polys } from './polyedit';
 import { bake } from './bake';
 import { resetLight } from './matview';
-import { CHANNELS, expMap, isLine, mapAt, composite, dab, dabUV, disposeSet, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, fillAll, fillTris, invertSelection as invertMask, growSelection, keep as keepPaint, SOLID, maskPolygon, maskTris, newLayer, requestComposite, restoreSet, setIfAny, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, bakeShape, bakeRelief, bakeBevel, type Bevel, decalFrame, shapeHeight, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, shade, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type Shape, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
+import { CHANNELS, expMap, isLine, mapAt, composite, dab, dabUV, disposeSet, shareSet, transferPaint, type Layout, generate, setBaked, surfaceOfAsync as texelSurface, type Gen, type GenKind, type Shown, bleedAll, ensureShell, fillAll, fillTris, invertSelection as invertMask, growSelection, keep as keepPaint, SOLID, maskPolygon, maskTris, newLayer, requestComposite, restoreSet, setIfAny, sample, select as selectMask, setOf, undo as undoSet, redo as redoSet, setUndoRect, bakeFill, bakeDecal, bakeShape, bakeRelief, bakeBevel, type Bevel, decalFrame, shapeHeight, maskDab, maskDabUV, maskFill, maskInvert, maskSelection, shade, type BlendMode, type Brush, type BrushTip, type Channel, type Decal, type Fill, type PaintLayer, type Shape, type SelOp as MaskOp, type TexSet, type TexturePreset } from './paint';
 import { gpuBegin, gpuDab, gpuFinish, gpuTake } from './gpupaint';
 import { FILL_CHANNELS, loadMaterialLibrary, mapUrl, materialFromFiles, materialPixels, thumbUrl, type MaterialAsset, type MaterialPixels } from './materials';
 import { decalFromFile, decalPixels, decalUrl, loadDecalLibrary, reliefPixels, type DecalAsset } from './decals';
 import { Box3, Quaternion, Vector3 } from 'three';
-import { boneLength, boneFromFrame, clampPose, closestOnBone, constraintOffset, freshName, isAncestor, isDescendant, migrateBones, partAxis, poseFrom, poseMatrices, removeBone, restMatrix, trianglesBones, type Bone, type Constraint, type ConstraintKind, type PoseBone, type V3 as RigV3 } from './rig';
-import { autoRig as buildAutoRig, boneDistance, fitPart, looseUnits, type AutoPart, type Motion } from './autorig';
-import { addLoops, carryUVs, cleanVerts, connect as connectPolys, gridFill, knifeOn, loopCut, loopOf, members, merge as mergeVerts, meshCheck, moveOnSurface, poles, relax, rotateEdge, shapeLoop, slide, subdivide, surfaceOf, type Done, type Geo, type KnifePoint, type Sel as SoupSel } from './polygeo';
+import { openPose, boneLength, boneFromFrame, clampPose, closestOnBone, constraintOffset, freshName, isAncestor, isDescendant, migrateBones, motionOf, moveRange, partAxis, poseFrom, poseMatrices, removeBone, restMatrix, trianglesBones, type Bone, type Constraint, type ConstraintKind, type PoseBone, type V3 as RigV3 } from './rig';
+import { autoRig as buildAutoRig, boneDistance, fitPart, looseUnits, namedMotion, type AutoPart, type Motion } from './autorig';
+import { addLoops, carryUVs, cleanVerts, flipFaces, recalcOutside, surfaceGap, nearestTriangles, connect as connectPolys, gridFill, knifeOn, loopCut, loopOf, members, merge as mergeVerts, meshCheck, moveOnSurface, poles, relax, rotateEdge, shapeLoop, slide, subdivide, surfaceOf, type Done, type Geo, type KnifePoint, type Sel as SoupSel } from './polygeo';
 
 export type Mode = 'checker' | 'stretch' | 'islands';
 export const TEXTURE_RESOLUTIONS = [64, 128, 256, 512, 1024, 2048, 4096, 8192] as const;
@@ -249,6 +249,11 @@ export interface State {
   rigTool: RigTool;
   rigMode: 'edit' | 'pose';
   pose: PoseBone[];
+  /** Da Vinci: the showcase (not saved) — turntable speed, the open / close tween to Geppetto's pose, the lights; and
+   *  whether it plays and what it is capturing (the render view does the capture and clears `showRec`). */
+  show: Show;
+  showPlay: boolean;
+  showRec: 'video' | 'still' | null;
   rigChain: { at: RigV3; parent: number; from: number } | null;
   rigEnd: 'head' | 'tail' | 'body';
   /** The gizmo's tool in Edit and Pose: translate (G) or rotate (R), Blender's two ways of adjusting a bone; and whether
@@ -258,8 +263,9 @@ export interface State {
   /** A Follow / Aim / Piston constraint waiting for its target: the next bone or part clicked is it. */
   rigPick: ConstraintKind | null;
   rigView: 'bones' | 'plain';
-  rigPast: Rig[];
-  rigFuture: Rig[];
+  /** Geppetto's undo: the bones and the pose together, so Ctrl+Z takes back a pose drag as well as a bone edit. */
+  rigPast: RigStep[];
+  rigFuture: RigStep[];
   /** Poly Doc's view: each polygon flat with the wire, smooth shaded without it (as the model will look), or Health
    *  (every face green to red by how solid it is). */
   docView: DocView;
@@ -286,6 +292,10 @@ export interface State {
   docMove: DocMove | null;
   /** Poly Doc's knife (K): the part, the points clicked so far, and the snapped point under the mouse; null when off. */
   docKnife: { part: number; pts: KnifePoint[]; aim: KnifePoint | null } | null;
+  /** Parts slid apart to see between them, per part index: a view offset in Poly Doc and UV Magician only (the mesh
+   *  never moves, nothing is saved); `moveParts` is the 3D header's Move parts toggle. */
+  partOffset: Record<number, [number, number, number]>;
+  moveParts: boolean;
   /** G keeps the moved vertices on the model's surface (Blender's snap to face), so dragging evens spacing, not shape. */
   moveOnSurface: boolean;
   /** Poly Doc marks poles on the model (below the regular valence blue, above it red). */
@@ -339,6 +349,8 @@ export interface State {
   exportScope: ExportScope;
   /** Texture export: also write the FBX whose materials link the maps (Blender's own import comes in textured). */
   exportFbx: boolean;
+  /** Blender ready: also build `<name>.blend` with Da Vinci's showcase (turntable, open / close, softboxes, Cycles). */
+  exportShowcase: boolean;
   /** Texels of colour bled past each island for the mip chain; 0 = the engine's default, max(4, size / 64). */
   exportPadding: number;
   /** A one-line result for the status bar (an export's folder); cleared when the next task starts. */
@@ -363,8 +375,9 @@ function savedOpen(): OpenOpts {
 }
 export type Ask =
   | { kind: 'open'; name: string; done: (o: OpenOpts | null) => void }
-  | { kind: 'unsaved'; name: string; done: (a: 'save' | 'discard' | null) => void };
-export type Workspace = 'uv' | 'doc' | 'paint' | 'rig';
+  | { kind: 'unsaved'; name: string; done: (a: 'save' | 'discard' | null) => void }
+  | { kind: 'rename'; name: string; done: (name: string | null) => void };
+export type Workspace = 'uv' | 'doc' | 'paint' | 'rig' | 'render';
 /** Geppetto's tools: pick parts and bones (Add bone works on the part picked), draw extra bones on the model. */
 export type RigTool = 'select' | 'bone';
 /** The bones, and per part which bone each soup triangle follows (-1: none). */
@@ -394,11 +407,11 @@ export type GrabbedLayer = Pick<PaintLayer, 'name' | 'visible' | 'opacity' | 'bl
  *  or scratch along the stroke). */
 export type DecalMode = 'edit' | 'place' | 'draw';
 export type FillBy = 'face' | 'surface' | 'island' | 'material' | 'part';
-export type DocView = 'wire' | 'smooth' | 'health';
+export type DocView = 'wire' | 'smooth' | 'health' | 'faces';
 interface DocMove { part: number; verts: number[]; base: Geo; normals?: Float32Array; marked: number[]; mouse: [number, number] | null; pivot: [number, number, number]; axis: 0 | 1 | 2 | null; snap: (p: [number, number, number]) => [number, number, number]; reselect: { faces?: number[]; verts?: number[]; edges?: [number, number][] }; moved: boolean }
 /** The 3D view's camera, for tools that turn mouse movement into world movement: a screen delta (px) at a point's depth. */
 export const view3d: { worldDelta: ((dx: number, dy: number, at: [number, number, number]) => [number, number, number]) | null } = { worldDelta: null };
-export type DocTool = 'move' | 'knife' | 'clean' | 'dissolve' | 'limited' | 'quads' | 'connect' | 'merge' | 'collapse' | 'rotate' | 'grid' | 'relax' | 'subdivide' | 'loopcut' | 'slide' | 'space' | 'straighten' | 'circle';
+export type DocTool = 'move' | 'knife' | 'clean' | 'outside' | 'flip' | 'dissolve' | 'limited' | 'quads' | 'connect' | 'merge' | 'collapse' | 'rotate' | 'grid' | 'relax' | 'subdivide' | 'loopcut' | 'slide' | 'space' | 'straighten' | 'circle';
 /** A number kept in the browser between sessions, within bounds. */
 function saved(key: string, fallback: number, min: number, max: number) {
   try { const v = Number(localStorage.getItem(key)); return localStorage.getItem(key) !== null && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback; } catch { return fallback; }
@@ -412,19 +425,27 @@ const keepStr = (key: string, v: string) => { try { localStorage.setItem(key, v)
 export const setDockWidth = (w: number) => { const dockWidth = Math.round(Math.min(420, Math.max(260, w))); set({ dockWidth }); keep('dockWidth', dockWidth); };
 export const setColorOpen = (colorOpen: boolean) => { set({ colorOpen }); keep('colorOpen', +colorOpen); };
 export const setViewSplit = (f: number) => { const viewSplit = Math.min(0.8, Math.max(0.2, f)); set({ viewSplit }); keep('viewSplit', viewSplit); };
-const NO_RIG = { rig: { bones: [], bind: [] } as Rig, rigSel: -1, pose: [] as PoseBone[], rigChain: null, rigPast: [] as Rig[], rigFuture: [] as Rig[], rigMode: 'edit' as const, rigGizmo: 'move' as const, rigGizmoOn: false, rigPick: null, rigEnd: 'body' as const };
-const savedWorkspace = (): Workspace => { try { return (['doc', 'paint', 'rig'] as const).find((w) => w === localStorage.getItem('workspace')) ?? 'uv'; } catch { return 'uv'; } };
+export interface RigStep { rig: Rig; pose: PoseBone[] }
+/** Da Vinci's settings: degrees a second (0 holds still), open / close on and its tween in seconds, the rim lights'
+ *  colour and strength, the key, the backdrop and the floor shadow; the cinematic look (bloom, depth of field, film
+ *  grain, atmosphere, handheld roll, a 2.39 frame) and the still's long edge in pixels (0 = the view as it is). */
+export interface Show {
+  spin: number; open: boolean; tween: number; rim: string; rimPower: number; key: number; bg: string; floor: boolean;
+  cine: boolean; dust: boolean; dof: number; bloom: number; grain: number; exposure: number; handheld: boolean; letterbox: boolean; still: number;
+}
+const NO_RIG = { rig: { bones: [], bind: [] } as Rig, rigSel: -1, pose: [] as PoseBone[], rigChain: null, rigPast: [] as RigStep[], rigFuture: [] as RigStep[], rigMode: 'edit' as const, rigGizmo: 'move' as const, rigGizmoOn: false, rigPick: null, rigEnd: 'body' as const };
+const savedWorkspace = (): Workspace => { try { return (['doc', 'paint', 'rig', 'render'] as const).find((w) => w === localStorage.getItem('workspace')) ?? 'uv'; } catch { return 'uv'; } };
 
 export const useApp = create<State>(() => ({
   source: null, unit: 100, parts: [], params: { sharp: 45, tol: 0.08, seam_weight: 0.1, join: true, atlas: 0, one_atlas: false }, symPlane: null, symEdit: null, activePart: 0, layerSel: [], layerAnchor: 0, uvScope: 'part', result: null, uvs: [], uvRev: 0, edited: false,
   rev: 0, past: [], future: [], partsPast: [], partsFuture: [], selected: [], selectMode: 'face', csel: null, viewReq: { view: '3d', op: 'all', n: 0 }, menu: null, boxArmed: false, xform: null, liveUnwrap: true, afterAlign: saved('afterAlign', 1, 0, 1) === 1, afterPack: saved('afterPack', 1, 0, 1) === 1, pins: {}, shapeClipboard: null, mode: 'checker', textureResolution: 1024, uvMap: 'checker', recentColors: [],
   scene: { background: '#111111', ...WORK_LIGHT, hdriUrl: null, hdriId: '', hdriName: '', hdriBackground: false, hdriStrength: 1, hdriRotation: 0, hdriBlur: 0, wireframe: false, showEdges: true, showVertices: true, showSeams: true, showGrid: false, showAxes: false,
     lighting: 'studio', matcap: 'clay', bg: 'theme', backface: false, outline: false, specular: true, xray: false, xrayAlpha: 0.5, shadow: false, shadowAmount: 0.4, paintShadow: true, paintLift: 0.4, cavity: false, cavityType: 'both', cavityDistance: 0.2, ridge: 1, valley: 1 }, unfold: 0,
-  busy: null, saving: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 300, 260, 420), colorOpen: saved('colorOpen', 1, 0, 1) === 1, viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, rig: { bones: [], bind: [] }, rigSel: -1, rigTool: 'select', rigMode: 'edit', pose: [], rigChain: null, rigEnd: 'body', rigGizmo: 'move', rigGizmoOn: false, rigPick: null, rigView: 'bones', rigPast: [], rigFuture: [], project: null, saved: true, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, docKnife: null, moveOnSurface: true,
-  paint: { tool: 'brush', pickMode: 'material' as PickMode, grab: null, color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: false, metal: false, normal: false, height: false }, size: 3, flow: 0.6, hardness: 0.5, tip: 'round' as BrushTip, by: 'island' as FillBy, angle: 30, decalMode: 'edit' as DecalMode, decalSel: true,  decalAsset: 'garuda-mark', decalTint: '#ffffff', decalSize: 14, decalRotation: 0, fillBlend: 'normal' as BlendMode }, paintChannel: 'material', paintRev: 0, paintPanel: 0, paintLive: 0, lightRev: 0, layerPick: [], stackView: 'layers', paintAO: true, linkSets: false, refImage: null,
+  busy: null, saving: null, error: null, server: 'unknown', shapes: [], loading: null, workspace: savedWorkspace(), triangulate: false, fixNote: null, docView: 'wire', docColor: 'single', showPoles: false, dockWidth: saved('dockWidth', 300, 260, 420), colorOpen: saved('colorOpen', 1, 0, 1) === 1, viewSplit: saved('viewSplit', 0.55, 0.2, 0.8), docTool: null, uvTool: null, rig: { bones: [], bind: [] }, rigSel: -1, rigTool: 'select', rigMode: 'edit', pose: [], rigChain: null, rigEnd: 'body', rigGizmo: 'move', rigGizmoOn: false, rigPick: null, rigView: 'bones', rigPast: [], rigFuture: [], show: { spin: 30, open: true, tween: 0.9, rim: '#ffffff', rimPower: 1, key: 1, bg: '#050506', floor: false, cine: true, dust: false, dof: 0, bloom: 0, grain: 0.15, exposure: 0, handheld: false, letterbox: false, still: 3840 }, showPlay: true, showRec: null, project: null, saved: true, recent: [], docOpts: { slide: 0.25, angle: 5, relax: 30 }, slideBorders: true, docMove: null, docKnife: null, partOffset: {}, moveParts: false, moveOnSurface: true,
+  paint: { tool: 'brush', pickMode: 'material' as PickMode, grab: null, color: '#c0392b', rough: 0.5, metal: 0, on: { color: true, rough: false, metal: false, normal: false, height: false }, size: 3, flow: 0.6, hardness: 0.5, tip: 'round' as BrushTip, by: 'island' as FillBy, angle: 30, decalMode: 'edit' as DecalMode, decalSel: true,  decalAsset: '', decalTint: '#ffffff', decalSize: 14, decalRotation: 0, fillBlend: 'normal' as BlendMode }, paintChannel: 'material', paintRev: 0, paintPanel: 0, paintLive: 0, lightRev: 0, layerPick: [], stackView: 'layers', paintAO: true, linkSets: false, refImage: null,
   materials: [], materialsLoading: false, materialsError: null, decals: [], decalsLoading: false, decalsError: null, paintTab: 'layers', assetTab: 'materials', texturePreset: 'generic', exportSize: saved('exportSize', 4096, 256, 16384),
   exportOpen: false, exportKind: savedStr('exportKind', 'textures', ['textures', 'model'] as const), exportModel: savedStr('exportModel', 'fbx', ['fbx', 'obj'] as const),
-  exportScope: savedStr('exportScope', 'visible', ['visible', 'selected', 'all'] as const), exportFbx: saved('exportFbx', 0, 0, 1) === 1, exportPadding: saved('exportPadding', 0, 0, 512),
+  exportScope: savedStr('exportScope', 'visible', ['visible', 'selected', 'all'] as const), exportFbx: saved('exportFbx', 0, 0, 1) === 1, exportShowcase: saved('exportShowcase', 1, 0, 1) === 1, exportPadding: saved('exportPadding', 0, 0, 512),
   paintHover: null, mirrorAim: null, drawLine: null, ask: null, askOnOpen: saved('askOnOpen', 1, 0, 1) === 1, openOpts: savedOpen(),
   notice: null,
 }));
@@ -503,15 +524,24 @@ async function solve(refit = true) {
   set((s) => ({ loading: { phase: 'unwrap', total: parts.length, complete: 0, active: 'All meshes (Rust parallel)', done: parts.map(() => !!previous) } }));
   const result = await api.unwrap(parts.map((p) => ({ ...p, seams: p.marked, symmetry: planeArg(get()) })), params);
   if (me !== latest) return;
+  // each painted part's layout before this unwrap, so its paint comes across (`carryPaint`)
+  const was = get(), from = was.parts.map((p, i) => (!p.stale && was.result?.parts[i] && was.uvs[i] ? { pos: was.result.parts[i].positions, uvs: was.uvs[i] } : null));
   set((s) => ({
     result, uvs: result.parts.map((p) => new Float32Array(p.uvs)), uvRev: s.uvRev + 1, edited: false, parts: s.parts.map((p, i) => (result.parts[i] ? { ...withBorders(p, result.parts[i]), stale: false } : p)),
     rev: refit ? s.rev + 1 : s.rev, past: [], future: [], csel: null, activePart: Math.min(s.activePart, result.parts.length - 1), loading: null,
   }));
+  result.parts.forEach((p, i) => carryPaint(i, from[i] ?? null, { pos: p.positions, uvs: get().uvs[i] }));
 }
 
 /** Poly Doc's view of parts: the bare mesh as the output, no unwrap (all parts, or just one after an edit). Each is
  *  marked stale so UV Magician unwraps it when you go back there. */
 function meshOnly(only?: number) {
+  // a painted part about to lose its layout: remember the one its texels were laid on, so its paint comes across when
+  // the part lands with UVs again (`carryPaint`)
+  get().parts.forEach((p, i) => {
+    const out = get().result?.parts[i], uv = get().uvs[i], ts = setIfAny(p.soup);
+    if ((only === undefined || i === only) && !p.stale && out && uv && ts && !paintedOn.has(ts)) paintedOn.set(ts, { pos: out.positions, uvs: uv });
+  });
   const s = get(), stats = { islands: 0, tris: 0, flips: 0, mean_stretch: 0, max_stretch: 0, good_area: 0, overlap: 0, efficiency: 0, seams: NO_SEAMS(), ms: 0 };
   const outs = s.parts.map((p, i) => (only === undefined || i === only || !s.result?.parts[i] ? placeholder(p) : s.result.parts[i]));
   set((st) => ({
@@ -519,6 +549,64 @@ function meshOnly(only?: number) {
     parts: st.parts.map((p, i) => (only === undefined || i === only ? { ...p, stale: true } : p)), loading: null,
     ...(only === undefined ? { rev: st.rev + 1, activePart: 0 } : {}),
   }));
+}
+
+/** The layout a painted set's texels were laid on, from the moment its part went mesh-only (a Poly Doc edit, a model
+ *  replaced by a new version) until it lands with UVs again. */
+const paintedOn = new WeakMap<TexSet, Layout>();
+/** Paint transfers waiting or running, one set at a time (they share the rasteriser's scratch buffers); a set asked
+ *  again before its turn just takes the newer target. */
+const carries: { i: number; ts: TexSet; from: Layout; to: Layout }[] = [];
+let carrying = false;
+/** Part `i` landed on new UVs (`to`): its paint, laid on `from` (or on what it had before it went mesh-only), comes
+ *  across onto them (`transferPaint`), then each decal is inked again from its own 3D frame, crisp at the new scale. */
+function carryPaint(i: number, from: Layout | null, to: Layout) {
+  const part = get().parts[i], ts = part && setIfAny(part.soup);
+  if (!ts) return;
+  const src = paintedOn.get(ts) ?? from;
+  paintedOn.delete(ts);
+  if (!src || src.uvs === to.uvs) return;
+  const queued = carries.find((c) => c.ts === ts);
+  if (queued) { queued.to = to; queued.i = i; return; }
+  carries.push({ i, ts, from: src, to });
+  if (!carrying) void runCarries();
+}
+async function runCarries() {
+  carrying = true;
+  try {
+    for (let c = carries[0]; c; c = carries[0]) {
+      const name = get().parts[c.i]?.name ?? 'part';
+      set({ notice: `Carrying ${name}'s paint onto its new layout…` });
+      try {
+        const r = await transferPaint(c.ts, c.from, c.to);
+        carries.shift();
+        const now = get().parts[c.i];
+        if (!now || setIfAny(now.soup) !== c.ts) continue;
+        ensureShell(c.ts, c.to.uvs);
+        // material layers are made from their own settings, not the old texels: each bakes again on the new mesh, so
+        // surface the old mesh never had (a reworked grip) is covered too; hand paint and masks keep the carried pixels
+        const span = modelSize(get().result!);
+        for (const l of c.ts.layers) {
+          if (l.fill) {
+            // a fill whose material isn't loaded (the library still arriving, a file gone) keeps the carried pixels:
+            // baking it on no maps flattened a Cerakote to its bare tint, roughness, normal and height lost
+            const solid = l.fill.asset === SOLID, id = l.fill.asset, a = solid ? null : materialOf(id) ?? (await loadMaterialLibrary().catch(() => [])).find((m) => m.id === id) ?? null;
+            const maps: MaterialPixels | null = solid ? {} : a ? await materialPixels(a).catch(() => null) : null;
+            if (maps && c.ts.layers.includes(l)) bakeFill(c.ts, l, maps, c.to.pos, c.to.uvs, span);
+          } else if (l.bevel) bakeBevel(c.ts, l, c.to.pos, c.to.uvs);
+          else if (l.decal) rebakeDecal(c.i, l);
+        }
+        await requestComposite(c.ts);
+        // generators follow the mesh maps, which described the old layout: bake them again
+        if (c.ts.layers.some((l) => l.gen)) await bakePaint([c.i]);
+        repaint();
+        set({ notice: `${name}: paint carried onto the new layout, ${Math.round(r.kept * 100)}% of it texel for texel${r.lost ? `; ${r.lost} texels on new surface had nothing under them` : ''}.` });
+      } catch (e) {
+        carries.shift();
+        set({ error: `${name}: the paint could not be carried (${e instanceof Error ? e.message : String(e)})` });
+      }
+    }
+  } finally { carrying = false; }
 }
 
 const placeholder = (part: Part): PartOut => {
@@ -673,6 +761,7 @@ async function tidy(part: number, before: Float32Array) {
  *  `keep`: a reseam, the part's hand edits carry over (and its selection: same positions, same topology). */
 function land(partIndex: number, raw: PartOut, partUvs: Float32Array, seams: number[], ms: number, keep: boolean) {
   const before = get(), result = before.result!, params = before.params;
+  const was = before.parts[partIndex], oldOut = result.parts[partIndex], oldUv = before.uvs[partIndex];
   const nextParts = result.parts.slice();
   nextParts[partIndex] = { ...raw, uvs: Array.from(partUvs) };
   let nextId = 0;
@@ -685,6 +774,7 @@ function land(partIndex: number, raw: PartOut, partUvs: Float32Array, seams: num
   const nextResult: Output = { parts: nextParts, stats: refreshStats(nextParts, result.stats, params.one_atlas, ms) };
   set((s) => ({ result: nextResult, uvs: nextUvs, uvRev: s.uvRev + 1, edited: keep && s.edited, loading: null, past: [], future: [],
     parts: s.parts.map((p, i) => (i !== partIndex ? p : keep ? { ...p, solved: seams, stale: false } : { ...withBorders(p, raw), stale: false })) }));
+  carryPaint(partIndex, was && !was.stale && oldOut && oldUv ? { pos: oldOut.positions, uvs: oldUv } : null, { pos: raw.positions, uvs: partUvs });
 }
 
 // ---- loading, unwrapping, exporting ----
@@ -701,7 +791,7 @@ export const unwrap = () => task('Unwrapping…', async () => {
   else if (parts.length) await unwrapPart(activePart);
 });
 /** The open question's answer (null: cancelled / Esc). */
-export function answerAsk(v: OpenOpts | 'save' | 'discard' | null) {
+export function answerAsk(v: OpenOpts | 'save' | 'discard' | string | null) {
   const a = get().ask;
   set({ ask: null });
   a?.done(v as never);
@@ -754,7 +844,7 @@ const loadFile = (file: File, o: OpenOpts) => task(`${o.unwrap ? 'Unwrapping' : 
   resetCache(cache);
   setModelSize(parts.map((p) => p.soup));
   resetPaintHistory();
-  set({ project: null, source: file.name, unit, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, ...NO_RIG, layerSel: parts.length ? [0] : [], layerAnchor: 0, uvScope: o.one_atlas ? 'all' : 'part', csel: null, fixNote: null, textureResolution: o.resolution, symPlane: null, symEdit: null });
+  set({ project: null, source: file.name, unit, parts, partsPast: [], partsFuture: [], result: null, uvs: [], activePart: 0, ...NO_RIG, partOffset: {}, moveParts: false, layerSel: parts.length ? [0] : [], layerAnchor: 0, uvScope: o.one_atlas ? 'all' : 'part', csel: null, fixNote: null, textureResolution: o.resolution, symPlane: null, symEdit: null });
   // no auto unwrap: the bare mesh, stale, so Unwrap (or entering UV Magician / Van Gogh from Poly Doc) unwraps it
   if (get().workspace === 'doc' || !o.unwrap) meshOnly(); else await solve();
   // a model just opened is its source file: nothing to lose yet, so opening another doesn't ask to save it
@@ -837,6 +927,62 @@ export async function pickFile() {
   input.onchange = () => input.files?.[0] && openRemembered(input.files[0]);
   input.click();
 }
+/** File › Replace model…: pick the new version of the model's file. */
+export function pickReplaceModel() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.fbx,.obj,.glb,.gltf,.stl';
+  input.onchange = () => input.files?.[0] && void replaceModel(input.files[0]);
+  input.click();
+}
+/** File › Replace model…: a new version of the model's file (edited in Blender, say) into this project, keeping its
+ *  work. Parts match by name, else by shape (the old part whose surface the new one lies on, within 2% of the model:
+ *  parts renamed here or in the other app still pair up); a matched part takes the new mesh and keeps its texture set, its
+ *  name here, visibility and bone;
+ *  its paint comes across when the part is unwrapped (`carryPaint`: every texel from the same point on the old mesh,
+ *  decals inked again from their 3D frames). A new part comes in blank; a part the file no longer has goes. The UVs
+ *  are unwrapped again (the mesh changed); a matched part's binding comes across per triangle (each new triangle follows
+ *  the bone of the old triangle nearest it: a rigid part stays on its bone, a skinned one keeps its split), so the rig
+ *  still moves the new mesh. */
+export const replaceModel = (file: File) => task(`Replacing the model with ${file.name}…`, async () => {
+  const s = get();
+  if (!s.parts.length) return void (await openFile(file));
+  const { parts: imported } = await readParts(file);
+  const byName = new Map(s.parts.map((p, i) => [p.name, i])), used = new Set<number>(), pair = new Map<number, number>();
+  imported.forEach((np, k) => { const i = byName.get(np.name); if (i !== undefined && !used.has(i)) { pair.set(k, i); used.add(i); } });
+  // the rest by shape, closest pairs first
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const p of s.parts) for (let k = 0; k < p.soup.length; k++) { lo[k % 3] = Math.min(lo[k % 3], p.soup[k]); hi[k % 3] = Math.max(hi[k % 3], p.soup[k]); }
+  const tol = 0.02 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), gaps: [number, number, number][] = [];
+  imported.forEach((np, k) => { if (!pair.has(k)) s.parts.forEach((p, i) => { if (!used.has(i)) gaps.push([surfaceGap(p.soup, np.soup), k, i]); }); });
+  for (const [g, k, i] of gaps.sort((x, y) => x[0] - y[0])) if (g <= tol && !pair.has(k) && !used.has(i)) { pair.set(k, i); used.add(i); }
+  // each painted part's layout, taken before its mesh goes (by its own index: the new file may order parts differently)
+  const parts: Part[] = imported.map((np, k) => {
+    const i = pair.get(k);
+    if (i === undefined) return { ...np, seams: [], marked: [], solved: [], visible: true, textured: true };
+    const old = s.parts[i], ts = setIfAny(old.soup), out = s.result?.parts[i], uv = s.uvs[i];
+    if (ts && !old.stale && out && uv && !paintedOn.has(ts)) paintedOn.set(ts, { pos: out.positions, uvs: uv });
+    shareSet(old.soup, np.soup);
+    return { ...old, soup: np.soup, poly: np.poly, sides: np.sides, normals: np.normals, seams: [], marked: [], solved: [] };
+  });
+  // the rig's binding: each new triangle the bone its nearest old triangle followed
+  const bind = imported.map((np, k): Int32Array | undefined => {
+    const i = pair.get(k), was = i === undefined ? undefined : s.rig.bind[i];
+    if (i === undefined || !was?.length) return undefined;
+    if (was.every((b) => b === was[0])) return new Int32Array(np.soup.length / 9).fill(was[0]);
+    return Int32Array.from(nearestTriangles(s.parts[i].soup, np.soup), (t) => was[t] ?? -1);
+  });
+  const gone = s.parts.filter((_, i) => !used.has(i));
+  for (const p of gone) { const ts = setIfAny(p.soup); if (ts) disposeSet(ts); }
+  const added = imported.filter((_, k) => !pair.has(k)).map((np) => np.name);
+  keepParts();
+  setModelSize(parts.map((p) => p.soup));
+  set((st) => ({ parts, result: null, uvs: [], pins: {}, csel: null, selected: [], partOffset: {}, symPlane: null, symEdit: null, activePart: 0, layerSel: [0], layerAnchor: 0,
+    rig: { ...st.rig, bind }, partsPast: [], partsFuture: [], source: file.name }));
+  meshOnly();
+  if (get().workspace !== 'doc') await unwrapChanged();
+  set({ notice: `Replaced the model: ${used.size} part${used.size === 1 ? '' : 's'} kept their paint${added.length ? `; new: ${added.join(', ')}` : ''}${gone.length ? `; no longer in the file: ${gone.map((p) => p.name).join(', ')}` : ''}.` });
+});
 /** Open a file and put it at the top of File › Open Recent. */
 async function openRemembered(file: File, handle?: FileSystemFileHandle) {
   await remember(file, handle);
@@ -985,7 +1131,7 @@ export const openProject = async (path?: string, recover = false) => (await conf
       materials: mergeById(restored.materials, s.materials), decals: mergeById(restored.decals, s.decals), refImage: restored.refImage,
       project: recover ? null : head.path, saved: !recover, rev: s.rev + 1, uvRev: s.uvRev + 1, edited: false, loading: null,
       // the Unfold slider is a view of the old model's UVs: a project opens on the model itself
-      unfold: 0,
+      unfold: 0, partOffset: {}, moveParts: false,
       past: [], future: [], partsPast: [], partsFuture: [], csel: null, selected: [], layerSel: state.parts.length ? [state.activePart] : [], layerAnchor: state.activePart,
       rigSel: -1, pose: [], rigChain: null, rigPast: [], rigFuture: [], rigMode: 'edit', rigGizmo: 'move', rigGizmoOn: false, rigPick: null, rigEnd: 'body',
       uvScope: state.params.one_atlas ? 'all' : 'part', fixNote: null, layerPick: [], error: warnings[0] ?? null }));
@@ -993,6 +1139,9 @@ export const openProject = async (path?: string, recover = false) => (await conf
     sets.forEach((saved, i) => {
       if (!saved || !state.parts[i]) return;
       const ts = restoreSet(state.parts[i].soup, saved, pixels(i, saved.size));
+      // the UV shell is what the padding needs: without it a recomposite leaves the grey gutter round every island
+      const uv = get().uvs[i];
+      if (uv) ensureShell(ts, uv);
       if (ts.sel) shade(ts);
       // a set saved with its composite shows as it is: only the others lay their stack out
       if (!saved.comp) restoredSets.push({ i, ts });
@@ -1070,6 +1219,7 @@ function exportParts(): { i: number; part: ExportPart }[] | null {
   });
 }
 export const setTriangulate = (triangulate: boolean) => set({ triangulate });
+export const setExportShowcase = (exportShowcase: boolean) => { set({ exportShowcase }); keep('exportShowcase', exportShowcase ? 1 : 0); };
 /** File › Export ▸ Model: the parts in scope as one binary FBX in the browser's downloads. */
 export const exportFbx = () => task('Exporting FBX…', async () => {
   await unwrapChanged();
@@ -1127,26 +1277,32 @@ export const exportTextures = () => task('Exporting textures…', async () => {
       else if (d && !d.shape) decals[d.id] = decalUrl(d); // a shape has no file: the engine draws it from the layer
     }
   }
-  const blobs: [string, Uint8Array][] = [];
+  const blobs: [string, Uint8Array][] = [], atlas = s.params.one_atlas;
   let fbx: string | undefined;
   if (s.exportFbx) {
     const ps = exportParts();
     if (!ps) return;
     const slots: [Channel, FbxSlot][] = [['color', 'DiffuseColor'], ['metal', 'ReflectionFactor'], ['rough', 'ShininessExponent'], ['normal', 'NormalMap']];
+    // One atlas: the parts share one UV square, so the engine writes one set of maps for all of them and every part
+    // goes in one material on those maps; else a material and a set of maps per part
+    const shared = new Set(ps.flatMap(({ i }) => setIfAny(s.parts[i].soup)?.channels ?? []));
     for (const { i, part } of ps) {
-      const ts = setIfAny(s.parts[i].soup);
-      part.material = part.name; // one texture set per part, even with one atlas
-      if (ts) part.maps = Object.fromEntries(slots.filter(([ch]) => ch === 'color' || ts.channels.includes(ch)).map(([ch, slot]) => [slot, `${base}-${part.name}-${CHANNELS[ch].file}.png`]));
+      const ts = setIfAny(s.parts[i].soup), chans = atlas ? shared : new Set(ts?.channels ?? []);
+      part.material = atlas ? base : part.name;
+      if (ts || (atlas && shared.size)) part.maps = Object.fromEntries(slots.filter(([ch]) => ch === 'color' || chans.has(ch)).map(([ch, slot]) => [slot, `${atlas ? base : `${base}-${part.name}`}-${CHANNELS[ch].file}.png`]));
     }
     fbx = `${base}.fbx`;
     blobs.push(['fbx', toFbx(ps.map((x) => x.part), s.params.sharp, s.unit, s.rig.bones)]);
   }
-  const req = { project, size: s.exportSize, preset, base, parts: scopeIndices(s.exportScope), padding: s.exportPadding || undefined, materials, decals, reliefs, fbx };
+  // Da Vinci's settings and Geppetto's pose: the engine has Blender build the showcase scene beside the FBX
+  const open = openPose(s.rig.bones, s.pose);
+  const showcase = fbx && s.exportShowcase ? { show: s.show, pose: s.rig.bones.map((b, i) => ({ name: b.name, rot: open[i]?.rot ?? [0, 0, 0], loc: open[i]?.loc ?? [0, 0, 0], slide: open[i]?.slide ?? 0 })) } : undefined;
+  const req = { project, size: s.exportSize, preset, base, parts: scopeIndices(s.exportScope), padding: s.exportPadding || undefined, materials, decals, reliefs, fbx, showcase, atlas };
   // the engine reports what it is on: show it while the render runs
   const poll = window.setInterval(() => { void textureApi.status().then((t) => { if (t && get().busy) set({ busy: t }); }).catch(() => undefined); }, 700);
   try {
     const done = await textureApi.export(encodePack(JSON.stringify(req), blobs));
-    if (done) set({ notice: `Exported ${done.files.length} files at ${s.exportSize}px to ${done.dir}` });
+    if (done) set({ notice: `Exported ${done.files.length} files at ${s.exportSize}px to ${done.dir}${done.warning ? ` · ${done.warning}` : ''}` });
   } finally { window.clearInterval(poll); }
 });
 
@@ -1311,6 +1467,7 @@ export function selectionCount(s: State = get()): { n: number; label: string } |
   const c = liveSel(s);
   if (!c) return null;
   const m = s.selectMode;
+  if (m === 'island' && s.workspace === 'doc') return { n: 1, label: 'part' };
   if (m === 'island') {
     const n = s.selected.length;
     return { n, label: n === 1 ? 'island' : 'islands' };
@@ -1400,7 +1557,8 @@ export function selectElems(part: number, ids: Iterable<number>, op: SelOp = 'se
   const kind = kindOf(s.selectMode), cur = liveSel(s), own = new Set(op !== 'set' && cur?.part === part ? cur[kind] : []);
   // a face is its whole polygon, however it was picked (click, box, all, linked, the UV view), as in Blender
   // (not for whole islands in UV Magician: a seam can run through a quad, and an island must stay exactly itself)
-  const pick = s.selectMode === 'island' ? wholeIslands(out.island, ids) : kind === 'faces' && polygons ? wholePolygons(out, s.parts[part]?.poly, ids) : [...ids];
+  // Poly Doc's fourth mode is Part: whatever was picked, the part's every face
+  const pick = s.selectMode === 'island' && s.workspace === 'doc' ? out.source.map((_, f) => f) : s.selectMode === 'island' ? wholeIslands(out.island, ids) : kind === 'faces' && polygons ? wholePolygons(out, s.parts[part]?.poly, ids) : [...ids];
   const allOn = pick.length > 0 && pick.every((x) => own.has(x));
   for (const x of pick) { if (op === 'sub' || (op === 'toggle' && allOn)) own.delete(x); else own.add(x); }
   set({ csel: own.size ? flushed(part, out.positions, kind, own) : null, activePart: part });
@@ -1413,8 +1571,9 @@ function selectFaces(part: number, faces: number[], op: SelOp, polygons = true) 
   selectElems(part, kind === 'faces' ? faces : flushed(part, out.positions, 'faces', faces)[kind], op, polygons);
 }
 export function showWorkspace(workspace: Workspace, unwrap = true) {
-  // Poly Doc has no islands (it doesn't unwrap) and no UV view: island select mode becomes face, framing keys target 3D
-  if (workspace === 'doc' || workspace === 'rig') { if (get().selectMode === 'island') setSelectMode('face'); pointer.view = '3d'; }
+  // Poly Doc and Geppetto have no UV view (framing keys target 3D); Geppetto has no islands either (Poly Doc's fourth
+  // mode is Part, so an island pick there becomes the whole part)
+  if (workspace === 'doc' || workspace === 'rig') { if (workspace === 'rig' && get().selectMode === 'island') setSelectMode('face'); pointer.view = '3d'; }
   // the plane gizmo belongs to UV Magician's 3D view: leaving the workspace puts a moved plane back
   if (get().symEdit) cancelSymPlane();
   if (get().docKnife) set({ docKnife: null });
@@ -1422,6 +1581,7 @@ export function showWorkspace(workspace: Workspace, unwrap = true) {
   try { localStorage.setItem('workspace', workspace); } catch { /* private mode */ }
   if (workspace !== 'rig' && (get().rigChain || get().rigPick)) set({ rigChain: null, rigPick: null });
   if (workspace === 'rig') set({ csel: null }); // Geppetto works on parts and bones, not faces
+  if (workspace === 'render') set({ csel: null });
   if (unwrap && workspace !== 'doc' && workspace !== 'rig') void unwrapStale(); // Van Gogh paints through the UVs
 }
 /** UV Magician picks up what Poly Doc changed: every part if none has UVs yet, else each changed part on its own. */
@@ -1480,7 +1640,7 @@ function soupSel(): { part: number; g: Geo; sel: SoupSel } | null {
   const verts = [...c.verts].map((v) => L.toSoup[v]).filter((v) => v >= 0);
   const edges = faceMode ? [] : [...c.edges].filter((e) => { const [a, b] = t.edgeTris[e]; return b === undefined || pid[a] < 0 || pid[a] !== pid[b]; })
     .map((e) => [L.toSoup[t.ends[e * 2]], L.toSoup[t.ends[e * 2 + 1]]] as [number, number]).filter(([a, b]) => a >= 0 && b >= 0);
-  return { part: c.part, g: { soup: part.soup, ...cur },
+  return { part: c.part, g: { ...partGeo(part), ...cur },
     sel: { faces: faceMode ? [...c.faces].map((f) => out.source[f]) : [], verts: s.selectMode === 'vert' || faceMode ? verts : [], edges } };
 }
 /** Select in a part by soup ids (vertices, edge vertex pairs, triangles), switching to the mode that shows them. */
@@ -1537,15 +1697,31 @@ function applyReshape(partIx: number, g: Geo, r: Done | null, what: string, done
     if (on.length && chain.every((p, j) => !j || has(chain[j - 1], p))) chain.forEach((p, j) => { if (j) marked.push(...chain[j - 1], ...p); });
   }
   // a cut or a cleanup moved nothing: the part keeps its UVs, hand edits and all, the new corners read off where they lie
-  const s0 = get(), out = s0.result?.parts[at.part], carried = r.origin && !part.stale && out && s0.uvs[at.part] ? carryUVs(out, s0.uvs[at.part], r.geo.soup, r.origin, at.g.poly) : null;
+  const s0 = get(), out = s0.result?.parts[at.part], carried = r.origin && !part.stale && out && s0.uvs[at.part] ? carryUVs(out, s0.uvs[at.part], r.geo.soup, r.origin, at.g.poly, r.wound) : null;
   keepParts();
-  set({ parts: get().parts.map((p, i) => (i === at.part ? { ...p, soup: r.geo.soup, poly: r.geo.poly, sides: r.geo.sides, normals: undefined, marked, seams: marked, solved: [] } : p)), csel: null, fixNote: `${what}: ${r.note ?? done}${carried ? ' UVs kept.' : ''}` });
+  // the part keeps its texture set: with the UVs carried the paint is still where it was, else it comes across when
+  // the part is unwrapped again (`carryPaint`); a new soup used to start a blank set, which a save then wrote
+  shareSet(part.soup, r.geo.soup);
+  set({ parts: get().parts.map((p, i) => (i === at.part ? { ...p, soup: r.geo.soup, poly: r.geo.poly, sides: r.geo.sides, normals: r.normals, marked, seams: marked, solved: [] } : p)), csel: null, fixNote: `${what}: ${r.note ?? done}${carried ? ' UVs kept.' : ''}` });
   if (carried) land(at.part, carried, Float32Array.from(carried.uvs), [], 0, false); else meshOnly(at.part);
   // what it made, found again in the new soup by position
   const vid = (p: number[]) => t.at.get(xyzKey(p[0], p[1], p[2])) ?? -1;
   selectSoup(at.part, r.faces ? { faces: r.faces } : r.edges ? { edges: r.edges.map(([a, b]) => [vid(a), vid(b)] as [number, number]).filter(([a, b]) => a >= 0 && b >= 0) } : { verts: (r.verts ?? []).map(vid).filter((v) => v >= 0) });
 }
-const partGeo = (p: Part): Geo => ({ soup: p.soup, ...(p.poly && p.sides ? { poly: p.poly, sides: p.sides } : ownPolygons(p.soup.length / 9)) });
+/** A part as Poly Doc's tools read it: the soup, its polygons, and the file's own normals per corner when it has them. */
+export const partGeo = (p: Part): Geo => ({ soup: p.soup, ...(p.poly && p.sides ? { poly: p.poly, sides: p.sides } : ownPolygons(p.soup.length / 9)), ...(p.normals?.length === p.soup.length && { normals: p.normals }) });
+/** Turn faces over with `fn` (Recalculate Outside, Flip) on the selection, or the active part with nothing selected;
+ *  the file's normals come back from `fn` turned to match (`Done.normals`). */
+const windSel = (what: string, fn: (g: Geo, s: SoupSel) => Done | null, why: string) => task(`${what}…`, async () => {
+  const at = soupSel(), i = at?.part ?? get().activePart, p = get().parts[i];
+  if (!p) return;
+  const g = at?.g ?? partGeo(p);
+  applyReshape(i, g, fn(g, at?.sel ?? { faces: [], verts: [], edges: [] }), what, 'faces turned.', why);
+});
+/** Shift+N: every face of the selection (nothing selected: the part) wound alike and facing outward. */
+export const recalcOutsideSel = () => windSel('Recalculate Outside', recalcOutside, 'Every face already faces outward.');
+/** Alt+N: the selected faces turned over. */
+export const flipFacesSel = () => windSel('Flip', flipFaces, 'Select the faces to turn over first.');
 /** Clean Vertices: the selection's vertices that shape nothing dissolved (nothing selected: the active part's). */
 export const cleanVertsSel = () => task('Clean Vertices…', async () => {
   const at = soupSel(), i = at?.part ?? get().activePart, p = get().parts[i];
@@ -1609,7 +1785,7 @@ export const limitedDissolveSel = () => regroup('Limited Dissolve', (soup, cur, 
 export function selectFound(kind: 'nonManifold' | 'nonManifoldVert' | 'open' | 'flipped' | 'insideOut' | 'zero' | 'duplicate' | 'low' | 'high') {
   const { activePart: i, parts, result } = get(), p = parts[i], out = result?.parts[i];
   if (!p || !out) return;
-  const g = { soup: p.soup, ...(p.poly && p.sides ? { poly: p.poly, sides: p.sides } : ownPolygons(p.soup.length / 9)) };
+  const g = partGeo(p);
   if (kind === 'low' || kind === 'high') selectSoup(i, { verts: poles(g)[kind] });
   else {
     const m = meshCheck(g);
@@ -1655,6 +1831,7 @@ export function updateDocMove(x: number, y: number, now = false) {
     let d = view3d.worldDelta(lastMouse[0] - m.mouse[0], lastMouse[1] - m.mouse[1], m.pivot);
     if (m.axis !== null) d = d.map((v, k) => (k === m.axis ? v : 0)) as [number, number, number];
     const geo = moveOnSurface(m.base, m.verts, d, get().moveOnSurface && m.axis === null, m.snap);
+    shareSet(get().parts[m.part].soup, geo.soup);
     set({ parts: get().parts.map((p, i) => (i === m.part ? { ...p, soup: geo.soup, normals: m.normals && carryNormals(m.base.soup, m.normals, geo.soup) } : p)), docMove: { ...m, moved: true } });
     meshOnly(m.part);
   };
@@ -1689,13 +1866,20 @@ export function cancelDocMove() {
 export function selectRed() {
   const { activePart: i, parts, result } = get(), p = parts[i], out = result?.parts[i];
   if (!p || !out) return;
-  const score = health(out, { soup: p.soup, ...(p.poly && p.sides ? { poly: p.poly, sides: p.sides } : ownPolygons(p.soup.length / 9)) });
+  const score = health(out, partGeo(p));
   set({ selectMode: 'face', docView: 'health' });
   selectFaces(i, [...score.keys()].filter((t) => score[t] >= 0.6), 'set');
   viewOp('3d', 'selected');
 }
 export const setDocOpt = (key: keyof State['docOpts'], value: number) => set((s) => ({ docOpts: { ...s.docOpts, [key]: value } }));
 /** Smooth is how the model will look: it turns Cavity on (World + Screen), which can still be switched off there. */
+/** Where part `i` is drawn, slid from where it is (Move parts); null where the view shows it in place: only Poly Doc
+ *  and UV Magician slide parts, the other workspaces' tools work in the model's own space. */
+export const viewOffset = (s: Pick<State, 'workspace' | 'partOffset'>, i: number) => ((s.workspace === 'doc' || s.workspace === 'uv') && s.partOffset[i]) || null;
+export const toggleMoveParts = () => set((s) => ({ moveParts: !s.moveParts }));
+export const setPartOffset = (i: number, v: [number, number, number]) => set((s) => ({ partOffset: { ...s.partOffset, [i]: v } }));
+/** Every part back where it is in the model. */
+export const resetPartOffsets = () => set({ partOffset: {} });
 export const setDocView = (docView: DocView) => set((s) => ({ docView, ...(docView === 'smooth' && { scene: { ...s.scene, cavity: true, cavityType: 'both' as const } }) }));
 export const setDocColor = (docColor: 'single' | 'random') => set((s) => ({ docColor, docView: s.docView === 'health' ? 'wire' : s.docView }));
 
@@ -1707,6 +1891,7 @@ export const DISPLAY: Record<Workspace, DisplayChoice[]> = {
     { id: 'wire', label: 'Wire', title: 'Each polygon flat, with the wireframe: for working on the topology' },
     { id: 'smooth', label: 'Smooth', title: 'Smooth shaded, no wireframe: how the model will look' },
     { id: 'health', label: 'Health', title: 'Every face green (solid) through yellow to red (fix)' },
+    { id: 'faces', label: 'Faces', title: 'Face orientation, as Blender: blue where you see a face’s front (outside), red its back (inside). Shift+N fixes red faces' },
   ],
   uv: [
     { id: 'checker', label: 'Checker', title: 'The checker texture: texel density and distortion' },
@@ -1722,6 +1907,7 @@ export const DISPLAY: Record<Workspace, DisplayChoice[]> = {
     { id: 'bones', label: 'Bones', title: 'Each face in the colour of the bone it follows (grey: none)' },
     { id: 'plain', label: 'Plain', title: 'The model in plain grey' },
   ],
+  render: [],
 };
 export interface DisplayOption extends DisplayChoice { on: boolean; run: () => void }
 /** The workspace's Display choices with their current state and what picking them does. */
@@ -1780,7 +1966,7 @@ export const relaxAroundSel = () => reshape('Relax Around', 'faces', 'spacing ev
 export function selectRule(rule: RuleId) {
   const { activePart: i, parts } = get(), p = parts[i];
   if (!p) return;
-  const g = { soup: p.soup, ...(p.poly && p.sides ? { poly: p.poly, sides: p.sides } : ownPolygons(p.soup.length / 9)) }, r = ruleCounts(g).get(rule);
+  const g = partGeo(p), r = ruleCounts(g).get(rule);
   if (!r) return;
   const polys = new Set([...r.look, ...r.fix]), faces: number[] = [];
   g.poly.forEach((q, f) => { if (polys.has(q)) faces.push(f); });
@@ -1804,11 +1990,12 @@ export function select(ids: number[], add = false) {
  *  islands, so 4 does nothing there (the control is disabled, not hidden, so the row never moves). */
 export function setSelectMode(m: SelectMode) {
   const s = get(), cur = liveSel(s);
-  if (m === 'island' && (s.workspace === 'doc' || s.workspace === 'rig')) return;
+  if (m === 'island' && s.workspace === 'rig') return;
   if (!cur || m === s.selectMode) return set({ selectMode: m });
   const out = s.result!.parts[cur.part];
   let own: Iterable<number> = cur[kindOf(m)];
-  if (m === 'island') own = wholeIslands(out.island, cur.faces.size ? cur.faces : facesAround(topoOf(cur.of), cur.verts));
+  if (m === 'island' && s.workspace === 'doc') own = out.source.map((_, f) => f);
+  else if (m === 'island') own = wholeIslands(out.island, cur.faces.size ? cur.faces : facesAround(topoOf(cur.of), cur.verts));
   // to faces: a polygon counts once every one of its triangles does (all its corners selected), as Blender converts
   else if (kindOf(m) === 'faces') own = completePolygons(out, s.parts[cur.part]?.poly, new Set(own));
   const next = flushed(cur.part, cur.of, kindOf(m), own);
@@ -1884,8 +2071,34 @@ export const viewOp = (view: '3d' | 'uv', op: ViewOp) => set((s) => ({ viewReq: 
 export const openMenu = (title: string, items: MenuItem[], pie = false) => {
   const x = pie ? Math.max(176, Math.min(innerWidth - 176, pointer.x)) : pointer.x;
   const y = pie ? Math.max(120, Math.min(innerHeight - 120, pointer.y)) : pointer.y;
+  // every right-click menu, in every workspace, can rename the part it is about (the active one: each menu picks it first)
+  const part = get().parts[get().activePart];
+  if (!pie && part) items = [...items, { label: 'Part', run: () => {}, kind: 'head' }, { label: `Rename ${part.name}…`, kbd: 'F2', run: () => void askRenamePart(get().activePart) }];
   set({ menu: { x, y, title, items, pie } });
 };
+/** Rename a part: its bone (when named after it, as auto-rig names them) follows. Names stay unique, as FBX objects. */
+export function renamePart(i: number, name: string) {
+  const s = get(), p = s.parts[i];
+  name = name.trim();
+  if (!p || !name || name === p.name || s.parts.some((q, j) => j !== i && q.name === name)) return;
+  const bones = s.rig.bones;
+  if (bones.some((b) => b.name === p.name) && !bones.some((b) => b.name === name))
+    set({ rig: { ...s.rig, bones: bones.map((b) => (b.name === p.name ? { ...b, name } : b)) } });
+  set({ parts: get().parts.map((q, j) => (j === i ? { ...q, name } : q)) });
+}
+/** Right click where a workspace has no menu of its own (Van Gogh): the part under the pointer, made active. */
+export function partMenu(x: number, y: number) {
+  pointer.x = x; pointer.y = y;
+  if (pointer.view === '3d' && pointer.part >= 0) set({ activePart: pointer.part });
+  if (get().parts.length) openMenu(get().parts[get().activePart]?.name ?? 'Part', []);
+}
+/** F2 / a menu's Rename: the name asked in the app's dialog. */
+export async function askRenamePart(i = get().activePart) {
+  const p = get().parts[i];
+  if (!p) return;
+  const name = await new Promise<string | null>((done) => set({ ask: { kind: 'rename', name: p.name, done } }));
+  if (name) renamePart(i, name);
+}
 export const closeMenu = () => set({ menu: null });
 export const armBox = () => set({ boxArmed: true });
 /** What the menus offer, for the selection there is. */
@@ -2754,7 +2967,13 @@ export const setPaint = (p: Partial<State['paint']>) => set((s) => {
 export const setPaintTab = (paintTab: State['paintTab']) => set({ paintTab });
 export const setAssetTab = (assetTab: State['assetTab']) => set({ assetTab, paintTab: 'assets' });
 /** Part `i`'s texture set (Base Color and one empty layer, at the texture resolution, the first time). */
-export const texSet = (i: number) => setOf(get().parts[i].soup, get().textureResolution);
+/** Part i's texture set, its UV shell kept current (a reopened set, or one after a re-unwrap, would otherwise
+ *  recomposite with no padding: the gutter's grey bleeds into every seam as a light line). */
+export const texSet = (i: number) => {
+  const s = setOf(get().parts[i].soup, get().textureResolution), uv = get().uvs[i];
+  if (uv) ensureShell(s, uv);
+  return s;
+};
 const repaint = () => set((s) => ({ paintRev: s.paintRev + 1 }));
 const repaintPanel = () => set((s) => ({ paintPanel: s.paintPanel + 1 }));
 /** One redraw per animation frame while a stroke is under way; `paintRev` waits for the stroke end. */
@@ -3627,7 +3846,7 @@ export function pickDecal(id: string) {
   if (!a) return;
   cancelDraw(); // a half-drawn polyline belongs to the asset it was started with
   set((s) => ({
-    paint: { ...s.paint, tool: 'decal', decalMode: a.shape && isLine(a.shape.pattern) ? 'draw' : 'place', decalAsset: id, decalTint: s.paint.color, ...(a.size ? { decalSize: a.size } : {}) },
+    paint: { ...s.paint, tool: 'decal', decalMode: a.shape && isLine(a.shape.pattern) ? 'draw' : 'place', decalAsset: id, decalTint: a.tint ?? s.paint.color, ...(a.size ? { decalSize: a.size } : {}) },
     paintTab: 'assets', assetTab: a.shape || a.relief ? 'geometry' : 'decals', error: null,
   }));
 }
@@ -3775,12 +3994,13 @@ function placeDecal(i: number, tri: number, at: [number, number, number], made?:
     asset: a.id, center: [...at] as [number, number, number], normal, up: decalUp(normal),
     width: Math.max(span * st.paint.decalSize / 100, span * 0.01), rotation: st.paint.decalRotation,
     aspect: a.width / a.height, tint: st.paint.decalTint, roughness: 0.55, metallic: 0,
-    channels: a.shape || a.relief ? ['normal', 'height'] : ['color', 'rough', 'metal'],
+    channels: a.shape || a.relief ? ['normal', 'height'] : a.engrave ? ['color', 'rough', 'metal', 'normal', 'height'] : ['color', 'rough', 'metal'],
+    ...(a.engrave ? { engrave: a.engrave } : {}),
     ...(a.shape ? { shape: shapeAt(a.shape, span) } : {}),
     ...(a.relief ? { reliefNormal: 1, reliefHeight: 1 } : {}),
   };
   step(s);
-  if ((a.shape || a.relief) && !s.channels.includes('normal')) s.channels = [...FILL_CHANNELS];
+  if ((a.shape || a.relief || a.engrave) && !s.channels.includes('normal')) s.channels = [...FILL_CHANNELS];
   const layer: PaintLayer = { ...newLayer(s.layers.length + 1), name: a.name, decal };
   const at0 = insertAt(s);
   s.layers.splice(at0, 0, layer);
@@ -3963,7 +4183,7 @@ function mirrorPress(i: number, tri: number, at: [number, number, number]) {
 export function dropDecal(id: string, i: number, tri: number, at: [number, number, number]) {
   if (get().busy || !decalOf(id)) return;
   const a = decalOf(id)!;
-  set((s) => ({ paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: s.paint.color, ...(a.size ? { decalSize: a.size } : {}) } }));
+  set((s) => ({ paint: { ...s.paint, tool: 'decal', decalAsset: id, decalTint: a.tint ?? s.paint.color, ...(a.size ? { decalSize: a.size } : {}) } }));
   placeDecal(i, tri, at);
 }
 /** `up` carried onto a new facing: its part along that plane, or the upright stand-in when it would vanish. */
@@ -4383,16 +4603,19 @@ export function editGen(g: Partial<Gen>, undoable = true) {
 const RIG_STEPS = 30;
 /** A rig edit, as one undo step (`step` false: a drag's later moves, after its first took the step). */
 function editRig(next: Partial<Rig>, step = true) {
-  set((s) => ({ rig: { ...s.rig, ...next }, ...(step ? { rigPast: [...s.rigPast.slice(1 - RIG_STEPS), s.rig], rigFuture: [] } : {}) }));
+  if (step) rigStep();
+  set((s) => ({ rig: { ...s.rig, ...next } }));
 }
+/** Take an undo step of the rig and pose as they are now (an edit's or a pose gesture's first change). */
+export const rigStep = () => set((s) => ({ rigPast: [...s.rigPast.slice(1 - RIG_STEPS), { rig: s.rig, pose: s.pose }], rigFuture: [] }));
 const fitSel = (rig: Rig, i: number) => Math.min(i, rig.bones.length - 1);
 export function undoRig() {
   const { rigPast: p } = get(), back = p[p.length - 1];
-  if (back) set((s) => ({ rig: back, rigPast: p.slice(0, -1), rigFuture: [s.rig, ...s.rigFuture], rigSel: fitSel(back, s.rigSel), rigChain: null, rigPick: null, pose: [] }));
+  if (back) set((s) => ({ ...back, rigPast: p.slice(0, -1), rigFuture: [{ rig: s.rig, pose: s.pose }, ...s.rigFuture], rigSel: fitSel(back.rig, s.rigSel), rigChain: null, rigPick: null }));
 }
 export function redoRig() {
   const [next, ...rest] = get().rigFuture;
-  if (next) set((s) => ({ rig: next, rigFuture: rest, rigPast: [...s.rigPast, s.rig], rigSel: fitSel(next, s.rigSel), rigChain: null, rigPick: null, pose: [] }));
+  if (next) set((s) => ({ ...next, rigFuture: rest, rigPast: [...s.rigPast, { rig: s.rig, pose: s.pose }], rigSel: fitSel(next.rig, s.rigSel), rigChain: null, rigPick: null }));
 }
 export const setRigTool = (rigTool: RigTool) => { endChain(); set({ rigTool, rigPick: null }); };
 export const setRigView = (rigView: State['rigView']) => set({ rigView });
@@ -4539,7 +4762,8 @@ export function autoRigModel() {
   const allTris = (i: number) => Array.from({ length: s.parts[i].soup.length / 9 }, (_, t) => t);
   let units: AutoPart[] = [], maps: { part: number; tris: number[] }[] = [];
   s.parts.forEach((p, i) => {
-    const loose = looseUnits(p.soup);
+    // a part named for its motion (Slider, Mag) is one moving thing however many pieces it was modelled in
+    const loose = namedMotion(p.name) ? null : looseUnits(p.soup);
     if (loose) for (const u of loose) { units.push({ name: p.name, positions: u.positions }); maps.push({ part: i, tris: u.triangles }); }
     else { units.push({ name: p.name, positions: s.result?.parts[i]?.positions ?? p.soup }); maps.push({ part: i, tris: allTris(i) }); }
   });
@@ -4655,14 +4879,18 @@ export function setBoneMotion(i: number, kind: Motion | 'auto') {
   };
   const at = mainOf(i) >= 0 ? mainOf(i) : s.activePart;
   let patch: Partial<Bone> = {};
-  if (kind === 'auto') {
+  // Hinge / Slide / Press refit the bone to its part: the axis a Press fit lies on (across a flat part) is the wrong one
+  // to swing about, and a slide runs along the part's length. Free / Fixed don't care which way the bone points.
+  const refit = kind === 'auto' || ((kind === 'hinge' || kind === 'slide' || kind === 'press') && mainOf(i) >= 0);
+  if (refit) {
     if (!s.parts[at]) return;
-    const parentPart = mainOf(b.parent);
+    const parentPart = mainOf(b.parent), positions = (j: number) => s.result?.parts[j]?.positions ?? s.parts[j].soup;
     const fit = fitPart(
-      { name: s.parts[at].name, positions: s.result?.parts[at]?.positions ?? s.parts[at].soup },
-      parentPart >= 0 ? { name: s.parts[parentPart].name, positions: s.result?.parts[parentPart]?.positions ?? s.parts[parentPart].soup } : undefined,
+      { name: s.parts[at].name, positions: positions(at) },
+      parentPart >= 0 ? { name: s.parts[parentPart].name, positions: positions(parentPart) } : undefined,
+      undefined, kind === 'auto' ? undefined : kind,
     );
-    patch = { head: fit.head, tail: fit.tail, roll: fit.roll, limit: fit.limit, move: fit.move };
+    patch = { head: fit.head, tail: fit.tail, roll: fit.roll, limit: fit.limit, move: fit.move, ...(b.connected && kind !== 'hinge' ? { connected: false } : {}) };
   } else {
     patch = {
       limit: kind === 'free' ? null : { x: kind === 'hinge' ? [-90, 90] : [0, 0], y: [0, 0], z: [0, 0] },
@@ -4683,18 +4911,12 @@ export function rigMenu(x?: number, y?: number) {
     ]);
     return;
   }
-  const lim = b.limit, mv = b.move;
-  const free = (!lim && mv === undefined) || (mv === null && !lim);
-  const connected = !!b.connected;
+  const motion = motionOf(b), connected = !!b.connected;
   const canTarget = s.rig.bones.some((x, j) => j !== i && !isDescendant(s.rig.bones, j, i));
   openMenu(`Bone ${b.name}`, [
     { label: 'Auto fit to the part', run: () => setBoneMotion(i, 'auto') },
     { kind: 'head', label: 'Motion', run: () => {} },
-    { label: 'Free', run: () => setBoneMotion(i, 'free'), on: free },
-    { label: 'Hinge', run: () => setBoneMotion(i, 'hinge'), on: !!lim && lim.x[0] !== lim.x[1] && lim.y[0] === lim.y[1] && lim.z[0] === lim.z[1] },
-    { label: 'Slide', run: () => setBoneMotion(i, 'slide'), on: !!lim && lim.x[0] === lim.x[1] && lim.y[0] === lim.y[1] && lim.z[0] === lim.z[1] && !!mv && mv.y[0] !== mv.y[1] && mv.y[0] !== 0 && mv.y[1] !== 0 },
-    { label: 'Press', run: () => setBoneMotion(i, 'press'), on: !!lim && lim.x[0] === lim.x[1] && lim.y[0] === lim.y[1] && lim.z[0] === lim.z[1] && !!mv && mv.y[0] !== mv.y[1] && (mv.y[0] === 0 || mv.y[1] === 0) },
-    { label: 'Fixed', run: () => setBoneMotion(i, 'fixed'), on: !!lim && lim.x[0] === lim.x[1] && lim.y[0] === lim.y[1] && lim.z[0] === lim.z[1] && !!mv && mv.x[0] === mv.x[1] && mv.y[0] === mv.y[1] && mv.z[0] === mv.z[1] },
+    ...(['free', 'hinge', 'slide', 'press', 'fixed'] as const).map((k) => ({ label: k[0].toUpperCase() + k.slice(1), run: () => setBoneMotion(i, k), on: motion === k })),
     { kind: 'head', label: 'Relationships', run: () => {} },
     { label: connected ? 'Disconnect from parent' : 'Connect to parent', kbd: 'C', run: () => updateBone(i, { connected: !connected }), off: b.parent < 0, on: connected },
     { label: 'Add child bone…', kbd: 'B', run: () => { setRigTool('bone'); chainFrom(i); } },
@@ -4737,28 +4959,34 @@ export function removeConstraint(i: number, k: number) {
   editRig({ bones: bones.map((b, j) => (j === i ? { ...b, constraints: b.constraints!.filter((_, q) => q !== k) } : b)) });
 }
 
-/** Pose a bone, held inside its limits. */
-export function setPose(i: number, p: PoseBone) {
+/** Pose a bone, held inside its limits. `step`: a gesture's first change takes the undo step (Ctrl+Z puts it back). */
+/** Da Vinci: change the showcase settings; play / pause; capture one cycle as WebM, or the frame as PNG. */
+export const setShow = (patch: Partial<Show>) => set((s) => ({ show: { ...s.show, ...patch } }));
+export const toggleShowPlay = () => set((s) => ({ showPlay: !s.showPlay }));
+export const recordShow = (showRec: 'video' | 'still') => { if (!get().showRec) set({ showRec }); };
+
+export function setPose(i: number, p: PoseBone, step = false) {
   const b = get().rig.bones[i];
   if (!b) return;
+  if (step) rigStep();
   set((s) => { const pose = s.rig.bones.map((_, j) => s.pose[j] ?? { rot: [0, 0, 0] as RigV3, slide: 0, loc: [0, 0, 0] as RigV3 }); pose[i] = clampPose(b, p); return { pose }; });
 }
 /** Pose a bone so its frame lands on `m` (the Pose gizmo), read through its parent's pose, then held inside its limits. */
-export function poseTo(i: number, m: import('three').Matrix4) {
+export function poseTo(i: number, m: import('three').Matrix4, step = false) {
   const { rig, pose } = get();
-  if (rig.bones[i]) setPose(i, poseFrom(rig.bones, poseMatrices(rig.bones, pose), i, m));
+  if (rig.bones[i]) setPose(i, poseFrom(rig.bones, poseMatrices(rig.bones, pose), i, m), step);
 }
 /** Drag a posed bone: its frame moves by a world delta, held inside its limits (a connected or followed bone stays). */
-export function translatePose(i: number, d: RigV3) {
+export function translatePose(i: number, d: RigV3, step = false) {
   const s = get(), b = s.rig.bones[i];
   if (!b || b.connected) return;
   if ((b.constraints ?? []).some((c) => c.influence >= 0.999 && (c.kind === 'follow' || c.kind === 'copyLoc'))) return;
   const frames = poseMatrices(s.rig.bones, s.pose), m = frames[i].clone();
   m.elements[12] += d[0]; m.elements[13] += d[1]; m.elements[14] += d[2];
-  setPose(i, poseFrom(s.rig.bones, frames, i, m));
+  setPose(i, poseFrom(s.rig.bones, frames, i, m), step);
 }
 /** Drag a posed bone's tip: its Y aims at a world point, then its limits hold. */
-export function aimPoseAt(i: number, point: RigV3) {
+export function aimPoseAt(i: number, point: RigV3, step = false) {
   const s = get(), b = s.rig.bones[i];
   if (!b) return;
   const frames = poseMatrices(s.rig.bones, s.pose), m = frames[i].clone(), p = new Vector3(), q = new Quaternion(), sc = new Vector3();
@@ -4766,6 +4994,22 @@ export function aimPoseAt(i: number, point: RigV3) {
   const dir = new Vector3(point[0], point[1], point[2]).sub(p);
   if (dir.lengthSq() < 1e-12) return;
   const turn = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0).applyQuaternion(q).normalize(), dir.normalize());
-  setPose(i, poseFrom(s.rig.bones, frames, i, m.compose(p, turn.multiply(q), sc)));
+  setPose(i, poseFrom(s.rig.bones, frames, i, m.compose(p, turn.multiply(q), sc)), step);
 }
-export const resetPose = (all = true) => set((s) => ({ pose: all ? [] : s.pose.map((p, j) => (j === s.rigSel ? { rot: [0, 0, 0] as RigV3, slide: 0, loc: [0, 0, 0] as RigV3 } : p)) }));
+/** Pose to the end stop, then this: every axis the bone is turned or moved on gets rest … here as its range (a slide
+ *  pulled back → [-travel, 0], a trigger pulled → [0, 25°]), so no one has to know which sign is "back". */
+export function rangeToPose(i: number) {
+  const s = get(), b = s.rig.bones[i], p = s.pose[i];
+  if (!b || !p) return;
+  const lim = b.limit ? { ...b.limit } : null, m = moveRange(b), mv = m ? { ...m } : null;
+  (['x', 'y', 'z'] as const).forEach((k, a) => {
+    const r = p.rot[a], l = p.loc?.[a] ?? 0;
+    if (lim && Math.abs(r) > 1e-6) lim[k] = [Math.min(0, r), Math.max(0, r)];
+    if (mv && Math.abs(l) > 1e-9) mv[k] = [Math.min(0, l), Math.max(0, l)];
+  });
+  updateBone(i, { limit: lim, move: mv });
+}
+export function resetPose(all = true) {
+  if (get().pose.length) rigStep();
+  set((s) => ({ pose: all ? [] : s.pose.map((p, j) => (j === s.rigSel ? { rot: [0, 0, 0] as RigV3, slide: 0, loc: [0, 0, 0] as RigV3 } : p)) }));
+}

@@ -7,6 +7,33 @@ const WORKSPACES: [Workspace, string][] = [['doc', 'Poly Doc'], ['uv', 'UV Magic
 
 const sizeLabel = (n: number) => (n >= 1024 ? `${n / 1024}K` : `${n}`);
 
+/** Rename a part (F2, or Rename in any right-click menu): its bone follows when it is named after it. */
+function RenameDialog({ name, cancel }: { name: string; cancel: () => void }) {
+  const [v, setV] = useState(name), taken = useApp((s) => v.trim() !== name && s.parts.some((p) => p.name === v.trim()));
+  const ok = !!v.trim() && !taken;
+  return (
+    <div className="exp-scrim" onPointerDown={(e) => { if (e.target === e.currentTarget) cancel(); }}>
+      <form className="exp-dialog ask-dialog" role="dialog" aria-modal="true" aria-labelledby="ask-title" onSubmit={(e) => { e.preventDefault(); if (ok) answerAsk(v.trim()); }}>
+        <header className="exp-head">
+          <div><h2 id="ask-title">Rename part</h2><span className="hint">{name}</span></div>
+          <button type="button" className="exp-close" aria-label="Cancel" title="Cancel (Esc)" onClick={cancel}>×</button>
+        </header>
+        <div className="exp-body">
+          <label title="The part's name in the Parts list, the FBX and its bone">Name
+            <input autoFocus value={v} onFocus={(e) => e.target.select()} onChange={(e) => setV(e.target.value)} />
+          </label>
+          {taken && <p className="exp-detail">Another part is already called {v.trim()}.</p>}
+        </div>
+        <footer className="exp-foot">
+          <span className="hint" />
+          <button type="button" onClick={cancel}>Cancel</button>
+          <button type="submit" className="primary" disabled={!ok}>Rename</button>
+        </footer>
+      </form>
+    </div>
+  );
+}
+
 export function AskDialog() {
   const ask = useApp((s) => s.ask), last = useApp((s) => s.openOpts);
   const [o, setO] = useState(last), [again, setAgain] = useState(true);
@@ -14,6 +41,7 @@ export function AskDialog() {
   const put = (p: Partial<OpenOpts>) => setO((v) => ({ ...v, ...p }));
   if (!ask) return null;
   const cancel = () => answerAsk(null);
+  if (ask.kind === 'rename') return <RenameDialog name={ask.name} cancel={cancel} />;
   const open = () => { if (!again) setAskOnOpen(false); answerAsk(o); };
   const unsaved = ask.kind === 'unsaved';
   return (

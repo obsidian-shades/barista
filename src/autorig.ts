@@ -230,10 +230,43 @@ function contactOf(child: Shape, parent: Shape, tol: number, maxDist: number): C
 
 const words = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const has = (name: string, list: string[]) => { const ws = name.split(' '); return list.some((w) => ws.some((x) => x.startsWith(w))); };
-const FIXED = ['frame', 'body', 'shell', 'receiver', 'chassis', 'grip', 'stock', 'handguard', 'barrel', 'rail', 'mount', 'cover', 'panel', 'plate', 'guard', 'sight', 'scope', 'sides', 'side', 'housing', 'case', 'bracket', 'tray'];
+// "shell" is a gun's cartridge case (it slides out of the chamber), not housing: housing says frame / body / housing
+const FIXED = ['frame', 'body', 'receiver', 'chassis', 'grip', 'stock', 'handguard', 'barrel', 'rail', 'mount', 'cover', 'panel', 'plate', 'guard', 'sight', 'scope', 'sides', 'side', 'housing', 'case', 'bracket', 'tray'];
 const HINGE = ['trigger', 'hammer', 'lever', 'latch', 'catch', 'folding', 'hinge', 'flap', 'door', 'lid', 'clamp', 'pedal', 'crank', 'knuckle', 'safety', 'breech'];
-const SLIDE = ['mag', 'magazine', 'slide', 'slider', 'piston', 'rod', 'plunger', 'carriage', 'bolt', 'drawer', 'telescop', 'recoil', 'pump'];
+const SLIDE = ['mag', 'magazine', 'slide', 'slider', 'piston', 'rod', 'plunger', 'carriage', 'bolt', 'drawer', 'telescop', 'recoil', 'pump', 'shell', 'casing', 'cartridge', 'ejector'];
+/** A root held in the hand: its bone goes in the handle (`handleFit`), not along the part's longest line. */
+const HELD = ['grip', 'handle'];
+
+/** A held root's bone: head at the palm, up the handle, its X across the model (turning X aims the model up and down),
+ *  so the whole model turns about where it is held. The handle is the stretch of the part farthest out from the model's
+ *  long axis (a pistol's grip hangs below its barrel); null when the part has no such stretch. */
+function handleFit(s: Shape, mid: V3, long: V3, thin: V3): { head: V3; tail: V3; roll: number } | null {
+  const at = (i: number): V3 => [s.samples[i * 3], s.samples[i * 3 + 1], s.samples[i * 3 + 2]];
+  const off: V3[] = [];
+  for (let i = 0; i < s.count; i++) { const p = sub(at(i), mid); off.push(sub(p, mul(long, dot(p, long)))); }
+  // which way the handle hangs: the mean offset of the farthest tenth of the part
+  const far = off.map(len).sort((a, b) => b - a)[Math.floor(s.count * 0.1)] ?? 0;
+  let d: V3 = [0, 0, 0];
+  for (const o of off) if (len(o) >= far) d = add(d, o);
+  if (len(d) < 1e-9) return null;
+  d = norm(d);
+  const t = off.map((o) => dot(o, d)), top = Math.max(...t);
+  const centre = (lo: number, hi: number): V3 | null => {
+    let c: V3 = [0, 0, 0], k = 0;
+    t.forEach((v, i) => { if (v >= lo * top && v <= hi * top) { c = add(c, at(i)); k++; } });
+    return k ? mul(c, 1 / k) : null;
+  };
+  // the butt, the handle's upper half (above the butt, below a trigger guard), and the palm between them
+  const butt = centre(0.8, 1), upper = centre(0.35, 0.55), palm = centre(0.35, 1);
+  if (!butt || !upper || !palm || top <= 0) return null;
+  const dir = norm(sub(upper, butt));
+  const across = sub(thin, mul(dir, dot(thin, dir)));
+  return { head: palm, tail: add(palm, mul(dir, dist(butt, upper) * 1.5)), roll: len(across) > 0.2 ? rollFor(dir, norm(across)) : 0 };
+}
 const PRESS = ['button', 'press', 'key', 'knob', 'toggle', 'pad', 'switch'];
+
+/** Whether a part's name says how it moves (Slider, Mag, Trigger, Grip…): its loose pieces then move as one. */
+export const namedMotion = (name: string) => { const n = words(name); return [PRESS, SLIDE, HINGE, FIXED].some((l) => has(n, l)); };
 
 /** The part of the thinnest axis that runs across the bone: the hinge pin. */
 function thinAcross(s: Shape, dir: V3): V3 {
@@ -253,6 +286,14 @@ function overlapAlong(s: Shape, parent: Shape, dir: V3): number {
   return Math.max(0, hi - lo) / Math.max(1e-9, s.hi - s.lo);
 }
 
+/** Whether the parent's box reaches well past the part on both sides of its thin axis (twice its thickness each way). */
+function embedded(s: Shape, parent: Shape): boolean {
+  const thin = s.eig[2], t: number[] = [];
+  for (let i = 0; i < 8; i++) t.push(dot([(i & 1 ? parent.box.max.x : parent.box.min.x), (i & 2 ? parent.box.max.y : parent.box.min.y), (i & 4 ? parent.box.max.z : parent.box.min.z)], thin));
+  const c = dot(s.centre, thin), room = s.ext[2] * 4;
+  return Math.max(...t) - c > room && c - Math.min(...t) > room;
+}
+
 /** What the part looks like it does: a name hint first (mag, trigger, button, grip), then the shape. */
 function classify(s: Shape, parent: Shape, c: Contact, dir: V3, span: number): Motion {
   const n = words(s.name);
@@ -266,20 +307,21 @@ function classify(s: Shape, parent: Shape, c: Contact, dir: V3, span: number): M
   const insert = overlapAlong(s, parent, dir);
   const spread = c.count ? (c.cHi - c.cLo) / Math.max(1e-9, span) : 1;
   const small = s.diag < parent.diag * 0.25;
-  if (small && flat && c.count > 0 && spread > 0.35) return 'press';
+  // a button sits on the parent's skin; a flat part held in the parent's middle plane (a trigger in its guard) swings
+  if (small && flat && c.count > 0 && spread > 0.35) return embedded(s, parent) ? 'hinge' : 'press';
   if (long && aligned > 0.72 && insert > 0.35 && ext[1] < ext[0] * 0.8) return 'slide';
   if (flat && c.count > 0 && spread < 0.7) return 'hinge';
   return 'free';
 }
 
 /** Fit one part: joint at its attachment, bone through its long axis, limits from `classify`. */
-function fitShape(s: Shape, parent: Shape | null, centre: V3, modelDiag: number, motionOn: boolean): Fit {
+function fitShape(s: Shape, parent: Shape | null, centre: V3, modelDiag: number, motionOn: boolean, force?: Motion): Fit {
   const parentCentre = parent ? parent.centre : centre;
   const lo = add(s.centre, mul(s.axis, s.lo)), hi = add(s.centre, mul(s.axis, s.hi));
   const [near, far] = dist(lo, parentCentre) <= dist(hi, parentCentre) ? [lo, hi] : [hi, lo];
   const dir = norm(sub(far, near)), span = Math.max(dist(near, far), modelDiag * 1e-4);
   const c = parent ? contactOf(s, parent, modelDiag * 0.02, Math.min(modelDiag * 0.05, Math.max(Math.min(s.diag, parent.diag) * 0.35, 1e-6))) : null;
-  const motion: Motion = !parent || !motionOn ? 'free' : classify(s, parent, c!, dir, span);
+  const motion: Motion = force ?? (!parent || !motionOn ? 'free' : classify(s, parent, c!, dir, span));
   let head = near, tail = far, roll = 0, limit: Bone['limit'] = null, move: MoveRange | null = null;
   if (motion === 'hinge') {
     if (c && c.count >= 3 && c.centre) {
@@ -308,14 +350,15 @@ function fitShape(s: Shape, parent: Shape | null, centre: V3, modelDiag: number,
   return { motion, head, tail, roll, limit, move };
 }
 
-/** Fit a bone to a part by itself (Add bone's Auto fit, and the motion presets): the same reading auto-rig uses. */
-export function fitPart(part: AutoPart, parent?: AutoPart, centre?: V3): Fit {
+/** Fit a bone to a part by itself (Auto fit, and the motion presets with `force`: a Hinge turns the bone so it swings
+ *  the way the part would, not about whatever axis a Press fit left it on): the same reading auto-rig uses. */
+export function fitPart(part: AutoPart, parent?: AutoPart, centre?: V3, force?: Motion): Fit {
   const s = shapeOf(part);
   const fallback: Fit = { motion: 'free', head: [0, 0, 0], tail: [0, 1, 1], roll: 0, limit: null, move: null };
   if (!s) return fallback;
   const p = parent ? shapeOf(parent) : null;
   const c: V3 = centre ?? (p ? p.centre : s.centre);
-  return fitShape(s, p, c, Math.max(s.diag, p?.diag ?? 0, 1e-6), true);
+  return fitShape(s, p, c, Math.max(s.diag, p?.diag ?? 0, 1e-6), true, force);
 }
 
 /** Auto-rig: hierarchy from contact, joints and motion from each part's shape. `partBone[i]` is the bone that moves
@@ -385,11 +428,20 @@ export function autoRig(parts: AutoPart[], opts: AutoRigOptions = {}): AutoRigRe
   }
   for (const i of valid) if (!parentPart.has(i)) { parentPart.set(i, -1); order.push(i); }
 
+  // the model's barrel line and thin side, for a held root's handle: the box's longest and shortest axes. Not principal
+  // axes: the handle itself tilts those (a pistol's grip pulls its long axis down toward the butt).
+  // ponytail: a model authored at an angle to the world axes gets a skewed handle; PCA with the handle left out if that turns up
+  const size = world.getSize(new THREE.Vector3()), axes: V3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  const byLen = [0, 1, 2].sort((a, b) => [size.x, size.y, size.z][b] - [size.x, size.y, size.z][a]);
+  const model = { vec: byLen.map((k) => axes[k]) };
+
   // ---- lay the bones ----
   const bones: Bone[] = [];
   for (const i of order) {
     const s = shapes[i]!, parent = parentPart.get(i) ?? -1, parentBone = parent >= 0 ? partBone[parent] : -1;
     const fit = fitShape(s, parent >= 0 ? shapes[parent] : null, mid, modelDiag, opts.motion !== false);
+    const hand = parent < 0 && has(words(s.name), HELD) ? handleFit(s, mid, model.vec[0], model.vec[2]) : null;
+    if (hand) Object.assign(fit, hand);
     if (fit.motion === 'fixed' && !opts.details && parentBone >= 0) { partBone[i] = parentBone; continue; }
     let connected = false;
     if (parentBone >= 0 && fit.motion !== 'slide' && fit.motion !== 'press') {

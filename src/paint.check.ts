@@ -1,7 +1,7 @@
 // node src/paint.check.ts: a unit square split at x = 0.5 into two islands far apart in UV. A dab on the seam paints
 // both; a dab paints a flat face evenly (no lines where its triangles meet); layers stack; erase and undo work.
 import assert from 'node:assert';
-import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, bakeShape, bakeRelief, bakeBevel, bevelEdges, bevelNormal, hashu, shapeHeight, expMap, growSelection, SOLID, blendOf, DEFAULT_BLEND, type Bevel, type Brush, type Decal, type Fill, type GenKind, type PaintLayer, type Shape } from './paint.ts';
+import { bordersOf, composite, dab, fillAll, fillTris, generate, keep, maskTris, newLayer, redo, select, setBaked, setOf, undo, bakeFill, bakeDecal, bakeShape, bakeRelief, bakeBevel, bevelEdges, bevelNormal, hashu, shapeHeight, expMap, growSelection, transferPaint, SOLID, blendOf, DEFAULT_BLEND, type Bevel, type Brush, type Decal, type Fill, type GenKind, type PaintLayer, type Shape } from './paint.ts';
 import type { MaterialPixels } from './materials.ts';
 
 // left half [0,.5] → uv (0..0.25, 0..0.5); right half [.5,1] → uv (0.5..0.75, 0..0.5): the seam is 0.25 apart in UV
@@ -223,6 +223,27 @@ composite(ds);
 assert.deepEqual(dpx(16, 16), [255, 0, 0], 'stretched: the middle still inks');
 assert.deepEqual(dpx(16, 8), BASE, 'stretched: the taller footprint is gone');
 assert.deepEqual(dpx(2, 16), BASE, 'stretched: and no earlier mark came back');
+// An engraved mark much larger than its footprint (1024 px into ~25 texels) is read at its mip and its cut is
+// measured over half a texel either side: every inked row tilts the normal at the edge. Over 1.5 source pixels alone the edge was hit
+// or missed texel by texel, a beaded outline.
+const es = setOf(new Float32Array(pos), 64);
+es.channels = ['color', 'rough', 'metal', 'normal', 'height'];
+const half = { width: 1024, height: 1024, data: new Uint8ClampedArray(1024 * 1024 * 4) };
+for (let i = 0; i < 1024 * 1024; i++) if (i % 1024 < 512) half.data.fill(255, i * 4, i * 4 + 4);
+const el: PaintLayer = { ...newLayer(13), decal: { ...decal, center: [0.5, 0.5, 0], aspect: 1, engrave: 0.5, channels: ['color', 'rough', 'metal', 'normal', 'height'] } };
+es.layers.push(el); es.active = 1;
+bakeDecal(es, el, half, pos, uvs, 1);
+let inked = 0, beaded = 0;
+for (let y = 0; y < 64; y++) {
+  let ink = false, tilt = false;
+  for (let x = 0; x < 64; x++) {
+    const i = y * 64 + x;
+    if (el.px.color![i * 4 + 3] > 0) ink = true;
+    if (el.px.normal && el.px.normal[i * 4 + 3] > 0 && Math.abs(el.px.normal[i * 4] - 127.5) + Math.abs(el.px.normal[i * 4 + 1] - 127.5) > 8) tilt = true;
+  }
+  if (ink) { inked++; if (!tilt) beaded++; }
+}
+assert.ok(inked > 10 && beaded === 0, `an engraved edge tilts every inked row (${beaded} of ${inked} rows missed it)`);
 // Blends are per channel, as Substance Painter's stack holds them: a grunge layer can multiply Base Color and still
 // lay its roughness straight down, and a channel nobody set keeps Substance's default.
 const pc: PaintLayer = { ...newLayer(12), blend: { color: 'multiply' } };
@@ -353,17 +374,32 @@ assert.ok(gs.sel!.every((x, i) => !x || gs.shell![i]), 'a grown selection stays 
   assert.ok(wrapped(true) > 100, `wrapped, it carries over the fold: ${wrapped(true)} texels`);
 }
 // bevel: a box's top (z = 1, normal +z) meeting its side (x = 1, normal +x) at a 90° convex edge along y. A round
-// bevel of radius r leans the top's normal toward +x by a fillet's angle, asin((1 - d/r) tan 45°): 30° at d = r/2,
-// none past r; a chamfer leans the whole band 45°. The engine's test `bevel_matches_the_editor` pins the same numbers.
+// bevel of radius r leans the top's normal toward +x by a fillet's angle, 45° − asin(d/r · sin 45°): 45° at the edge
+// (meeting the side's lean), 24.3° at d = r/2, none past r, and no flat strip in between (the old asin((1 − d/r) tan 45°)
+// sat at 45° over the inner 29%); a chamfer leans the whole band 45°. The engine's `bevel_matches_the_editor` the same.
 {
   const box = [0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1];
   const round: Bevel = { radius: 0.1, profile: 'round', angle: 30, concave: false }, e = bevelEdges(box, round);
   assert.equal(e.segs.length / 12, 1, 'one sharp edge');
-  const lean = (b: Bevel, x: number) => { const n = bevelNormal(bevelEdges(box, b), b, x, 0.5, 1, 0, 0, 1); return n && (Math.atan2(n[0], n[2]) * 180) / Math.PI; };
-  assert.ok(Math.abs(lean(round, 0.95)! - 30) < 1e-6, `round at r/2 leans 30°: ${lean(round, 0.95)}`);
+  const lean = (b: Bevel, x: number, z = 1) => { const n = bevelNormal(bevelEdges(box, b), b, x, 0.5, z, 0, 0, 1); return n && (Math.atan2(n[0], n[2]) * 180) / Math.PI; };
+  const R2 = 45 - (Math.asin(0.5 * Math.SQRT1_2) * 180) / Math.PI;
+  assert.ok(Math.abs(lean(round, 0.95)! - R2) < 1e-6, `round at r/2 leans ${R2}°: ${lean(round, 0.95)}`);
+  assert.ok(Math.abs(lean(round, 1)! - 45) < 1e-6 && lean(round, 0.99)! < 45 && lean(round, 0.99)! > lean(round, 0.98)!, 'round turns all the way to the edge');
   assert.equal(lean(round, 0.85), null, 'past the radius: untouched');
+  assert.equal(lean(round, 0.99, 0.95), null, 'a parallel face below the edge (a step) is not this edge\'s face');
   assert.ok(Math.abs(lean({ ...round, profile: 'chamfer' }, 0.95)! - 45) < 1e-6, 'chamfer leans 45°');
   assert.equal(bevelEdges(box, { ...round, angle: 100 }).segs.length, 0, 'a 90° edge is under a 100° threshold');
+  // the same edge cut into 4 segments leans the same all along: summing them beaded each vertex
+  const strips: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const y0 = i / 4, y1 = (i + 1) / 4;
+    strips.push(0, y0, 1, 1, y0, 1, 1, y1, 1, 0, y0, 1, 1, y1, 1, 0, y1, 1, 1, y0, 1, 1, y0, 0, 1, y1, 0, 1, y0, 1, 1, y1, 0, 1, y1, 1);
+  }
+  const se = bevelEdges(strips, round);
+  for (const y of [0.1, 0.25, 0.26, 0.5]) {
+    const n = bevelNormal(se, round, 0.95, y, 1, 0, 0, 1)!, deg = (Math.acos(n[2]) * 180) / Math.PI;
+    assert.ok(Math.abs(deg - R2) < 1e-6, `a split edge leans ${R2}° at y ${y}: ${deg}`);
+  }
   // baked: the top's texels near the edge lean +x in tangent space (u along x), the rest stay unwritten
   const buv = box.flatMap((_, i) => (i % 3 ? [] : i < 18 ? [box[i] * 0.5, box[i + 1]] : [0.5 + (1 - box[i + 2]) * 0.5, box[i + 1]]));
   const bs = setOf(new Float32Array(box), 64), bl: PaintLayer = { ...newLayer(11), bevel: round };
@@ -420,5 +456,31 @@ assert.deepEqual([hashu(1, 2, 3), hashu(-5, 7, -9), hashu(0, 0, 0)], [72785788, 
   // no coverage, no relief: the mask's red channel is the mark
   bakeRelief(rs, rl, { normal: solid(255, 128, 255), height: solid(255, 0, 102), mask: solid(0, 0, 0) }, quad, quv, 1);
   assert.equal(rp(16, 16)[3], 0, 'outside the mask nothing is written');
+}
+// transferPaint: a quad painted on one layout comes across to another (here its UV square turned a quarter and moved):
+// the texel at each point of the quad holds what the old texel at that point held; the same layout is a plain copy
+{
+  const pos = [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0];
+  const uvA = [0.1, 0.1, 0.5, 0.1, 0.5, 0.5, 0.1, 0.1, 0.5, 0.5, 0.1, 0.5];
+  // B: the same quad at (0.55..0.95), turned a quarter: corner (x, y) of the quad sits at uv (0.95 - 0.4 y, 0.55 + 0.4 x)
+  const uvB = pos.flatMap((_, k) => (k % 3 === 2 ? [] : k % 3 === 0 ? [0.95 - 0.4 * pos[k + 1], 0.55 + 0.4 * pos[k]] : []));
+  const n = 64, ts = setOf(new Float32Array(pos), n), l = newLayer(1), px = new Uint8ClampedArray(n * n * 4);
+  // a gradient on the quad: red = x, green = y of the point each texel of layout A covers
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { const u = (x + 0.5) / n, v = (y + 0.5) / n; if (u > 0.1 && u < 0.5 && v > 0.1 && v < 0.5) px.set([((u - 0.1) / 0.4) * 255, ((v - 0.1) / 0.4) * 255, 0, 255], (y * n + x) * 4); }
+  ts.layers = [{ ...l, px: { color: px } }];
+  const same = { pos, uvs: uvA };
+  await transferPaint(ts, same, same);
+  assert.deepEqual(ts.layers[0].px.color, px, 'the same layout copies texel for texel');
+  await transferPaint(ts, { pos, uvs: uvA }, { pos, uvs: uvB });
+  const out = ts.layers[0].px.color!;
+  let checked = 0;
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const u = (x + 0.5) / n, v = (y + 0.5) / n;
+    if (u < 0.57 || u > 0.93 || v < 0.57 || v > 0.93) continue; // inside B's square, off its rim
+    const qx = (v - 0.55) / 0.4, qy = (0.95 - u) / 0.4; // the quad point this texel covers
+    assert.ok(Math.abs(out[(y * n + x) * 4] - qx * 255) < 12 && Math.abs(out[(y * n + x) * 4 + 1] - qy * 255) < 12, `texel ${x},${y} reads ${out[(y * n + x) * 4]},${out[(y * n + x) * 4 + 1]} for (${qx.toFixed(2)}, ${qy.toFixed(2)})`);
+    checked++;
+  }
+  assert.ok(checked > 400, `checked ${checked}`);
 }
 console.log('paint ok');

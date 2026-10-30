@@ -6,6 +6,7 @@
 // the texel density. A dab in the texture view is a plain circle of texels. Either way each texel takes a dab once
 // (the strongest weight), so triangle edges never show.
 import * as THREE from 'three';
+import { MeshBVH } from 'three-mesh-bvh';
 import type { Baked, Surface } from './bake';
 import type { MapKind, MapPixels, MaterialPixels } from './materials';
 import { uvShell } from './uvshell.ts';
@@ -155,6 +156,9 @@ const tex = (size: number, srgb: boolean) => {
 export const newLayer = (n: number): PaintLayer => ({ id: ++ids, name: `Layer ${n}`, visible: true, opacity: 1, px: {} });
 
 /** The part's set, made (Base Color, one empty layer) the first time; changing the texture resolution resizes it. */
+/** The part's set if it has one, without making it (Da Vinci shows an unpainted part plain). */
+export const hasSet = (soup: Float32Array): TexSet | undefined => sets.get(soup);
+
 export function setOf(soup: Float32Array, size: number): TexSet {
   let s = sets.get(soup);
   if (!s) {
@@ -210,6 +214,16 @@ export function disposeSet(s: TexSet) {
   s.preview = undefined;
   for (const t of [s.color, s.orm, s.shade, s.normal, s.height, s.aoTex]) t?.dispose();
   s.bake = undefined;
+}
+
+/** A Poly Doc edit replaced the part's soup but kept its UVs (Recalculate Outside, a cut, Move): the paint is still in the
+ *  right place in UV space, so the new soup takes the same set. The old soup keeps it too, so undo brings the part back
+ *  painted. Without this the edit left every layer behind on the old soup and the part came back blank (and saved so). */
+export function shareSet(from: Float32Array, to: Float32Array) {
+  const s = sets.get(from);
+  if (!s || sets.has(to)) return;
+  sets.set(to, s);
+  soups.set(s, to);
 }
 
 /** The part's set if it has one yet (saving a project must not make empty ones). */
@@ -670,7 +684,7 @@ const mipPad = (n: number) => Math.max(4, Math.round(n / 64));
 /** The texels inside the part's UV shell: a triangle covers them even where nothing is painted. Padding may only go
  *  outside it — inside, a bare texel is a face the artist left unpainted. Also what stops the flood tunnelling
  *  through an island to its far side. */
-function ensureShell(s: TexSet, uvs: ArrayLike<number>) {
+export function ensureShell(s: TexSet, uvs: ArrayLike<number>) {
   if (s.shellFor === uvs) return;
   const n = s.size;
   const gpu = uvShell(n, uvs);
@@ -1128,6 +1142,65 @@ export async function surfaceOfAsync(n: number, pos: ArrayLike<number>, uvs: Arr
   touched.length = 0;
   return { pos: P, nrm: N, has };
 }
+/** A mesh and the UVs its texels were laid out on (per corner, as the engine's output). */
+export interface Layout { pos: ArrayLike<number>; uvs: ArrayLike<number> }
+/** Carry a set's pixels from the layout they were painted on (`from`) to a new one (`to`): a re-unwrap, a mesh edited in
+ *  Poly Doc, a model replaced by a new version of its file. Each texel of the new layout takes the old texel at the same
+ *  point of the model — the very same texel where the layout didn't change there (most of a re-unwrap that kept its
+ *  islands, so that paint comes across byte for byte), else the old surface's nearest point, read through its triangle's
+ *  UVs. Pixels stay empty where the new surface is far from any old one (geometry that wasn't there), but masks, clips
+ *  and the selection take the nearest old surface's value however far: they say where a material goes, and a reworked
+ *  grip must stay inside its Black polymer (a cut-off there left a quarter of it bare). Every buffer moves: hand
+ *  paint, fills', decals' and generators' pixels, layer masks, generator clips, the selection. The bake and the undo
+ *  history described the old layout, so they go. The caller composites (and re-bakes decals from their 3D frames). */
+export async function transferPaint(s: TexSet, from: Layout, to: Layout) {
+  const n = s.size, a = await surfaceOfAsync(n, from.pos, from.uvs), b = await surfaceOfAsync(n, to.pos, to.uvs);
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let k = 0; k < to.pos.length; k++) { lo[k % 3] = Math.min(lo[k % 3], to.pos[k]); hi[k % 3] = Math.max(hi[k % 3], to.pos[k]); }
+  const span = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1, same = span * 1e-4, far = span * 0.02;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(from.pos), 3));
+  const bvh = new MeshBVH(geo), idx = geo.index!.array, q = new THREE.Vector3(), hit = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
+  const T = new THREE.Triangle(), A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), w = new THREE.Vector3(), P = from.pos, U = from.uvs;
+  const src = new Int32Array(n * n).fill(-1), near = new Uint8Array(n * n);
+  let looked = 0, lost = 0;
+  for (let i = 0; i < n * n; i++) {
+    if (!b.has[i]) continue;
+    const x = b.pos[i * 3], y = b.pos[i * 3 + 1], z = b.pos[i * 3 + 2];
+    if (a.has[i] && Math.hypot(a.pos[i * 3] - x, a.pos[i * 3 + 1] - y, a.pos[i * 3 + 2] - z) < same) { src[i] = i; near[i] = 1; continue; }
+    if (!bvh.closestPointToPoint(q.set(x, y, z), hit)) continue;
+    if (hit.distance > far) lost++; else near[i] = 1;
+    // the BVH sorts its own index: the hit's corners are vertices of the soup (corner c = position c, uv c), not triangle faceIndex
+    const ca = idx[hit.faceIndex * 3], cb = idx[hit.faceIndex * 3 + 1], cc = idx[hit.faceIndex * 3 + 2];
+    T.set(A.set(P[ca * 3], P[ca * 3 + 1], P[ca * 3 + 2]), B.set(P[cb * 3], P[cb * 3 + 1], P[cb * 3 + 2]), C.set(P[cc * 3], P[cc * 3 + 1], P[cc * 3 + 2])).getBarycoord(hit.point, w);
+    const u = w.x * U[ca * 2] + w.y * U[cb * 2] + w.z * U[cc * 2], v = w.x * U[ca * 2 + 1] + w.y * U[cb * 2 + 1] + w.z * U[cc * 2 + 1];
+    const sx = Math.min(n - 1, Math.max(0, Math.floor(u * n))), sy = Math.min(n - 1, Math.max(0, Math.floor(v * n)));
+    src[i] = sy * n + sx;
+    if ((++looked & 4095) === 0) await new Promise((ok) => setTimeout(ok, 0));
+  }
+  geo.dispose();
+  // `cover`: a mask, clip or selection, which reaches new surface; pixels only come from surface that was there
+  const moved = <T extends Uint8Array | Uint8ClampedArray>(buf: T, cover = false): T => {
+    const k = buf.length / (n * n), out = new (buf.constructor as new (len: number) => T)(buf.length);
+    for (let i = 0; i < n * n; i++) { const j = src[i]; if (j >= 0 && (cover || near[i])) for (let c = 0; c < k; c++) out[i * k + c] = buf[j * k + c]; }
+    return out;
+  };
+  s.layers = s.layers.map((l) => {
+    const px = Object.fromEntries(Object.entries(l.px).map(([ch, buf]) => [ch, moved(buf!)])) as PaintLayer['px'];
+    const next: PaintLayer = { ...l, px, ...(l.mask ? { mask: moved(l.mask, true) } : {}), ...(l.gen?.clip ? { gen: { ...l.gen, clip: moved(l.gen.clip, true) } } : {}) };
+    for (const ch of Object.keys(px) as Channel[]) touch(next, ch);
+    if (next.mask) touch(next, 'mask');
+    if (next.gen?.clip) touch(next, 'clip');
+    return next;
+  });
+  if (s.sel) s.sel = moved(s.sel, true);
+  s.bake = undefined; s.aoTex?.dispose(); s.aoTex = undefined;
+  s.past = []; s.future = [];
+  s.shellFor = undefined;
+  s.ver++;
+  return { kept: looked === 0 ? 1 : 1 - looked / Math.max(1, b.has.reduce((c, h) => c + h, 0)), lost };
+}
+
 /** The set's baked maps, kept, with AO as a texture the model can be shaded by. */
 export function setBaked(s: TexSet, b: Baked) {
   s.bake = b;
@@ -1432,6 +1505,42 @@ function sampleDecal(m: MapPixels, u: number, v: number) {
   return decalSample;
 }
 
+/** A decal image's mip chain: halved by alpha-weighted 2×2 boxes down to one pixel, so a texel reads the level its
+ *  footprint spans (a 1024 px mark baked into a few hundred texels aliased into beads). Engine: `mips`. */
+const mipCache = new WeakMap<MapPixels, MapPixels[]>();
+function decalMips(m: MapPixels): MapPixels[] {
+  const hit = mipCache.get(m);
+  if (hit) return hit;
+  const chain = [m];
+  for (let a = m; a.width > 1 || a.height > 1;) {
+    const w = Math.max(1, a.width >> 1), h = Math.max(1, a.height >> 1), data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let r = 0, g = 0, b = 0, al = 0;
+      for (let k = 0; k < 4; k++) {
+        const o = (Math.min(a.height - 1, y * 2 + (k >> 1)) * a.width + Math.min(a.width - 1, x * 2 + (k & 1))) * 4, q = a.data[o + 3];
+        r += a.data[o] * q; g += a.data[o + 1] * q; b += a.data[o + 2] * q; al += q;
+      }
+      const o = (y * w + x) * 4;
+      if (al > 0) { data[o] = r / al; data[o + 1] = g / al; data[o + 2] = b / al; }
+      data[o + 3] = al / 4;
+    }
+    chain.push(a = { width: w, height: h, data });
+  }
+  mipCache.set(m, chain);
+  return chain;
+}
+/** `sampleDecal` at a footprint of `fp` source pixels per texel: the two mip levels round it, blended. Engine: `sample_mip`. */
+function sampleMip(chain: MapPixels[], u: number, v: number, fp: number) {
+  const l = Math.min(chain.length - 1, Math.log2(Math.max(fp, 1))), l0 = Math.floor(l), f = l - l0;
+  const a = sampleDecal(chain[l0], u, v);
+  if (f < 1e-3 || l0 + 1 >= chain.length) return a;
+  const r = a[0], g = a[1], b = a[2], wa = a[3] * (1 - f);
+  const q = sampleDecal(chain[l0 + 1], u, v), wb = q[3] * f, al = wa + wb;
+  if (al > 1e-6) { q[0] = (r * wa + q[0] * wb) / al; q[1] = (g * wa + q[1] * wb) / al; q[2] = (b * wa + q[2] * wb) / al; }
+  q[3] = al;
+  return q;
+}
+
 /** A decal's projector: centre, facing, right / up turned by the rotation, size and how deep it reaches. */
 export interface DecalFrame {
   cx: number; cy: number; cz: number; nx: number; ny: number; nz: number;
@@ -1559,9 +1668,11 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
   if (!hits.length) { map.delete(l.id); return clear; }
   const tint = hexTint(d.tint), rough = d.roughness * 255, metal = d.metallic * 255;
   const color = buf.color, rc = buf.rough, mt = buf.metal, nm = buf.normal, ht = buf.height;
-  // engraving: the ink's edge tilts the normal as a cut would (height = -ink), slope from the ink's gradient
-  const hu = 1.5 / src.width, hv = 1.5 / src.height, slope = eng * 3;
-  const ink = (u: number, v: number) => sampleDecal(src, d.flipH ? 1 - u : u, d.flipV ? 1 - v : v)[3] / 255;
+  // engraving: the ink's edge tilts the normal as a cut would (height = -ink), slope from the ink's gradient, taken
+  // over at least half a texel either side (over 1.5 source pixels alone, a 2K texel hit or missed the edge: a beaded outline)
+  const mips = decalMips(src), slope = eng * 3;
+  let fp = 1, hu = 0, hv = 0;
+  const ink = (u: number, v: number) => sampleMip(mips, d.flipH ? 1 - u : u, d.flipV ? 1 - v : v, fp)[3] / 255;
   let sr = 0, sg = 0, sb = 0, sa = 0, gx = 0, gy = 0, cut = false;
   let tx = 1, ty = 0, tz = 0, bx = 0, by = 1, bz = 0;
   let ix0 = n, iy0 = n, ix1 = -1, iy1 = -1;
@@ -1575,6 +1686,8 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
     const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
     if (fx * nx + fy * ny + fz * nz < 0.12) continue; // a mark only lands on surface facing the projector
     if (eng > 0) [tx, ty, tz, bx, by, bz] = tangentOf(pos, uvs, t, fx, fy, fz);
+    const tex = texelSize(pos, uvs, t, n);
+    fp = (tex / width) * src.width; hu = Math.max(1.5 / src.width, 0.5 * tex / width); hv = Math.max(1.5 / src.height, 0.5 * tex / height);
     raster(n, pos, uvs, t, (x, y, z) => {
       const dx = x - cx, dy = y - cy, dz = z - cz;
       const along = dx * nx + dy * ny + dz * nz;
@@ -1582,8 +1695,9 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
       const u = (dx * uxr + dy * uyr + dz * uzr) / width + 0.5;
       const v = (dx * vxr + dy * vyr + dz * vzr) / height + 0.5;
       if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
-      const q = sampleDecal(src, d.flipH ? 1 - u : u, d.flipV ? 1 - v : v);
+      const q = sampleMip(mips, d.flipH ? 1 - u : u, d.flipV ? 1 - v : v, fp);
       sa = q[3] / 255;
+      const qr = q[0], qg = q[1], qb = q[2];
       cut = false;
       if (eng > 0) {
         const gu = ink(u + hu, v) - ink(u - hu, v), gv = ink(u, v + hv) - ink(u, v - hv);
@@ -1593,7 +1707,7 @@ export function bakeDecal(s: TexSet, l: PaintLayer, src: MapPixels, pos: ArrayLi
         gx = wx * tx + wy * ty + wz * tz; gy = wx * bx + wy * by + wz * bz;
       }
       if (sa <= 0 && !cut) return 0;
-      sr = Math.min(255, q[0] * tint[0] / 255); sg = Math.min(255, q[1] * tint[1] / 255); sb = Math.min(255, q[2] * tint[2] / 255);
+      sr = Math.min(255, qr * tint[0] / 255); sg = Math.min(255, qg * tint[1] / 255); sb = Math.min(255, qb * tint[2] / 255);
       return cut ? 1 : sa;
     }, clear ?? undefined, (_x, _y, _z, i) => {
       const ix = i % n, iy = (i / n) | 0;
@@ -2172,11 +2286,15 @@ export function bevelEdges(pos: ArrayLike<number>, b: Bevel) {
   return { segs, grid };
 }
 /** The bevelled normal at p on a face of normal f, or null outside every edge's band. Each edge within `radius` whose
- *  near face f belongs to (closer to f than half the edge's turn) leans the normal toward the far face by phi: a
- *  fillet's at that distance (round), or the halfway turn (chamfer); leans add, so corners round both ways. */
+ *  near face f belongs to (closer to f than half the edge's turn) and whose plane p lies on leans the normal toward the
+ *  far face by phi: the halfway turn at the edge down to none at `radius`, along a circular fillet spanned between the
+ *  two band borders (round; phi = half − asin(d/r · sin half), no flat strip at the edge), or the halfway turn all
+ *  across (chamfer). Leans the same way (within 45°) keep the strongest
+ *  — the segments of one edge, or a curve's facets: summed, every vertex along an edge beaded — and leans different
+ *  ways add, so corners round both ways. */
 export function bevelNormal(e: ReturnType<typeof bevelEdges>, b: Bevel, px: number, py: number, pz: number, fx: number, fy: number, fz: number): [number, number, number] | null {
   const r = b.radius, cx = Math.floor(px / r), cy = Math.floor(py / r), cz = Math.floor(pz / r), seen: number[] = [], S = e.segs;
-  let tx = 0, ty = 0, tz = 0, any = false;
+  const lean: number[] = []; // per direction: ux, uy, uz, tan(phi)
   for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
     const list = e.grid.get(`${cx + dx},${cy + dy},${cz + dz}`);
     if (!list) continue;
@@ -2191,18 +2309,25 @@ export function bevelNormal(e: ReturnType<typeof bevelEdges>, b: Bevel, px: numb
       const sa = fx * S[o + 6] + fy * S[o + 7] + fz * S[o + 8], sb = fx * S[o + 9] + fy * S[o + 10] + fz * S[o + 11];
       const half = Math.acos(Math.max(-1, Math.min(1, S[o + 6] * S[o + 9] + S[o + 7] * S[o + 10] + S[o + 8] * S[o + 11]))) / 2;
       if (Math.max(sa, sb) <= Math.cos(half)) continue; // a face of another edge (a box's top beside a side's corner)
-      const k = sa >= sb ? o + 9 : o + 6, so = sa >= sb ? sb : sa;
+      const k = sa >= sb ? o + 9 : o + 6, so = sa >= sb ? sb : sa, m = sa >= sb ? o + 6 : o + 9;
+      // off the near face's plane: a parallel face nearby (a step, the far side of a thin plate), not this edge's face
+      if (Math.abs(qx * S[m] + qy * S[m + 1] + qz * S[m + 2]) > r / 4) continue;
       let ux = S[k] - fx * so, uy = S[k + 1] - fy * so, uz = S[k + 2] - fz * so;
       const ul = Math.hypot(ux, uy, uz);
       if (ul < 1e-6) continue;
       ux /= ul; uy /= ul; uz /= ul;
-      const phi = b.profile === 'chamfer' ? half : Math.min(half, Math.asin(Math.min(1, (1 - d / r) * Math.tan(half))));
+      const phi = b.profile === 'chamfer' ? half : half - Math.asin((d / r) * Math.sin(half));
       const w = Math.tan(phi);
-      tx += ux * w; ty += uy * w; tz += uz * w; any = true;
+      let j = 0;
+      while (j < lean.length && ux * lean[j] + uy * lean[j + 1] + uz * lean[j + 2] <= Math.SQRT1_2) j += 4;
+      if (j === lean.length) lean.push(ux, uy, uz, w);
+      else if (w > lean[j + 3]) lean.splice(j, 4, ux, uy, uz, w);
     }
   }
-  if (!any) return null;
-  const nx = fx + tx, ny = fy + ty, nz = fz + tz, l = Math.hypot(nx, ny, nz) || 1;
+  if (!lean.length) return null;
+  let nx = fx, ny = fy, nz = fz;
+  for (let j = 0; j < lean.length; j += 4) { nx += lean[j] * lean[j + 3]; ny += lean[j + 1] * lean[j + 3]; nz += lean[j + 2] * lean[j + 3]; }
+  const l = Math.hypot(nx, ny, nz) || 1;
   return [nx / l, ny / l, nz / l];
 }
 /** Bake a bevel layer: its Normal, only where an edge leans it. Engine: `layers::BevelSrc::at`. */

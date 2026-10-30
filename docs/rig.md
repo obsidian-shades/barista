@@ -24,14 +24,15 @@ The Move/Rotate buttons are gone from the main bar. They were a required step be
 | Aim a bone | Drag its tip (Edit) |
 | Pose a bone | `Tab`, then drag the part/body to translate, the tip to turn |
 | Switch Edit / Pose | `Tab` |
-| Motion preset | Click Free / Hinge / Slide / Press / Fixed in the panel |
+| Motion preset | Click Free / Hinge / Slide / Press / Fixed in the panel; Hinge / Slide / Press re-lay the bone on its part |
+| Set a range | Pose it to its end stop (slide back, trigger in), then **Range to here** in the Pose section |
 | Re-read the part | **Auto fit** |
 | Follow / Aim / Piston | Right-click the bone → the item, or `F` / `T` / `P`, then click the target |
 | Connect to parent | `C`, or the right-click menu |
 | Add a child bone | Right-click → **Add child bone…**, then click on the model |
 | Delete | `X` / Delete |
 | Gizmo | `G` = Move, `R` = Rotate; the **Gizmo** button shows/hides it |
-| Undo (rig only) | `Ctrl+Z` / `Ctrl+Shift+Z` |
+| Undo (bones and poses) | `Ctrl+Z` / `Ctrl+Shift+Z`, or Edit › Undo bone or pose |
 | Context menu | Right-click a bone, or empty space |
 
 Dragging a part only moves it directly when the part has **its own bone** (the usual auto-rig case). A fixed detail
@@ -40,7 +41,11 @@ that rides a parent bone is not dragged by the detail — that would move the pa
 ## Done
 
 - Auto-rig: one undo step; a bone per part or loose shell; contact joints; minimum-spanning parent tree rooted at the
-  model's middle; motion guessed from name first, shape second; fixed housing shares its parent's bone.
+  model's middle; motion guessed from name first, shape second; fixed housing shares its parent's bone. A part named
+  for its motion (Slider, Mag) is not split into loose shells; an unnamed flat part held in its parent's middle plane
+  (a trigger called "Cube") hinges instead of pressing.
+- Rigged as a user on `Gun Final maybe.barista` (2026-10-29): Frame root, Mag slide, Slide (with its sight and shell
+  riding it), trigger hinge about the gun's side axis — four bones, no hand fixes but the ranges.
 - Roll for hinges (local X on the part's thin axis); connected bones; per-axis rotation and translation limits.
 - Direct manipulation of parts, bones, joints and tips, in Edit and Pose, with undo and constraint limits.
 - Animated hinge arc, constraint lines, joint handles for every bone, hover/cursor feedback.
@@ -67,7 +72,7 @@ Only the first three are the next slice; the rest are later ideas, not hidden wo
 4. **Bone collections / visibility.** For rigs over ~20 bones: collections, hide/filter, search, and a compact tree.
 5. **Auto-skin a connected mesh.** Loose shells get their own bones; a single connected limb still needs `Skin part`.
    Automatic region weights (nearest bone + a falloff at the joint) would finish the one-mesh case.
-6. **Pose is still not saved and has no undo.** Add pose undo and optional keyframes/save; bake constraints to FBX
+6. **Pose is still not saved** (it is in the undo now). Add optional keyframes/save; bake constraints to FBX
    transform keys so a Blender/engine export can reproduce the aim/stretch.
 7. **Snapping.** Joint-to-vertex, grid, and 15° angle snaps while dragging; numeric entry for the gizmo.
 8. **Rig presets / rules.** Editable name rules and saved auto-rig presets (e.g., "weapon", "robot arm").
@@ -80,7 +85,9 @@ Only the first three are the next slice; the rest are later ideas, not hidden wo
 
 - Auto-rig is a guess. The Motion preset and **Auto fit** are the corrections; names are a strong hint by design.
 - Constraints and limits are editor-side, not written to FBX.
-- Pose is a viewport state: not saved, not in the rig undo.
+- Pose is a viewport state: not saved, but Ctrl+Z takes back each pose drag or slider move.
+- A held root (Grip / Handle) is boned in the handle from the model's world-box axes; a model authored at an angle to
+  the world axes gets a skewed handle bone (drag its joints, or Auto fit).
 - Labels are part names; a fixed detail has no bone row of its own until you `Add bone` it.
 - Part dragging only applies when the part's own bone is named after it (or after a rename, use the bone handles).
 

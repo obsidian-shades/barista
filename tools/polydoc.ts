@@ -13,6 +13,8 @@
 //                      flips: same polygons, same points, and nothing for the engine to drop at export
 //   degen[:ratio]      Degenerate Dissolve: each polygon with area < ratio × perimeter² (default 1e-3: a sliver
 //                      or corners in a line) collapses its shortest edge (Poly Doc's Collapse Shortest Edge cure)
+//   outside            Recalculate Outside: every face wound alike, each piece facing out (fixes flipped faces and
+//                      inside-out shells; a cavity's wall keeps facing in)
 //   delpoly:ID[,ID]    delete polygons by id (ids as --detail prints them, p12 → 12): internal caps, stray faces
 // --part NAME scopes the --do ops after it to one part (--part '*' for all again).
 // -o unwraps every part with the engine (ENGINE, default http://localhost:3000; `pnpm server`) and writes the FBX.
@@ -23,7 +25,7 @@ import { bake, fbxUnit, toFbx } from '../src/files.ts';
 import { fbxPolygons, polygonOfTriangles } from '../src/fbxpoly.ts';
 import { healthReport, healthSummary, RULES, setModelSize, type RuleId } from '../src/health.ts';
 import { compact, limitedDissolve, outline, ownPolygons, topoOfSoup, triangulate, trisToQuads, type Polys } from '../src/polyedit.ts';
-import { addLoops, loopOf, members, merge, meshCheck, relax, type Geo } from '../src/polygeo.ts';
+import { addLoops, loopOf, members, merge, meshCheck, recalcOutside, relax, type Geo } from '../src/polygeo.ts';
 import { polygonsOf } from '../src/topo.ts';
 import { shapeBadness, type V } from '../src/quality.ts';
 import type { Output } from '../src/api.ts';
@@ -118,6 +120,7 @@ const flagged = (g: Geo, rules: string) => { const r = new Set(rules.split(','))
 
 function run(op: string, g: Geo): Geo | null {
   const [name, arg] = op.split(':');
+  if (name === 'outside') return recalcOutside(g, { faces: [], verts: [], edges: [] })?.geo ?? null;
   if (name === 'quads') return regroup(g, trisToQuads(g.soup, g, all(g)));
   if (name === 'dissolve') return regroup(g, limitedDissolve(g.soup, g, all(g), arg ? +arg : 5));
   if (name === 'tri') {

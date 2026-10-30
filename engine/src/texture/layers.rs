@@ -208,6 +208,47 @@ fn sample_decal(m: &Map, u: f32, v: f32) -> [f32; 4] {
     [r, g, b, a * 255.0]
 }
 
+/// A decal image's mip chain (paint.ts `decalMips`): halved by alpha-weighted 2×2 boxes down to one pixel.
+pub fn mips(m: Map) -> Vec<Map> {
+    let mut out = vec![m];
+    loop {
+        let a = out.last().unwrap();
+        if a.w <= 1 && a.h <= 1 { break; }
+        let (w, h) = ((a.w / 2).max(1), (a.h / 2).max(1));
+        let mut data = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let (mut c, mut al) = ([0f32; 3], 0f32);
+                for k in 0..4 {
+                    let o = (((y * 2 + (k >> 1)).min(a.h - 1)) * a.w + (x * 2 + (k & 1)).min(a.w - 1)) * 4;
+                    let q = a.data[o + 3] as f32;
+                    for j in 0..3 { c[j] += a.data[o + j] as f32 * q; }
+                    al += q;
+                }
+                let o = (y * w + x) * 4;
+                if al > 0.0 { for j in 0..3 { data[o + j] = (c[j] / al).round() as u8; } }
+                data[o + 3] = (al / 4.0).round() as u8;
+            }
+        }
+        out.push(Map { w, h, data });
+    }
+    out
+}
+/// `sample_decal` at a footprint of `fp` source pixels per texel: the two mip levels round it, blended (paint.ts `sampleMip`).
+fn sample_mip(chain: &[Map], u: f32, v: f32, fp: f32) -> [f32; 4] {
+    let l = fp.max(1.0).log2().min((chain.len() - 1) as f32);
+    let l0 = l.floor() as usize;
+    let f = l - l0 as f32;
+    let a = sample_decal(&chain[l0], u, v);
+    if f < 1e-3 || l0 + 1 >= chain.len() { return a; }
+    let b = sample_decal(&chain[l0 + 1], u, v);
+    let (wa, wb) = (a[3] * (1.0 - f), b[3] * f);
+    let al = wa + wb;
+    let mut o = [b[0], b[1], b[2], al];
+    if al > 1e-6 { for c in 0..3 { o[c] = (a[c] * wa + b[c] * wb) / al; } }
+    o
+}
+
 pub fn hex(s: &str) -> [f32; 3] {
     [1, 3, 5].map(|k| s.get(k..k + 2).and_then(|h| u8::from_str_radix(h, 16).ok()).unwrap_or(255) as f32)
 }
@@ -322,8 +363,9 @@ impl DecalFrame {
         DecalFrame { c: d.center, n, u: ur, v: vr, w, h: w / d.aspect.max(1e-4), depth: (w * 0.55).max(span * 0.012), tint: hex(&d.tint), rough: d.roughness * 255.0, metal: d.metallic * 255.0, flip: (d.flip_h, d.flip_v), engrave: d.engrave.max(0.0) }
     }
 
-    /// The ink at point p on triangle t, front-facing and inside the projector only.
-    pub fn at(&self, img: &Map, mesh: &Mesh, t: usize, p: V3, channels: &[String]) -> Texel {
+    /// The ink at point p on triangle t, front-facing and inside the projector only; `texel` is t's texel size in
+    /// world units at the export size, so the image is read at that footprint (`img` its mip chain).
+    pub fn at(&self, img: &[Map], mesh: &Mesh, t: usize, p: V3, channels: &[String], texel: f64) -> Texel {
         let mut out = Texel::default();
         if dot(mesh.nrm[t], self.n) < 0.12 { return out; }
         let d = sub(p, self.c);
@@ -332,14 +374,17 @@ impl DecalFrame {
         if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) { return out; }
         let fu = |u: f32| if self.flip.0 { 1.0 - u } else { u };
         let fv = |v: f32| if self.flip.1 { 1.0 - v } else { v };
-        let q = sample_decal(img, fu(u), fv(v));
+        let (tex, iw, ih) = (texel as f32, img[0].w as f32, img[0].h as f32);
+        let fp = tex / self.w * iw;
+        let q = sample_mip(img, fu(u), fv(v), fp);
         let a = q[3] / 255.0;
         let has = |c: &str| channels.iter().any(|x| x == c);
         if !has("color") { return out; }
         // engraving (paint.ts bakeDecal): the ink's gradient tilts the normal in the triangle's tangent frame
         if self.engrave > 0.0 && has("normal") {
-            let ink = |u: f32, v: f32| sample_decal(img, fu(u), fv(v))[3] / 255.0;
-            let (hu, hv) = (1.5 / img.w as f32, 1.5 / img.h as f32);
+            // over at least half a texel either side: over 1.5 source pixels alone a texel hit or missed the edge (a beaded outline)
+            let ink = |u: f32, v: f32| sample_mip(img, fu(u), fv(v), fp)[3] / 255.0;
+            let (hu, hv) = ((1.5 / iw).max(0.5 * tex / self.w), (1.5 / ih).max(0.5 * tex / self.h));
             let (gu, gv) = (ink(u + hu, v) - ink(u - hu, v), ink(u, v + hv) - ink(u, v - hv));
             if gu.abs() + gv.abs() > 1e-3 {
                 let s = self.engrave * 3.0;
@@ -519,7 +564,8 @@ fn on_rim(sh: &Shape, poly: Option<&[f64]>, x: f64, y: f64, hw: f64, hh: f64) ->
 
 /// A whole-part bevel in the normal map (paint.ts `bevelEdges` / `bevelNormal` / `bakeBevel`, the same steps): the
 /// edges sharper than `angle` with both faces' normals, in a grid of `radius` cells; per texel the normal leaned toward
-/// the far face of every edge within reach, by a fillet's angle (round) or the halfway turn (chamfer).
+/// the far face of every edge within reach on its near face's plane, by a fillet's angle (round: half − asin(d/r ·
+/// sin half)) or the halfway turn (chamfer); leans the same way keep the strongest, different ways add.
 pub struct BevelSrc { segs: Vec<[f32; 12]>, grid: HashMap<(i32, i32, i32), Vec<u32>>, r: f32, round: bool }
 
 impl BevelSrc {
@@ -568,7 +614,8 @@ impl BevelSrc {
     pub fn normal(&self, p: V3, f: V3) -> Option<V3> {
         let r = self.r;
         let (cx, cy, cz) = ((p[0] / r).floor() as i32, (p[1] / r).floor() as i32, (p[2] / r).floor() as i32);
-        let (mut lean, mut any, mut seen) = ([0f32; 3], false, Vec::<u32>::new());
+        // per direction the strongest lean (the editor's `bevelNormal`): summing an edge's segments beaded each vertex
+        let (mut lean, mut seen) = (Vec::<(V3, f32)>::new(), Vec::<u32>::new());
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
@@ -588,19 +635,26 @@ impl BevelSrc {
                         let half = dot(na, nb).clamp(-1.0, 1.0).acos() / 2.0;
                         // a face of another edge (a box's top beside a side's corner)
                         if sa.max(sb) <= half.cos() { continue; }
-                        let (o, so) = if sa >= sb { (nb, sb) } else { (na, sa) };
+                        let (o, so, near) = if sa >= sb { (nb, sb, na) } else { (na, sa, nb) };
+                        // off the near face's plane: a parallel face nearby (a step, a thin plate's far side)
+                        if dot(ap, near).abs() > r / 4.0 { continue; }
                         let u = [o[0] - f[0] * so, o[1] - f[1] * so, o[2] - f[2] * so];
                         let ul = dot(u, u).sqrt();
                         if ul < 1e-6 { continue; }
-                        let phi = if self.round { half.min(((1.0 - d / r) * half.tan()).min(1.0).asin()) } else { half };
-                        let w = phi.tan() / ul;
-                        for k in 0..3 { lean[k] += u[k] * w; }
-                        any = true;
+                        let phi = if self.round { half - (d / r * half.sin()).asin() } else { half };
+                        let (u, w) = ([u[0] / ul, u[1] / ul, u[2] / ul], phi.tan());
+                        match lean.iter_mut().find(|(v, _)| dot(u, *v) > std::f32::consts::FRAC_1_SQRT_2) {
+                            Some(l) => if w > l.1 { *l = (u, w) },
+                            None => lean.push((u, w)),
+                        }
                     }
                 }
             }
         }
-        any.then(|| norm([f[0] + lean[0], f[1] + lean[1], f[2] + lean[2]]))
+        if lean.is_empty() { return None; }
+        let mut n = f;
+        for (u, w) in &lean { for k in 0..3 { n[k] += u[k] * w; } }
+        Some(norm(n))
     }
 
     /// The layer's texel: the bevelled normal in the triangle's tangent space, nothing where no edge leans it.
@@ -753,7 +807,7 @@ pub fn exp_map(pos: &[f32], c: D3, nrm: D3, uax: D3, vax: D3, reach: f64) -> Vec
 }
 
 /// Each triangle's texel size in world units at an n² texture (paint.ts `texelSize`).
-fn texel_sizes(mesh: &Mesh, n: usize) -> Vec<f64> {
+pub fn texel_sizes(mesh: &Mesh, n: usize) -> Vec<f64> {
     (0..mesh.pos.len() / 9).map(|t| {
         let p = |k: usize| [0, 1, 2].map(|j| mesh.pos[t * 9 + k * 3 + j] as f64);
         let (a, b, c) = (p(0), p(1), p(2));

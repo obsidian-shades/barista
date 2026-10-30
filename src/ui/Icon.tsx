@@ -77,6 +77,8 @@ export const ICON = {
   // display: Blender's wireframe globe, solid-shaded ball, MatCap ball, flat disc; the UV checker; a heat ramp for stretch
   wire: ico(SPHERE + 'M10 3a3.2 7 0 1 0 0 14a3.2 7 0 1 0 0-14M3 10h14M4.2 6.2h11.6M4.2 13.8h11.6'),
   smooth: ico([SPHERE, 'f'], SPHERE, [dot(7.5, 7.5, 1.6), 'F']),
+  // face orientation: a face split front (lit) and back (outline only)
+  faces: ico(['M3 4l14 0-14 12z', 'A'], 'M3 4h14v12H3z', 'M17 4L3 16'),
   health: ico(['M10 17.5S2.5 13 2.5 7.6A4.1 4.1 0 0 1 10 5.2a4.1 4.1 0 0 1 7.5 2.4C17.5 13 10 17.5 10 17.5z', 'f'], 'M10 17.5S2.5 13 2.5 7.6A4.1 4.1 0 0 1 10 5.2a4.1 4.1 0 0 1 7.5 2.4C17.5 13 10 17.5 10 17.5z', ['M2.5 10.5h4l1.5-3 2.5 5 1.5-2h5.5', 'a']),
   checker: ico('M3 3h14v14H3z', ['M3 3h3.5v3.5H3zM10 3h3.5v3.5H10zM6.5 6.5H10V10H6.5zM13.5 6.5H17V10h-3.5zM3 10h3.5v3.5H3zM10 10h3.5v3.5H10zM6.5 13.5H10V17H6.5zM13.5 13.5H17V17h-3.5z', 'F']),
   stretch: ico(['M3 3h4.7v14H3z', 'f'], ['M7.7 3h4.6v14H7.7z', 'f'], ['M7.7 3h4.6v14H7.7z', 'f'], ['M12.3 3H17v14h-4.7z', 'A'], 'M3 3h14v14H3z'),

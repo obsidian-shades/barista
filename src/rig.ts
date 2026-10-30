@@ -92,6 +92,33 @@ const clampTo = (v: number, [a, b]: Range) => Math.min(Math.max(v, Math.min(a, b
 /** The translation range the bone is held in (null: free). An explicit null `move` is free, even if an old `slide`
  *  range is still on the bone. */
 export const moveRange = (b: Bone): MoveRange | null => (b.move !== undefined ? b.move : b.slide ? { x: [0, 0], y: b.slide, z: [0, 0] } : null);
+/** Whether any bone of `pose` is moved off its rest. */
+export const posed = (pose: (PoseBone | undefined)[]) => pose.some((p) => p && (p.rot.some(Boolean) || p.slide || p.loc?.some(Boolean)));
+/** The pose a showcase opens to: the user's pose, or with none (the pose is not saved, so a reopened project has none)
+ *  every bone at the far end of each of its ranges, the end farther from rest: a slide pulled back, a magazine out, a
+ *  trigger pulled. A free bone stays at rest. */
+export function openPose(bones: Bone[], pose: (PoseBone | undefined)[]): (PoseBone | undefined)[] {
+  if (posed(pose)) return pose;
+  const far = (r?: Range) => (r ? (Math.abs(r[0]) > Math.abs(r[1]) ? r[0] : r[1]) : 0);
+  return bones.map((b) => {
+    const m = b.connected ? null : moveRange(b);
+    return { rot: [far(b.limit?.x), far(b.limit?.y), far(b.limit?.z)], slide: 0, loc: [far(m?.x), far(m?.y), far(m?.z)] };
+  });
+}
+/** Which motion preset a bone's limits read as (the panel's and the right-click menu's lit preset). A press is a short
+ *  push inward, [-t, 0] with the bone no longer than 3 t (it lies across its button); a one-way slide (a slide pulled
+ *  back to its stop, Range to here) stays a slide. */
+export function motionOf(b: Bone): 'free' | 'hinge' | 'slide' | 'press' | 'fixed' | 'custom' {
+  const m = moveRange(b), lock = (r: Range) => r[0] === r[1];
+  const turning = (r: { x: Range; y: Range; z: Range }) => (['x', 'y', 'z'] as const).filter((k) => !lock(r[k])).length;
+  if (!b.limit && !m) return 'free';
+  if (b.limit && turning(b.limit) === 1 && m && turning(m) === 0) return 'hinge';
+  if (b.limit && turning(b.limit) === 0 && m) {
+    if (turning(m) === 0) return 'fixed';
+    if (lock(m.x) && lock(m.z)) return m.y[1] === 0 && boneLength(b) <= -m.y[0] * 3 ? 'press' : 'slide';
+  }
+  return 'custom';
+}
 /** The pose held inside the bone's limits: a connected bone cannot translate (its head is its parent's tail). */
 export function clampPose(b: Bone, p: PoseBone): PoseBone {
   const rot: V3 = b.limit ? [clampTo(p.rot[0], b.limit.x), clampTo(p.rot[1], b.limit.y), clampTo(p.rot[2], b.limit.z)] : p.rot;

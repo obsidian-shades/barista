@@ -14,13 +14,14 @@ const MODE_NAMES: [SelectMode, string, string][] = [['vert', 'Vertex', '1'], ['e
 /** Blender's select mode buttons, in the same slot in every workspace that has mesh selection. Poly Doc has no UV
  *  islands, so its Island button is disabled rather than dropped: the row never changes width or position. */
 export function SelectModes() {
-  const m = useApp((s) => s.selectMode), doc = useApp((s) => s.workspace === 'doc' || s.workspace === 'rig');
+  const m = useApp((s) => s.selectMode), doc = useApp((s) => s.workspace === 'doc'), rig = useApp((s) => s.workspace === 'rig');
   return (
     <span className="seg modes" role="group" aria-label="Select mode" title="What a click selects (1–4)">
       {MODE_NAMES.map(([k, name, key]) => {
-        const off = doc && k === 'island';
+        // Poly Doc has no UV islands: its fourth mode is the whole part
+        const off = rig && k === 'island', part = doc && k === 'island';
         return <button key={k} aria-pressed={m === k} disabled={off} onClick={() => setSelectMode(k)}
-          title={off ? 'UV islands (UV Magician and Van Gogh only)' : `${name} select (${key})`}><span className="mico">{MODE_ICON[k]}</span>{name}</button>;
+          title={off ? 'UV islands (UV Magician and Van Gogh only)' : part ? `Part select (${key}): a click takes the whole part` : `${name} select (${key})`}><span className="mico">{part ? ICON.part : MODE_ICON[k]}</span>{part ? 'Part' : name}</button>;
       })}
     </span>
   );
@@ -60,7 +61,7 @@ function PaintSelectModes() {
 /** The Display modes: in the 3D header (Poly Doc, Van Gogh) and, compact, in the UV header. Mirrors the Z pie and
  *  View › Display. */
 const DISPLAY_ICON: Record<string, ReactNode> = {
-  wire: ICON.wire, smooth: ICON.smooth, health: ICON.health, checker: ICON.checker, stretch: ICON.stretch, islands: ICON.islands,
+  wire: ICON.wire, smooth: ICON.smooth, health: ICON.health, faces: ICON.faces, checker: ICON.checker, stretch: ICON.stretch, islands: ICON.islands,
   studio: ICON.studio, matcap: ICON.matcap, flat: ICON.flat, bones: ICON.islands, plain: ICON.smooth,
 };
 export function DisplayModes({ compact = false }: { compact?: boolean }) {

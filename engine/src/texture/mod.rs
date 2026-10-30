@@ -170,6 +170,13 @@ pub struct ExportReq {
     pub reliefs: HashMap<String, ReliefMaps>,
     /// The FBX's file name, when the Pack carries one (blob `fbx`).
     pub fbx: Option<String>,
+    /// Da Vinci's showcase (its settings and pose): with an FBX, Blender builds `<base>.blend` from it (`showcase`).
+    #[serde(default)]
+    pub showcase: Option<serde_json::Value>,
+    /// One atlas: the parts share one UV square without overlapping, so they go out as one set of maps (`{base}-…`)
+    /// instead of a set per part that is mostly empty.
+    #[serde(default)]
+    pub atlas: bool,
 }
 /// Where a relief decal's three maps are, as the editor loads them.
 #[derive(Deserialize, Clone)]
@@ -177,7 +184,7 @@ pub struct ReliefMaps { pub normal: String, pub height: String, pub mask: String
 fn generic() -> String { "generic".into() }
 
 #[derive(Serialize)]
-pub struct ExportDone { pub dir: String, pub files: Vec<String> }
+pub struct ExportDone { pub dir: String, pub files: Vec<String>, #[serde(skip_serializing_if = "Option::is_none")] pub warning: Option<String> }
 
 static PROGRESS: Mutex<String> = Mutex::new(String::new());
 fn progress(s: impl Into<String>) { *PROGRESS.lock().unwrap() = s.into(); }
@@ -211,7 +218,7 @@ fn blended(d: f32, s: f32, mode: &str) -> f32 {
 }
 
 /// How a layer gets its texels at the export size.
-enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a Map, &'a [String]), Relief(ReliefFrame, &'a layers::Relief), Shape(layers::ShapeSrc<'a>), Bevel(layers::BevelSrc), Gen(&'a Gen) }
+enum Src<'a> { Pixels, Fill(&'a Fill, &'a Material), Decal(DecalFrame, &'a [Map], &'a [String], Vec<f64>), Relief(ReliefFrame, &'a layers::Relief), Shape(layers::ShapeSrc<'a>), Bevel(layers::BevelSrc), Gen(&'a Gen) }
 
 /// One part's maps at size n: composite colour, roughness, metallic, normal, height, AO, and which texels are
 /// painted (for the padding) and on the surface.
@@ -243,7 +250,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
             if let Some(f) = &l.fill { if let Some(m) = assets.materials.get(&f.asset) { return Src::Fill(f, m); } }
             if let Some(d) = &l.decal { if let Some(sh) = &d.shape { return Src::Shape(layers::ShapeSrc::new(d, sh, span, mesh, n)); } }
             if let Some(d) = &l.decal { if let Some(r) = assets.reliefs.get(&d.asset) { return Src::Relief(ReliefFrame::new(d, span), r); } }
-            if let Some(d) = &l.decal { if let Some(img) = assets.decals.get(&d.asset) { return Src::Decal(DecalFrame::new(d, span), img, &d.channels); } }
+            if let Some(d) = &l.decal { if let Some(img) = assets.decals.get(&d.asset) { return Src::Decal(DecalFrame::new(d, span), img, &d.channels, layers::texel_sizes(mesh, n)); } }
             if let Some(b) = &l.bevel { return Src::Bevel(layers::BevelSrc::new(b, mesh.pos)); }
             if let Some(g) = &l.gen { if occ.is_some() && edges.is_some() { return Src::Gen(g); } }
             Src::Pixels
@@ -278,7 +285,7 @@ fn render(mesh: &Mesh, set: &Set, n: usize, span: f32, gen_span: f32, occ: Optio
                         let mask = buf.get("mask").map(|m| up.sample(m, 1, true, u, v, &mut tmp) * tmp[0] / 255.0).unwrap_or(1.0);
                         let mut te = match &srcs[j] {
                             Src::Fill(f, m) => fill_at(f, m, mesh, t, p, x, y, n, span),
-                            Src::Decal(fr, img, ch) => fr.at(img, mesh, t, p, ch),
+                            Src::Decal(fr, img, ch, tx) => fr.at(img, mesh, t, p, ch, tx[t]),
                             Src::Relief(fr, maps) => fr.at(maps, mesh, t, p),
                             Src::Shape(sh) => sh.at(mesh, t, p),
                             Src::Bevel(b) => b.at(mesh, t, p),
@@ -427,7 +434,7 @@ fn png(path: &Path, n: usize, channels: usize, px: impl Fn(usize, &mut [u8]) + S
         .map_err(|e| e.to_string())
 }
 
-struct Assets { materials: HashMap<String, Material>, decals: HashMap<String, Map>, reliefs: HashMap<String, layers::Relief> }
+struct Assets { materials: HashMap<String, Material>, decals: HashMap<String, Vec<Map>>, reliefs: HashMap<String, layers::Relief> }
 
 /// Decode every asset the request names that has a file on disk (the rest fall back to working-res pixels).
 fn assets(req: &ExportReq) -> Assets {
@@ -441,7 +448,7 @@ fn assets(req: &ExportReq) -> Assets {
             (m.basecolor.is_some() || !maps.contains_key("basecolor")).then(|| (id.clone(), m))
         })
         .collect();
-    let decals = req.decals.iter().filter_map(|(id, u)| Some((id.clone(), decode(&file_of(u)?).ok()?))).collect();
+    let decals = req.decals.iter().filter_map(|(id, u)| Some((id.clone(), layers::mips(decode(&file_of(u)?).ok()?)))).collect();
     let reliefs = req
         .reliefs
         .iter()
@@ -463,8 +470,92 @@ pub fn export(body: &[u8]) -> Result<Option<ExportDone>, String> {
     };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let result = run(&req, &dir, pack.blobs.iter().find(|(k, _)| k == "fbx").map(|(_, v)| v.as_slice()));
+    let result = result.map(|mut files| {
+        // the maps and FBX are written either way: a Blender that is missing or fails is a warning, not a lost export
+        let warning = match (&req.showcase, &req.fbx) {
+            (Some(show), Some(fbx)) => match showcase(&dir, &req.base, fbx, show) { Ok(blend) => { files.push(blend); None } Err(e) => Some(e) },
+            _ => None,
+        };
+        ExportDone { dir: dir.display().to_string(), files, warning }
+    });
     progress("");
-    result.map(|files| Some(ExportDone { dir: dir.display().to_string(), files }))
+    result.map(Some)
+}
+
+/// Blender: $BARISTA_BLENDER, else the newest `Blender Foundation\Blender *` install, else `blender` on the PATH.
+fn blender() -> PathBuf {
+    if let Some(p) = std::env::var_os("BARISTA_BLENDER") { return PathBuf::from(p); }
+    let root = PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into())).join("Blender Foundation");
+    let mut found: Vec<PathBuf> = std::fs::read_dir(root).into_iter().flatten().flatten().map(|e| e.path().join("blender.exe")).filter(|p| p.is_file()).collect();
+    // "Blender 5.2" after "Blender 4.10": by the version numbers, not the text
+    found.sort_by_key(|p| p.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().split(|c: char| !c.is_ascii_digit()).filter_map(|x| x.parse::<u32>().ok()).collect::<Vec<_>>()));
+    found.pop().unwrap_or_else(|| PathBuf::from("blender"))
+}
+
+/// Da Vinci's showcase as a Blender project beside the export: `tools/blender-showcase.py` (built in) run headless on
+/// the FBX just written, saving `<base>.blend` (turntable, open / close, softboxes, Cycles on the GPU). The script and
+/// its job go in the export folder (the engine may run at low integrity, where the user's temp folder is read-only)
+/// and are removed after.
+fn showcase(dir: &Path, base: &str, fbx: &str, show: &serde_json::Value) -> Result<String, String> {
+    progress("Building the Blender scene…");
+    let blend = format!("{base}.blend");
+    let (script, job) = (dir.join(".barista-showcase.py"), dir.join(".barista-showcase.json"));
+    let mut spec = show.clone();
+    spec["fbx"] = dir.join(fbx).display().to_string().into();
+    spec["blend"] = dir.join(&blend).display().to_string().into();
+    spec["name"] = base.into();
+    std::fs::write(&script, include_str!("../../../tools/blender-showcase.py")).map_err(|e| e.to_string())?;
+    std::fs::write(&job, spec.to_string()).map_err(|e| e.to_string())?;
+    let exe = blender();
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(["-b", "--factory-startup", "--python"]).arg(&script).arg("--").arg(&job);
+    #[cfg(windows)]
+    { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); } // CREATE_NO_WINDOW: no console flash from the app
+    let out = cmd.output();
+    let _ = (std::fs::remove_file(&script), std::fs::remove_file(&job), std::fs::remove_file(dir.join(format!("{blend}1"))));
+    let out = out.map_err(|e| format!("Blender scene skipped: could not start {} ({e}). Install Blender or set BARISTA_BLENDER to blender.exe.", exe.display()))?;
+    if out.status.success() && dir.join(&blend).is_file() { return Ok(blend); }
+    let log = String::from_utf8_lossy(&out.stderr).lines().chain(String::from_utf8_lossy(&out.stdout).lines()).filter(|l| l.contains("Error")).last().unwrap_or("").to_owned();
+    Err(format!("Blender scene failed ({}): {log}", exe.display()))
+}
+
+/// One set of maps (`prefix`-BaseColor.png and so on) for the preset: a part's own, or the atlas's.
+#[allow(clippy::too_many_arguments)]
+fn write_maps(dir: &Path, req: &ExportReq, out: &Out, n: usize, prefix: &str, channels: &[String], has_ao: bool, files: &mut Vec<String>) -> Result<(), String> {
+    let mut write = |suffix: &str, ch: usize, f: &(dyn Fn(usize, &mut [u8]) + Sync)| -> Result<(), String> {
+        let file = format!("{prefix}-{suffix}.png");
+        png(&dir.join(&file), n, ch, f)?;
+        files.push(file);
+        Ok(())
+    };
+    let on = |c: &str| channels.iter().any(|x| x == c);
+    write("BaseColor", 3, &|i, o| o.copy_from_slice(&out.color[i]))?;
+    match req.preset.as_str() {
+        "unreal" => {
+            write("Normal", 3, &|i, o| { let v = out.normal[i]; o.copy_from_slice(&[v[0], 255 - v[1], v[2]]) })?;
+            write("ORM", 3, &|i, o| o.copy_from_slice(&[out.ao[i], out.rough[i], out.metal[i]]))?;
+            if on("height") { write("Height", 1, &|i, o| o[0] = out.height[i])?; }
+        }
+        "unity-hdrp" => {
+            write("Normal", 3, &|i, o| o.copy_from_slice(&out.normal[i]))?;
+            write("MaskMap", 4, &|i, o| o.copy_from_slice(&[out.metal[i], out.ao[i], 0, 255 - out.rough[i]]))?;
+            if on("height") { write("Height", 1, &|i, o| o[0] = out.height[i])?; }
+        }
+        "unity-urp" => {
+            write("Normal", 3, &|i, o| o.copy_from_slice(&out.normal[i]))?;
+            write("MetallicSmoothness", 4, &|i, o| o.copy_from_slice(&[out.metal[i], 0, 0, 255 - out.rough[i]]))?;
+            if on("height") { write("Height", 1, &|i, o| o[0] = out.height[i])?; }
+        }
+        _ => {
+            if on("rough") { write("Roughness", 1, &|i, o| o[0] = out.rough[i])?; }
+            if on("metal") { write("Metallic", 1, &|i, o| o[0] = out.metal[i])?; }
+            if on("normal") { write("Normal", 3, &|i, o| o.copy_from_slice(&out.normal[i]))?; }
+            if on("height") { write("Height", 1, &|i, o| o[0] = out.height[i])?; }
+            if has_ao { write("AmbientOcclusion", 1, &|i, o| o[0] = out.ao[i])?; }
+            write("ORM", 3, &|i, o| o.copy_from_slice(&[out.ao[i], out.rough[i], out.metal[i]]))?;
+        }
+    }
+    Ok(())
 }
 
 fn run(req: &ExportReq, dir: &Path, fbx: Option<&[u8]>) -> Result<Vec<String>, String> {
@@ -493,6 +584,7 @@ fn run(req: &ExportReq, dir: &Path, fbx: Option<&[u8]>) -> Result<Vec<String>, S
     let needs_ao = req.preset != "unity-urp" || todo.iter().any(|&i| doc.sets[i].as_ref().unwrap().layers.iter().any(|l| l.gen.is_some()));
     let occ = needs_ao.then(|| { progress("Baking ambient occlusion views…"); Occlusion::new(&casters) });
     let mut files = vec![];
+    let (mut atlas, mut channels): (Option<Out>, Vec<String>) = (None, vec![]);
     for (k, &i) in todo.iter().enumerate() {
         let set = doc.sets[i].as_ref().unwrap();
         let name = &doc.parts[i].name;
@@ -526,43 +618,32 @@ fn run(req: &ExportReq, dir: &Path, fbx: Option<&[u8]>) -> Result<Vec<String>, S
             buf
         };
         let mut out = render(&mesh, set, n, diag, gen_span, occ.as_ref(), edges.as_ref(), &tiles, &assets);
+        if req.atlas {
+            // each part's surface into the shared square (the islands don't overlap; the first part on a texel keeps it)
+            progress(format!("Merging {label} into the atlas…"));
+            match &mut atlas {
+                None => atlas = Some(out),
+                Some(a) => {
+                    for t in 0..n * n {
+                        if out.owner[t] == layers::NONE || a.owner[t] != layers::NONE { continue; }
+                        a.color[t] = out.color[t]; a.rough[t] = out.rough[t]; a.metal[t] = out.metal[t]; a.normal[t] = out.normal[t];
+                        a.height[t] = out.height[t]; a.ao[t] = out.ao[t]; a.covered[t] = out.covered[t]; a.owner[t] = out.owner[t];
+                    }
+                }
+            }
+            for c in &set.channels { if !channels.contains(c) { channels.push(c.clone()); } }
+            continue;
+        }
         progress(format!("Padding {label}…"));
         pad(&mut out, n, req.padding.unwrap_or((n / 64).max(4)));
         progress(format!("Writing {label}…"));
-        let prefix = format!("{}-{name}", req.base);
-        let mut write = |suffix: &str, ch: usize, f: &(dyn Fn(usize, &mut [u8]) + Sync)| -> Result<(), String> {
-            let file = format!("{prefix}-{suffix}.png");
-            png(&dir.join(&file), n, ch, f)?;
-            files.push(file);
-            Ok(())
-        };
-        let on = |c: &str| set.channels.iter().any(|x| x == c);
-        write("BaseColor", 3, &|i, o| o.copy_from_slice(&out.color[i]))?;
-        match req.preset.as_str() {
-            "unreal" => {
-                write("Normal", 3, &|i, o| { let v = out.normal[i]; o.copy_from_slice(&[v[0], 255 - v[1], v[2]]) })?;
-                write("ORM", 3, &|i, o| o.copy_from_slice(&[out.ao[i], out.rough[i], out.metal[i]]))?;
-                if on("height") { write("Height", 1, &|i, o| o[0] = out.height[i])?; }
-            }
-            "unity-hdrp" => {
-                write("Normal", 3, &|i, o| o.copy_from_slice(&out.normal[i]))?;
-                write("MaskMap", 4, &|i, o| o.copy_from_slice(&[out.metal[i], out.ao[i], 0, 255 - out.rough[i]]))?;
-                if on("height") { write("Height", 1, &|i, o| o[0] = out.height[i])?; }
-            }
-            "unity-urp" => {
-                write("Normal", 3, &|i, o| o.copy_from_slice(&out.normal[i]))?;
-                write("MetallicSmoothness", 4, &|i, o| o.copy_from_slice(&[out.metal[i], 0, 0, 255 - out.rough[i]]))?;
-                if on("height") { write("Height", 1, &|i, o| o[0] = out.height[i])?; }
-            }
-            _ => {
-                if on("rough") { write("Roughness", 1, &|i, o| o[0] = out.rough[i])?; }
-                if on("metal") { write("Metallic", 1, &|i, o| o[0] = out.metal[i])?; }
-                if on("normal") { write("Normal", 3, &|i, o| o.copy_from_slice(&out.normal[i]))?; }
-                if on("height") { write("Height", 1, &|i, o| o[0] = out.height[i])?; }
-                if occ.is_some() { write("AmbientOcclusion", 1, &|i, o| o[0] = out.ao[i])?; }
-                write("ORM", 3, &|i, o| o.copy_from_slice(&[out.ao[i], out.rough[i], out.metal[i]]))?;
-            }
-        }
+        write_maps(dir, req, &out, n, &format!("{}-{name}", req.base), &set.channels, occ.is_some(), &mut files)?;
+    }
+    if let Some(mut a) = atlas {
+        progress("Padding the atlas…");
+        pad(&mut a, n, req.padding.unwrap_or((n / 64).max(4)));
+        progress("Writing the atlas…");
+        write_maps(dir, req, &a, n, &req.base, &channels, occ.is_some(), &mut files)?;
     }
     if let (Some(name), Some(bytes)) = (&req.fbx, fbx) {
         std::fs::write(dir.join(name), bytes).map_err(|e| e.to_string())?;
@@ -584,11 +665,25 @@ mod tests {
         let b = |profile: &str, angle: f32| Bevel { radius: 0.1, profile: profile.into(), angle, concave: false };
         let lean = |src: &layers::BevelSrc, x: f32| src.normal([x, 0.5, 1.0], [0.0, 0.0, 1.0]).map(|n| n[0].atan2(n[2]).to_degrees());
         let round = layers::BevelSrc::new(&b("round", 30.0), &bx);
-        assert!((lean(&round, 0.95).unwrap() - 30.0).abs() < 1e-3, "round at r/2: {:?}", lean(&round, 0.95));
+        // 45° − asin(½ sin 45°) at r/2, 45° at the edge (paint.check.ts)
+        let r2 = 45.0 - (0.5 * std::f32::consts::FRAC_1_SQRT_2).asin().to_degrees();
+        assert!((lean(&round, 0.95).unwrap() - r2).abs() < 1e-3, "round at r/2: {:?}", lean(&round, 0.95));
+        assert!((lean(&round, 1.0).unwrap() - 45.0).abs() < 1e-3, "round at the edge");
         assert!(lean(&round, 0.85).is_none(), "past the radius");
+        assert!(round.normal([0.99, 0.5, 0.95], [0.0, 0.0, 1.0]).is_none(), "a parallel face below the edge");
         let chamfer = layers::BevelSrc::new(&b("chamfer", 30.0), &bx);
         assert!((lean(&chamfer, 0.95).unwrap() - 45.0).abs() < 1e-3, "chamfer");
         assert!(lean(&layers::BevelSrc::new(&b("round", 100.0), &bx), 0.95).is_none(), "under the threshold");
+        // the edge cut into 4 segments leans the same all along (summed, each vertex beaded)
+        let strips: Vec<f32> = (0..4).flat_map(|i| {
+            let (y0, y1) = (i as f32 / 4.0, (i + 1) as f32 / 4.0);
+            [0., y0, 1., 1., y0, 1., 1., y1, 1., 0., y0, 1., 1., y1, 1., 0., y1, 1., 1., y0, 1., 1., y0, 0., 1., y1, 0., 1., y0, 1., 1., y1, 0., 1., y1, 1.]
+        }).collect();
+        let split = layers::BevelSrc::new(&b("round", 30.0), &strips);
+        for y in [0.1f32, 0.25, 0.26, 0.5] {
+            let n = split.normal([0.95, y, 1.0], [0.0, 0.0, 1.0]).unwrap();
+            assert!((n[2].acos().to_degrees() - r2).abs() < 1e-3, "split edge at y {y}: {n:?}");
+        }
     }
 
     /// A relief decal's normal / height / mask maps, sampled as paint.check.ts's relief block does: a normal map
@@ -751,6 +846,42 @@ mod tests {
         let gap = img.get_pixel((256.0 * (1.0 / 3.0 - 0.02)) as u32 + 2, 256 - 1 - 256 / 4);
         assert_ne!(gap.0, [188, 188, 188], "the gutter is padded");
         assert_eq!(img.get_pixel(256 / 3, 256 - 1 - 256 / 4).0, [188, 188, 188], "beyond the padding");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// One atlas: two parts sharing one UV square (a quad each, left half and right half) go out as one set of maps
+    /// named after the base alone, each part's paint on its own half, nothing per part.
+    #[test]
+    fn an_atlas_exports_one_set_of_maps() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("atlas-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f32s = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        let quad = |x0: f32, u0: f32| {
+            let (mut pos, mut uv) = (vec![], vec![]);
+            for (a, b) in [(0., 0.), (1., 0.), (1., 1.), (0., 0.), (1., 1.), (0., 1.)] {
+                pos.extend([x0 + a, b, 0.0]);
+                uv.extend([u0 + 0.05 + a * 0.4, 0.05 + b * 0.9]);
+            }
+            (pos, uv)
+        };
+        let ((p0, u0), (p1, u1)) = (quad(0.0, 0.0), quad(2.0, 0.5));
+        let wn = 64;
+        let solid = |c: [u8; 3]| [c[0], c[1], c[2], 255].repeat(wn * wn);
+        let blobs = vec![
+            ("out/0/positions".to_string(), f32s(&p0)), ("part/0/uv".to_string(), f32s(&u0)), ("set/0/1/color/0_0".into(), solid([220, 20, 20])),
+            ("out/1/positions".to_string(), f32s(&p1)), ("part/1/uv".to_string(), f32s(&u1)), ("set/1/1/color/0_0".into(), solid([20, 200, 20])),
+        ];
+        let set = serde_json::json!({ "size": wn, "channels": ["color"], "active": 0, "layers": [{ "id": 1, "name": "Paint", "visible": true, "opacity": 1, "px": ["color"], "mask": false }] });
+        let doc = serde_json::json!({ "parts": [{ "name": "Left" }, { "name": "Right" }], "sets": [set, set] });
+        let project = dir.join("atlas.barista");
+        save(&project, &Pack { json: doc.to_string(), blobs }).unwrap();
+        let req = serde_json::json!({ "project": project.display().to_string(), "out": dir.display().to_string(), "size": 128, "base": "a", "preset": "unity-urp", "atlas": true });
+        let done = export(&Pack { json: req.to_string(), blobs: vec![] }.encode()).unwrap().unwrap();
+        assert!(done.files.iter().any(|f| f == "a-BaseColor.png"), "{:?}", done.files);
+        assert!(!done.files.iter().any(|f| f.contains("Left") || f.contains("Right")), "no per-part maps: {:?}", done.files);
+        let img = image::open(dir.join("a-BaseColor.png")).unwrap().to_rgb8();
+        assert_eq!(img.get_pixel(128 / 4, 64).0, [220, 20, 20], "the left part on its half");
+        assert_eq!(img.get_pixel(3 * 128 / 4, 64).0, [20, 200, 20], "the right part on its half");
         std::fs::remove_dir_all(dir).ok();
     }
 }

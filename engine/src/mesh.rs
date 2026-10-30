@@ -143,8 +143,10 @@ impl Mesh {
     }
 }
 
-/// Neighbours must run a shared edge in opposite directions (files often mix windings);
-/// then each connected piece is flipped, if needed, to face away from the middle.
+/// Neighbours must run a shared edge in opposite directions (files often mix windings); then a closed piece is
+/// flipped, if needed, to face away from its middle (signed volume), and an open piece keeps the side most of its
+/// faces were wound to in the file: an open piece's "volume" depends on where the model sits, so it turned panels
+/// (a barrel's bore walls) either way, against the file's normals and against Poly Doc's Recalculate Outside.
 /// Only plain two-triangle edges carry orientation: where shells touch along an edge (4 triangles on it, two each
 /// way) "opposite" is ambiguous, and following it turned a whole correctly wound shell inside out.
 fn orient(p: &[V3], f: &mut [[u32; 3]], edges: &Map<u64, Vec<u32>>) {
@@ -153,6 +155,7 @@ fn orient(p: &[V3], f: &mut [[u32; 3]], edges: &Map<u64, Vec<u32>>) {
         if seen[s] { continue; }
         seen[s] = true;
         let mut comp = vec![s];
+        let mut turned = 0;
         let mut q = 0;
         while q < comp.len() {
             let t = comp[q];
@@ -165,16 +168,23 @@ fn orient(p: &[V3], f: &mut [[u32; 3]], edges: &Map<u64, Vec<u32>>) {
                     let u = u as usize;
                     if seen[u] { continue; }
                     seen[u] = true;
-                    if (0..3).any(|j| f[u][j] == a && f[u][(j + 1) % 3] == b) { f[u].swap(1, 2); }
+                    if (0..3).any(|j| f[u][j] == a && f[u][(j + 1) % 3] == b) { f[u].swap(1, 2); turned += 1; }
                     comp.push(u);
                 }
             }
         }
-        let vol: f64 = comp.iter().map(|&t| {
-            let [a, b, c] = f[t].map(|v| p[v as usize]);
-            dot(a, cross(b, c))
-        }).sum();
-        if vol < 0. {
+        // open: some edge of the piece is a border (one triangle); an edge two shells share (4 triangles) is no hole
+        let closed = comp.iter().all(|&t| (0..3).all(|k| edges[&ek(f[t][k], f[t][(k + 1) % 3])].len() >= 2));
+        let flip = if closed {
+            let vol: f64 = comp.iter().map(|&t| {
+                let [a, b, c] = f[t].map(|v| p[v as usize]);
+                dot(a, cross(b, c))
+            }).sum();
+            vol < 0.
+        } else {
+            turned * 2 > comp.len()
+        };
+        if flip {
             for &t in &comp { f[t].swap(1, 2); }
         }
     }
@@ -271,6 +281,25 @@ mod tests {
             let c = m.centroid(t);
             let mid = if dist(c, ca) < dist(c, cb) { ca } else { cb };
             assert!(dot(m.n[t as usize], sub(c, mid)) > 0., "triangle {t} faces into its cube");
+        }
+    }
+
+    /// An open piece keeps the side most of its faces face in the file (one stray turned to match), wherever it sits:
+    /// a box with no lid wound inward, far from the origin, stays wound inward.
+    #[test]
+    fn open_pieces_keep_the_files_side() {
+        // the shapes' cube is half wound inward on purpose: take the engine's outward one
+        let cube = Mesh::from_soup(&crate::shapes::get("cube").unwrap()).unwrap();
+        let mut soup: Vec<f32> = Vec::new();
+        for (i, t) in cube.f.iter().enumerate().skip(2) {
+            let mut c: Vec<[f32; 3]> = t.iter().map(|&v| { let w = cube.to_world(cube.pt(v)); [w[0] + 100., w[1] + 50., w[2] + 20.] }).collect();
+            if i != 5 { c.swap(1, 2); } // inward, but one stray left outward
+            soup.extend(c.iter().flatten());
+        }
+        let m = Mesh::from_soup(&soup).unwrap();
+        let mid = m.to_local([100., 50., 20.]);
+        for t in 0..m.f.len() as u32 {
+            assert!(dot(m.n[t as usize], sub(m.centroid(t), mid)) < 0., "triangle {t} turned out of the open box");
         }
     }
 }

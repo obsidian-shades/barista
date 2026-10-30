@@ -31,7 +31,7 @@ const PAINT_TOOLS: Partial<Record<PaintTool, ToolDef>>[] = [
       icon: ico('M2 3h12v12H2zM6 3v12M10 3v12M2 7h12M2 11h12', ['M6 7h4v4H6z', 'A'], ['M10.5 9.5l7 5-3.2.6 1.8 3.3-1.4.8-1.8-3.4-2.4 2.3z', 'F']) },
   },
   {
-    decal: { name: 'Decal', key: 'D', tip: 'Click a mark on the model to select it, drag it to slide it over the surface; its handles scale, stretch and turn it, and a click on bare surface deselects. Place writes the mark armed in Assets > Decals (or Alt+click)', run: () => setPaint({ tool: 'decal', decalMode: 'edit' }), on: () => true,
+    decal: { name: 'Decal', key: 'D', tip: 'Click a mark on the model to select it, drag it to slide it over the surface; its handles scale, stretch and turn it, and a click on bare surface deselects. Place writes the mark armed in Assets > Stickers or Geometry (or Alt+click)', run: () => setPaint({ tool: 'decal', decalMode: 'edit' }), on: () => true,
       icon: ico(['M4 3h12v8l-5 6H4z', 'f'], 'M4 3h12v8l-5 6H4z', ['M16 11h-3.8a1.2 1.2 0 0 0-1.2 1.2V17z', 'F'], ['M10 5.5l1.1 2.3 2.4.3-1.8 1.7.5 2.4-2.2-1.2-2.2 1.2.5-2.4-1.8-1.7 2.4-.3z', 'A']) },
     mirror: { name: 'Mirror', key: 'Ctrl+M', tip: 'Copy a mark to the other side of the model: click the mark, then hover where its mirror image should go — near the spot opposite it across X, Y or Z the outline snaps there (solid) — and click to place it. The copy is its own layer with the same settings', run: () => setPaint({ tool: 'mirror' }), on: () => true,
       icon: ico(['M10 2v16', 'd'], ['M8 4H3l2 6-2 6h5z', 'f'], 'M8 4H3l2 6-2 6h5z', ['M12 4h5l-2 6 2 6h-5z', 'a']) },
@@ -181,7 +181,7 @@ function holdTile(e: ReactPointerEvent, id: string, src: string, over = shelfDra
   addEventListener('pointermove', move); addEventListener('pointerup', up); addEventListener('keydown', esc);
 }
 
-/** The decal shelf: choose a mark, then click the model. Marks are layers, so paint, masks and export behave alike. */
+/** The sticker shelf (prints, stencils, engraves): choose a mark, then click the model. Marks are layers, so paint, masks and export behave alike. */
 function Decals() {
   const list = useApp((s) => s.decals), loading = useApp((s) => s.decalsLoading), error = useApp((s) => s.decalsError);
   const armed = useApp((s) => s.paint.decalAsset);
@@ -197,15 +197,15 @@ function Decals() {
     <div className="matshelf decalshelf">
       <div className="matsticky">
         <div className="matbar">
-          <input className="matsearch" type="search" placeholder="Search decals" value={q} onChange={(e) => setQ(e.target.value)} />
-          <button title="Import a transparent PNG mark from disk" onClick={() => input.current?.click()}>Import</button>
+          <input className="matsearch" type="search" placeholder="Search stickers" value={q} onChange={(e) => setQ(e.target.value)} />
+          <button title="Import a transparent PNG sticker from disk" onClick={() => input.current?.click()}>Import</button>
         </div>
         <div className="matchips">
           {cats.map((c) => <button key={c} className={c === cat ? 'on' : ''} onClick={() => setCat(c)}>{c}</button>)}
         </div>
       </div>
       {error && <div className="hint fix">{error}</div>}
-      {loading && !list.length && <div className="hint">Loading decals…</div>}
+      {loading && !list.length && <div className="hint">Loading stickers…</div>}
       <div className="decalgrid">
         {shown.map((d) => (
           <button key={d.id} className={`decaltile${d.id === armed ? ' on' : ''}`} title={`${d.name} — ${d.category}${d.notes ? `\n${d.notes}` : ''}\n${d.width}×${d.height} · ${d.license}`} onPointerDown={(e) => holdTile(e, d.id, decalUrl(d), decalDragOver, decalDrop, false)} onClick={() => { if (!tileDragged) pickDecal(d.id); }}>
@@ -214,7 +214,7 @@ function Decals() {
           </button>
         ))}
       </div>
-      {!loading && !shown.length && <div className="hint">No decal matches.</div>}
+      {!loading && !shown.length && <div className="hint">No sticker matches.</div>}
       <input ref={input} type="file" accept="image/png,image/jpeg,image/webp,image/gif" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void importDecal(f); e.target.value = ''; }} />
     </div>
   );
@@ -879,7 +879,7 @@ function TextureExport() {
 
 // the first tab is the texture sets (parts) and their stack; 'Layers' is the stack's own toggle inside it
 const TABS = [['layers', 'Texture sets'], ['assets', 'Assets'], ['maps', 'Maps']] as const;
-const ASSET_TABS = [['materials', 'Materials'], ['tiles', 'Tiles'], ['decals', 'Decals'], ['geometry', 'Geometry']] as const;
+const ASSET_TABS = [['materials', 'Materials'], ['tiles', 'Tiles'], ['decals', 'Stickers'], ['geometry', 'Geometry']] as const;
 
 /** The texture sets as pictures of their parts (click one to paint it, unfold it for its channels), then the active
  *  set's layers, each one's settings folded under its row. */

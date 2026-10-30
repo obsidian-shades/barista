@@ -311,8 +311,8 @@ export const BEVEL = CELLS + `uniform highp sampler2D uFrame; uniform highp samp
 uniform float uR; uniform int uChamfer;
 bool lean(vec3 p, vec3 f, out vec3 w) {
   ivec3 c = ivec3(floor(p / uR));
-  int seen[16]; int ns = 0;
-  vec3 t = vec3(0.0); bool any = false;
+  // per direction the strongest lean (paint.ts bevelNormal): an edge listed in several cells is the same lean again
+  vec3 lu[4]; float lw[4]; int nl = 0;
   for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) {
     int s = slotOf(c + ivec3(dx, dy, dz));
     if (s < 0) continue;
@@ -327,20 +327,23 @@ bool lean(vec3 p, vec3 f, out vec3 w) {
       if (d >= uR) continue;
       float sa = dot(f, na), sb = dot(f, nb), half_ = acos(clamp(dot(na, nb), -1.0, 1.0)) / 2.0;
       if (max(sa, sb) <= cos(half_)) continue; // a face of another edge
-      bool dup = false;
-      for (int i = 0; i < ns; i++) if (seen[i] == id) dup = true;
-      if (dup) continue;
-      if (ns < 16) seen[ns++] = id;
-      vec3 far = sa >= sb ? nb : na; float so = sa >= sb ? sb : sa;
+      vec3 far = sa >= sb ? nb : na, near = sa >= sb ? na : nb; float so = sa >= sb ? sb : sa;
+      if (abs(dot(q, near)) > uR * 0.25) continue; // off the near face's plane
       vec3 dir = far - f * so;
       float dl = length(dir);
       if (dl < 1e-6) continue;
-      float phi = uChamfer == 1 ? half_ : min(half_, asin(min(1.0, (1.0 - d / uR) * tan(half_))));
-      t += dir / dl * tan(phi); any = true;
+      float phi = uChamfer == 1 ? half_ : half_ - asin(d / uR * sin(half_));
+      vec3 ud = dir / dl; float wt = tan(phi);
+      int k = 0;
+      while (k < nl && dot(ud, lu[k]) <= 0.70710678) k++;
+      if (k == nl) { if (nl < 4) { lu[nl] = ud; lw[nl] = wt; nl++; } }
+      else if (wt > lw[k]) { lu[k] = ud; lw[k] = wt; }
     }
   }
+  vec3 t = vec3(0.0);
+  for (int j = 0; j < 4; j++) if (j < nl) t += lu[j] * lw[j];
   w = normalize(f + t);
-  return any;
+  return nl > 0;
 }
 void main() {
   vec4 cand[2];

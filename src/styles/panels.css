@@ -245,7 +245,7 @@ button.primary.wide { justify-content: center; }
 .relief-preview { display: flex; justify-content: center; padding: 4px 0; background: radial-gradient(circle at 50% 45%, #2b2d31, var(--well) 70%); border: 1px solid var(--line); border-radius: var(--r-s); }
 .relief-preview img { width: 144px; height: 144px; }
 .grip-advanced-body { display: grid; gap: 4px; padding-top: 4px; }
-.decalimg { display: grid; place-items: center; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-s);
+.decalimg { display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-s);
   background-color: #191b1e; background-image: linear-gradient(45deg,#22252a 25%,transparent 25%),linear-gradient(-45deg,#22252a 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#22252a 75%),linear-gradient(-45deg,transparent 75%,#22252a 75%); background-size: 14px 14px; background-position: 0 0,0 7px,7px -7px,-7px 0; }
 .decalimg img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
 .decalgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; align-content: start; }

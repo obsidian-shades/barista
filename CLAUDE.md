@@ -15,7 +15,7 @@ UVs are always computed on the real mesh's own triangles, never projected from a
 `symmetry` a part with exactly one mirror plane is solved on one half and mirrored; a plane drawn in the editor (UV Magician's
 "Symmetry plane" tool: move/rotate the gizmo, then Apply → `PartIn.symmetry`) is used as drawn — the normal kept, the distance moved onto
 the nearest layer of vertices, details with no partner charted once — so a near-symmetric model still gets the mirrored layout.
-`mesh` weld + make winding consistent/outward, deterministic `Map`/`Set`; a soup's flat convex triangle pairs are read back as one polygon (`recover_quads`), so no seam runs down a diagonal the file never drew · `region` charts like an artist blocks out hard surface:
+`mesh` weld + make winding consistent/outward (a closed piece by signed volume; an open piece keeps the side most of its faces had in the file, `orient`, test `open_pieces_keep_the_files_side`: an open piece's volume depends on where the model sits), deterministic `Map`/`Set`; a soup's flat convex triangle pairs are read back as one polygon (`recover_quads`), so no seam runs down a diagonal the file never drew · `region` charts like an artist blocks out hard surface:
 per shell a box frame from its big flat faces; smooth simple regions (disk, ring, sphere, torus) stay whole, boxy/tangled ones split into
 flat patches labelled by the side they face, Potts-smoothed (ICM: area×(1−cos) vs shared border) so groove walls and bevels stay on
 the flank they're cut into · `chart` per chart: closed genus-1 → `torus` (harmonic one-forms, seamless, re-cut to the reduced lattice
@@ -99,6 +99,9 @@ footprint) allocates only its non-empty tiles. Format 2 also keeps the files a p
 and View › Reference image (`asset/ref`), so a project opens as it was saved without the folders it came from (built-in
 pack maps and shipped decals are paths, never copied). Bakes are still not saved — they are derived: the saved generator
 pixels show at once, and the first generator edit after reopening bakes the maps again in the background (`editGen`).
+Parts are renamed from every right-click menu (`openMenu` appends Part › Rename for the active part; Van Gogh's 3D and
+texture views get a menu of their own, `partMenu`, the part under the pointer) or F2 (`askRenamePart`, the `rename` ask);
+`renamePart` keeps names unique and renames the bone named after the part with it.
 Store: `project` (path) and `saved`; any change to parts, uvs, result, uvRev, paintRev, params or resolution clears
 `saved` (the title's dot, AppTabs). File › Open project… / Save (Ctrl+S) / Save as (Ctrl+Shift+S) / Recover autosave…;
 Open Recent keeps projects by path; saves run one at a time (one staged Pack). Autosave every 2 min when unsaved: into
@@ -139,6 +142,11 @@ is a share of the model: 0.8% by default, 0.4% in the gun5 set) — the dots wer
 `bleed` (the gutter, only off the surface), PNGs (`png`, rows flipped) per preset into a folder the engine asks
 for (`rfd`); `texture-status` is the busy line. URLs `/…` resolve under `$BARISTA_PUBLIC` or `public/`. Undo, the live
 view and the editor's bake stay at the working resolution; gun5 at 8K: ~90 s, the tab under 1 GB. Test: `cargo test texture`.
+**One atlas** (`ExportReq.atlas` = `params.one_atlas`): the parts share one UV square without overlapping, so each part is
+rendered and its surface texels (`owner`) copied into one shared `Out`, padded once and written as one set of maps
+`{base}-BaseColor.png`… (`write_maps`), its channels the union of the sets'; the FBX puts every part in one material
+named `{base}` on those maps. It used to write a full, mostly empty set per part (5 parts × 8 maps). Test:
+`an_atlas_exports_one_set_of_maps`.
 
 ## Rules
 - `engine/tests/core_shapes.rs` + `ideal.rs` are the spec: cube → Latin cross, cylinder → tin can, cone → sector + disc on its arc
@@ -162,7 +170,7 @@ view and the editor's bake stay at the working resolution; gun5 at 8K: ~90 s, th
   it for the island tools. A face is its whole polygon however it's picked (`selectElems` → `wholePolygons`; switching to face mode
   keeps only polygons with every triangle selected, `completePolygons`), except island picks in UV Magician (Ctrl+L, L, island tools),
   which stay exactly the island, since a seam can run through a quad. In Poly Doc, Select Linked grows over connected mesh
-  (`wholeMesh`), island mode is off, and the UV keys, menus and right-click menu are off; export first unwraps parts Poly Doc changed.
+  (`wholeMesh`), the fourth mode is Part (a click takes the whole part; same `'island'` slot, so every face tool takes it), and the UV keys, menus and right-click menu are off; export first unwraps parts Poly Doc changed.
 
 ## Poly Doc (second workspace: `src/panels/PolyDoc.tsx`, `src/shell/PolyTools.tsx`, `src/polygeo.ts`, `src/health.ts`)
 Square workspace tabs under the menu bar (`src/shell/AppTabs.tsx`, Photoshop/Affinity's persona switch): Poly Doc | UV Magician | Van Gogh | Geppetto (`workspace` in the store), with the current file and its edited dot on the right.
@@ -183,8 +191,27 @@ polygons (`Part.poly` / `Part.sides`) and never move them, so UVs and stretch st
 connected patch (`dissolveFaces`, whole patch at once), edges selected → the two sides of each edge merge; Tris to Quads: lone selected triangles paired greedily, flattest
 (bend < 40°) and squarest first, convex only. A merge whose outline wouldn't be one simple loop is skipped. A triangles-only file
 starts as one polygon per triangle (`ownPolygons`). Check: `node src/polyedit.check.ts`.
+Recalculate Outside (Shift+N, strip, Mesh Check's button, the right-click cure for Flipped / Inside-out) and Flip (Alt+N)
+(`polygeo.recalcOutside` / `flipFaces`, store `recalcOutsideSel` / `flipFacesSel`): per connected piece of the selection
+(none: the part) the winding made consistent, then the piece faces out — closed by signed volume (a shell inside another
+is a cavity's wall and keeps facing in), open by the file's own normals (`Geo.normals`, from `partGeo`), else by its flux
+from its middle. Moves nothing (corners swap; UVs carried); the file's normals swap with them and any that then point
+against their face's winding are turned, so normals and winding always agree. `meshCheck` counts a face wound against the
+file's normals as flipped (an open panel wound backwards is consistent with its neighbours: only its normals tell — the
+"gun 1" grip's bore had 74), and judges a closed shell by the side most of its faces face (flooded from a stray face it
+used to call the whole shell inside-out). An open piece is decided by which side sees out of the part (`escapes`: 16
+BVH rays over each side's hemisphere from up to 24 of its faces), then the file's normals, flux, majority. A turn is
+`Done.wound`, so `carryUVs(…, asSoup)` keeps the soup's winding in the carried output instead of the old output's.
+"gun 1"'s barrel stays red: it was extruded from a hole's edge loop in the chamber block, so it is the hole's wall
+continued (one consistent surface with the block) — a modelling fix, not a winding one. `tools/polydoc.ts --do outside`
+the same headless.
+Display › **Faces** (`docView` 'faces', `FACE_SIDES` in Viewport3D): Blender's face orientation over the shading, blue
+where a face's front is seen, red its back, on the output (what Export writes). **Move parts** (3D header in Poly Doc and
+UV Magician, `MoveParts`): while on, a drag on a part slides it in the view plane (`partOffset`, `viewOffset`; the part's
+`<group>` takes the offset, picks come back through `local`, box select / frame / the knife line add it); Reset puts all
+back; the mesh never moves, nothing is saved, and Van Gogh / Geppetto show parts in place (their tools work in model space).
 The options bar is the tool's own strip (`shell/Chrome.tsx`): the tool name, then the Mode group — Vertex /
-Edge / Face / Island (Poly Doc disables Island: it has no UVs), the icons are the label; Van Gogh's Select-by modes
+Edge / Face / Island (Poly Doc's fourth is Part: it has no UVs; Geppetto disables it), the icons are the label; Van Gogh's Select-by modes
 (Face / Surface / Island / Part) appear only for Select Faces, Bucket and the Materials eyedropper — then the tool's settings. The workspace view
 mode lives in the 3D view header (Poly Doc Wire / Smooth / Health = `docView`; Van Gogh Studio / MatCap / Flat =
 `scene.lighting`), next to the Shading popover; UV Magician's UV header carries Checker / Stretch / Islands = `mode`,
@@ -303,7 +330,22 @@ with eye + thumbnail, drag to reorder, double-click renames; Ctrl / Shift+click 
 stack does: each channel keeps its own mode (`PaintLayer.blend` per channel; `DEFAULT_BLEND` normal for colour / rough /
 metal, height **adds** around mid grey, normals always the whiteout combine, so its select is disabled). The brush starts
 on Base Color alone (`paint.on`), so a colour stroke leaves the material's roughness and metallic under it; tick Rough /
-Metal in the options bar to paint those too. Export is the engine's (see `## Texture export`), never the browser's. Painted texels don't follow a re-unwrap;
+Metal in the options bar to paint those too. Export is the engine's (see `## Texture export`), never the browser's. **Paint follows the mesh** (`paint.transferPaint`,
+store `carryPaint`): a part that lands on new UVs (`land`, a whole-model `solve`) carries its set across — each texel of the
+new layout takes the old texel at the same point of the model (the very same texel where the layout didn't change, else
+the old surface's nearest point through its triangle's corners — read the hit's corners from the BVH's own index, its
+`faceIndex` is not the soup's triangle), then the material layers bake again from their own settings on the new mesh
+(fills, bevels, decals from their 3D frames, generators via `bakePaint`), so new surface is covered; hand paint and masks
+keep the carried pixels. A Poly Doc edit keeps the part's set on its new soup (`shareSet`; a new soup used to start a blank
+set, which a save then wrote — the slide of "gun 1" lost its 7 layers that way), and `meshOnly` remembers the layout the
+texels were laid on (`paintedOn`) until the part lands again. **File › Replace model…** (`replaceModel`): a new version of
+the model's file; parts pair by name, else by shape (`polygeo.surfaceGap`, within 2% of the model: parts renamed here
+still pair), keep their name, set, visibility and bones, unwrap again and carry their paint; the binding comes across per
+triangle (`polygeo.nearestTriangles`: each new triangle the bone of the old one nearest it). Masks, clips and the selection
+take the nearest old surface however far (new surface stays inside its material); pixels only from surface that was
+there. A fill whose material can't be loaded keeps the carried pixels (the carry loads the library itself first): baking
+it on no maps flattened Cerakote to a bare tint.
+Check: `paint.check.ts` (same layout copies texel for texel; a turned, moved layout reads from the same points).
 One atlas parts each still get their own set.
 Solid fill (layer bar square, `addSolidFill`): a fill whose asset is `SOLID` (paint.ts), no maps, colour = tint plus its roughness /
 metallic, editable later; the engine's `fill_at` draws it the same (`plain`). New fills, solids, decals and sheens go in under the
@@ -311,7 +353,7 @@ generators above the active layer (`insertAt`). **All sets** (Layers bar, `linkS
 opacity edits go to the same-named layer on each (`matesOf`, made active so the undo step copies it). Generators bake a part with no
 mesh maps first. Select by **Surface** (`surfaceTris`: flood up to edges bent > angle and < 2× angle from the clicked face), Select by **Material** (`materialsOf`: every face of the part whose middle shows the clicked face's top fill / solid, by its settings; keys 1–5 = Face / Surface / Island / Material / Part), Select ›
 Grow / Shrink (Ctrl+Shift+= / -, `growSelection`, texel space). **Mirror tool** (strip, Ctrl+M; `mirrorHover` / `mirrorPress`, `MirrorPreview`): a click on a mark picks it; hovering shows its mirrored copy's outline where a click would put it — within reach of the spot symmetric to it across the model's middle on X, Y or Z it snaps there (solid; `mirrorFrame`: the point reflected onto the nearest triangle facing the reflected way, up reflected, rotation negated, `flipH` toggled, so it is the mirror image), elsewhere it lies under the pointer (dashed); a click places it as its own layer with the same settings (nothing linked) and hands over to the Decal tool with the copy selected. `decal.check.ts` pins the snap and the reflected frame.
-**Bevel** (Maps › Generators › Bevel, `addBevel` / `editBevel`; `PaintLayer.bevel`): a whole-part bevel faked in the Normal map: within Radius of every edge sharper than Angle (concave ones when ticked) the face's normal leans toward the face across, a fillet's angle at that distance (Round) or the halfway turn (Chamfer); leans from several edges add, so corners round both ways (`bevelEdges` / `bevelNormal` / `bakeBevel`; engine `layers::BevelSrc`, rendered fresh at the export size; tests `paint.check.ts` and `bevel_matches_the_editor` pin 30° at half the radius, 45° chamfer). No bake needed; it uses the part's flat face normals, so it wants Smooth within Sharp edges. **Engrave** (`Decal.engrave`) bends the normal along the ink's edge and lowers the height, in the engine too
+**Bevel** (Maps › Generators › Bevel, `addBevel` / `editBevel`; `PaintLayer.bevel`): a whole-part bevel faked in the Normal map: within Radius of every edge sharper than Angle (concave ones when ticked) the face's normal leans toward the face across, a fillet's angle at that distance (Round: half − asin(d/r · sin half), from the halfway turn at the edge to none at Radius, no flat strip) or the halfway turn (Chamfer); only edges on the texel's own face plane count (a step or a thin plate's far side doesn't), leans the same way (within 45°: one edge's segments, a curve's facets) keep the strongest — summed, every vertex along an edge beaded — and leans different ways add, so corners round both ways (`bevelEdges` / `bevelNormal` / `bakeBevel`; engine `layers::BevelSrc`, rendered fresh at the export size; tests `paint.check.ts` and `bevel_matches_the_editor` pin 24.3° at half the radius of a 90° edge, 45° at it, a split edge leaning the same all along, 45° chamfer). No bake needed; it uses the part's flat face normals, so it wants Smooth within Sharp edges. **Engrave** (`Decal.engrave`) bends the normal along the ink's edge and lowers the height, in the engine too
 (`DecalFrame::at`). **Grip textures** (Decals › Grip, `GRIP_SHAPES` in decals.ts): decals with a `Decal.shape` and no image —
 a rounded panel, an optional groove border and a pattern inside (stipple / grooves / checkering / none), sizes in world units
 (shares of the model on the shelf), so stretching a panel never stretches its dots; `bakeShape` writes Normal and Height, and with
@@ -400,7 +442,11 @@ smart-finish rows were removed; the smart-material recipes were deleted. Cerakot
 no base colour map, only the coating's roughness / normal / height, so its colour is the fill's tint on white (a new one
 starts in the paint colour; grey tile). A fill with no colour map (solid or colorless) is white × tint, editor and engine (`fill_at`).
 The Layers bar's Metal sheen (`addMetalLayer`) adds a layer filling the selection with Metallic 1 / Roughness 0.25 only. `src/decals.ts` +
-`public/assets/decals/` hold 20 original CC0 transparent marks, plus the grip shapes. A decal is a `PaintLayer.decal`
+`public/assets/decals/` hold the **Stickers** tab (the UI name; code, saved layers and the engine still say decal): 103 original CC0
+marks in 8 categories (Receiver, Controls, Proof, Part Stamps, Data Plates, Ordnance, Military, Industrial), drawn as SVG by
+`node tools/stickers.mjs` and rendered to PNG by headless Edge (the engine's `image` reads no SVG); `DecalAsset.engrave` places
+roll marks and stamps engraved (an image mark is read at its texel footprint from a mip chain, `decalMips` / engine `mips`, and the cut's
+slope over ≥ half a texel each side: point-sampling a 1024 px mark into ~120 texels beaded its outline), `tint` is the starting ink (white = a coloured sign's own palette, none = the brush colour). Plus the grip shapes. A decal is a `PaintLayer.decal`
 (`bakeDecal` in `paint.ts`): a tangent projector at its point, front-facing and depth-limited, baked to
 BaseColor/Roughness/Metallic so masks, blend modes and export behave like any layer. The Decal tool **selects and
 transforms**, it does not stamp: `paint.decalMode` is `edit` (the tool and D) — a click picks the mark under that point
@@ -466,8 +512,15 @@ the principal ones are degenerate (a cube, a sphere), a spatial hash for surface
 spanning forest** of those contacts (root = the part whose box holds the model's middle, then the biggest), and given a
 motion read from the name first (`mag` / `slide` / `piston` / `bolt` → slide, `trigger` / `hammer` / `lever` → hinge,
 `button` / `press` / `key` → press, `grip` / `frame` / `shell` / `barrel` → fixed) then from the shape (inserted rod →
-slide, flat lever with a compact contact → hinge, small flat part → press). A hinge's `roll` puts its local X on the
-part's thin axis; its limits are ±90° X. Fixed housing gets no bone and is bound to its parent's bone (details can get a
+slide, flat lever with a compact contact → hinge, small flat part → press unless it sits in the parent's middle plane, a
+trigger in its guard → hinge). A held root (`grip` / `handle`) gets its bone in the hand (`handleFit`): head at the palm, up the handle (the stretch of the
+part farthest from the model box's long axis), X across the model, so posing it turns the whole model about the hand.
+`shell` / `casing` slide (a gun's cartridge case), they are not housing. A part whose name says its motion is never split into loose shells (`namedMotion`: a
+Slider modelled in three pieces is one bone). A hinge's `roll` puts its local X on the
+part's thin axis; its limits are ±90° X. The Hinge / Slide / Press presets re-lay the bone on its part (`fitPart(…, force)`):
+a Press fit lies across the part, the wrong axis to swing about. Pose's **Range to here** (`rangeToPose`) makes the pose
+the end stop, rest … here per axis, so no one types which sign is "back"; `rig.motionOf` reads the preset back (a
+one-way slide stays a slide). Fixed housing gets no bone and is bound to its parent's bone (details can get a
 locked bone instead). Add bone (A) is still the manual single bone: `partAxis` along the part, head toward the model's
 middle. Then work directly: drag a part or bone body (Edit moves the bone, Pose translates it), drag a joint handle to
 reshape it, or drag the tip to aim it (Pose turns it; a hinge follows its arc). A canvas capture hit test (`RigView`)
@@ -485,7 +538,9 @@ gives each triangle of the active part to its nearest bone, for a single mesh ac
 triangle (`Rig.bind[part]`, survives a re-unwrap, dropped if Poly Doc changes the triangle count); a vertex shared by
 triangles of two bones follows both by triangle share (`vertexWeights`, welded by exact position like `files.weld`). The
 pose is not saved; bones, motion, constraints and binding are (`doc.bones`, blobs `rig/<part>`; old `slide` files migrate
-to a Y translation range). Ctrl+Z is the rig's own undo (`rigPast`). Export (FBX, and Blender ready's FBX) adds an
+to a Y translation range). Ctrl+Z / Ctrl+Shift+Z (and Edit › Undo bone or pose) are the rig's own undo (`rigPast`: bones and
+pose together, `RigStep`): an edit takes a step, a pose gesture its first change (`setPose` / `translatePose` /
+`aimPoseAt` / `poseTo` with `step`, a panel slider on pointer down, `rigStep`). Export (FBX, and Blender ready's FBX) adds an
 `Armature` Null with LimbNode bones, a Skin + Cluster per bone per part and the BindPose; roll is in the skeleton,
 constraints and limits are editor-only. Checks: `node src/rig.check.ts [out.fbx]`, then
 `blender -b --factory-startup --python tools/rig-blender-check.py -- out.fbx` (prints bones, vertex groups and the hand
@@ -493,3 +548,41 @@ after a 90° turn); the check covers roll, connected translation, aim/stretch/fo
 guesses, loose shells and FBX. Controls, the status and the short prioritized backlog live in `docs/rig.md`. Next there:
 two-bone reach (part-grab IK), picking a constraint socket, mirror/symmetry, bone collections, auto-skin for a connected
 mesh, and saved pose / FBX constraint baking.
+
+## Da Vinci (fifth workspace: showcase render; `src/views/RenderView.tsx`, `src/panels/DaVinci.tsx`)
+A product shot in a dark room: its own canvas (no editor overlays), the model centred and scaled to ~2 units on a turntable
+(`show.spin` °/s; a cycle = one turn, 6 s at 0). Light is reflections first: Van Gogh's studio plate (`PAINT_HDRI`) is the
+environment, with drei `Lightformer` softboxes hung in it (an overhead box, key panels front-left / front-right, two
+`show.rim` strips and a top strip behind); the camera sees only the `show.bg` backdrop. Dark painted metal is lit by what it
+reflects, so the room must be bright even though the backdrop is black (a lightformer-only room left a black gun black).
+Lamps for the diffuse side: a key that casts the model's own shadows, two rims, a hemisphere fill (three's physical units:
+a black paint needs a key of ~5). No floor (the user wants the model floating in the dark room; `show.floor` stays false, so the Blender scene has none either).
+Each part is a
+`SkinnedMesh` on one shared skeleton (Geppetto's bones + an identity bone, `DetachedBindMode`, matrixWorld written as the
+skin matrix), rigid per triangle; materials are the part's Van Gogh set (`paint.hasSet`, never made here) and the normals
+PartMesh's (`shadingNormals`). Open & close eases rest → `rig.openPose` (Geppetto's current `pose`, or with none — the pose is not saved, so
+a reopened project has none — every bone at the far end of its ranges: slide back, magazine out, trigger pulled; the
+Blender showcase gets the same) and back once a cycle (`openness`). Post (`Cinematic`): the composer's targets are 4× MSAA (no FXAA), optional `UnrealBloomPass` (default
+0: bloom smears a rim into a glow, rims should be crisp lines) and `BokehPass`, a grade shader (vignette, grain scaled with
+the signal, 2.39 bars), then `OutputPass` with Khronos PBR Neutral at `2 ** show.exposure` (EV, as Blender's; it used to be
+fed in as a linear factor, so 0.32 "EV" made everything a third as bright). Dust / handheld are Blender-only now.
+`show.cine` / `dof` / `bloom` / `grain` / `exposure` / `letterbox` / `still` are the panel's settings; Still renders through the composer at its long edge (4K default) and is
+restored to the viewport after, Record turn is one cycle from t = 0 as WebM (`captureStream` + MediaRecorder). Store:
+`show` / `showPlay` / `showRec` (`setShow`, `toggleShowPlay`, `recordShow`); not saved.
+**Render in Blender**: File › Export › Blender ready with "Showcase scene" (`exportShowcase`) sends `showcase` (`show` + each
+bone's pose by name) in the `ExportReq`; after writing the maps and FBX the engine runs Blender (`$BARISTA_BLENDER`, else
+the newest `Program Files\Blender Foundation\Blender *`, else PATH) headless on `tools/blender-showcase.py` (built into
+the engine with `include_str!`, written beside the export with its job and removed after: a low-integrity engine can't
+write the user's temp) and gets `<base>.blend`: the FBX on a `Turntable` empty (linear keys, frame N+1 = frame 1), pose
+bones keyed rest → pose → rest (Bézier, the editor's frames are Blender's bone frames), the materials given a Bevel
+shader (every edge rounded at 0.6% of the model, so each catches a highlight) and a noise break-up of their roughness,
+a ~100 mm lens at Da Vinci's framing, softboxes (a big key on the camera's side for the gradient down each face; rims
+behind the model with 40° spread: beside it they washed a whole dark flank flat grey),
+a glossy floor that fades into the backdrop, a haze volume and dust, a compositor grade (fog glow, lens dispersion,
+vignette, animated grain), tracked hero/low cameras with a slow push-in and DOF, Cycles on GPU (OptiX first) with
+denoising and motion blur (512 adaptive samples at 0.01, 12 bounces, no caustics: the same frame as 1024 / 0.004 / 24
+bounces / caustics within 0.05/255, 4.9 s instead of 8.6 at 2560×1440 on the 4070; no Persistent Data, which crashed
+OptiX past frame 300 of a turntable), AgX, 4K MP4 to `//render/`; everything is organised in Model / Studio / Atmosphere / Camera
+collections, textures are packed into the `.blend`, and a README text block says how to push it further. A missing or
+failing Blender is `ExportDone.warning`, never a lost export. Try it alone: `blender -b --factory-startup --python
+tools/blender-showcase.py -- job.json` (`fbx`, `blend`, `name`, `show`, `pose`; optional `samples`, `width`, `height`).

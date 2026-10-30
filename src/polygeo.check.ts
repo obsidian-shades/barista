@@ -1,6 +1,6 @@
 // node src/polygeo.check.ts: every Poly Doc geometry tool on small flat grids of quads, where the right answer is known.
 import assert from 'node:assert';
-import { addLoops, carryUVs, cleanVerts, connect, curveEdges, knifeOn, gridFill, loopCut, merge, meshCheck, poles, relax, rotateEdge, shapeLoop, slide, subdivide, type Geo, type Sel } from './polygeo.ts';
+import { addLoops, carryUVs, cleanVerts, connect, curveEdges, flipFaces, knifeOn, gridFill, loopCut, merge, meshCheck, poles, recalcOutside, relax, rotateEdge, shapeLoop, slide, subdivide, type Geo, type Sel } from './polygeo.ts';
 import { dissolveFaces, ownPolygons, topoOfSoup, trisToQuads } from './polyedit.ts';
 
 /** A flat grid of quads with column edges at `xs` and row edges at `ys`, minus the cells in `skip` ("x,y"). */
@@ -193,6 +193,85 @@ assert.ok(vertAt(sp.geo, 1, 0) && vertAt(sp.geo, 2, 0), 'spaced');
   for (let f = 0; f < d.island.length; f++) if (r.origin[f] !== gone) for (let j = 0; j < 3; j++) {
     const x = d.positions[f * 9 + j * 3], y = d.positions[f * 9 + j * 3 + 1];
     assert.ok(Math.abs(d.uvs[f * 6 + j * 2] - (x + 10 * d.island[f])) < 1e-4 && Math.abs(d.uvs[f * 6 + j * 2 + 1] - y) < 1e-4, `corner (${x}, ${y}) beside the missing polygon`);
+  }
+}
+// Recalculate Outside: a cube (12 triangles, wound outward) at `o`, size `r`, `inward` turned whole or `flip` faces turned
+function cube(o: number[], r: number, flip: number[] = [], inward = false) {
+  const v = (i: number) => [o[0] + (i & 1 ? r : 0), o[1] + (i & 2 ? r : 0), o[2] + (i & 4 ? r : 0)];
+  const quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]], tris: number[] = [];
+  quads.forEach(([a, b, c, d]) => tris.push(a, b, c, a, c, d));
+  const out: number[] = [];
+  for (let f = 0; f < 12; f++) {
+    const c = [tris[f * 3], tris[f * 3 + 1], tris[f * 3 + 2]];
+    if (inward !== flip.includes(f)) [c[1], c[2]] = [c[2], c[1]];
+    for (const i of c) out.push(...v(i));
+  }
+  return out;
+}
+const volume = (soup: Float32Array) => {
+  let V = 0;
+  for (let f = 0; f < soup.length / 9; f++) {
+    const [a, b, c] = [0, 1, 2].map((k) => [soup[f * 9 + k * 3], soup[f * 9 + k * 3 + 1], soup[f * 9 + k * 3 + 2]]);
+    V += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6;
+  }
+  return V;
+};
+{
+  const geo = (xs: number[]) => { const soup = new Float32Array(xs); return { soup, ...ownPolygons(soup.length / 9) }; };
+  // three faces turned the other way, and a whole second cube inside out, far from the origin
+  const g = geo([...cube([0, 0, 0], 1, [1, 4, 9]), ...cube([100, 50, 20], 2, [], true)]);
+  assert.equal(meshCheck(g).flipped.length, 3); assert.equal(meshCheck(g).insideOut.length, 1);
+  const r = recalcOutside(g, sel({}))!, m = meshCheck(r.geo);
+  assert.equal(r.faces!.length, 15, 'the three strays and the whole inside-out cube');
+  assert.ok(!m.flipped.length && !m.insideOut.length, 'every face out');
+  assert.ok(Math.abs(volume(r.geo.soup) - 9) < 1e-3, `volume ${volume(r.geo.soup)}`);
+  assert.equal(recalcOutside(r.geo, sel({})), null, 'nothing left to turn');
+  // only the selection: the inside-out cube's faces alone
+  const only = recalcOutside(g, sel({ faces: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23] }))!;
+  assert.equal(only.faces!.length, 12); assert.equal(meshCheck(only.geo).flipped.length, 3, 'the first cube left alone');
+  // a cavity: a small cube inside a big one, its wall facing in, stays as it is
+  const cav = geo([...cube([0, 0, 0], 4), ...cube([1, 1, 1], 1, [], true)]);
+  assert.equal(recalcOutside(cav, sel({})), null, 'a cavity wall faces in on purpose');
+  // an open box (a cube without its top two triangles) half turned over comes out facing away from its middle
+  const box = geo(cube([0, 0, 0], 1, [0, 2, 3, 6]).slice(0, 9 * 10).concat(cube([0, 0, 0], 1).slice(9 * 12)));
+  const ob = recalcOutside(box, sel({}))!;
+  assert.ok(!meshCheck(ob.geo).flipped.length, 'open box wound alike');
+  assert.ok(volume(ob.geo.soup) > 0, 'open box faces out');
+  // Flip turns over exactly the selection
+  const fl = flipFaces(r.geo, sel({ faces: [0, 1] }))!;
+  assert.equal(meshCheck(fl.geo).flipped.length, 2);
+  // an open panel wound backwards but whose file normals point out: Mesh Check counts it, Recalculate Outside turns it
+  // and keeps its normals (they were right); a face whose normals were wrong gets them turned instead
+  {
+    const soup = new Float32Array([0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0]); // wound facing -Z
+    const up = new Float32Array(18).map((_, i) => (i % 3 === 2 ? 1 : 0)), panel = { soup, ...ownPolygons(2), normals: up };
+    assert.equal(meshCheck(panel).flipped.length, 2, 'wound against its normals');
+    const r = recalcOutside(panel, sel({}))!;
+    assert.equal(r.faces!.length, 2); assert.equal(meshCheck(r.geo).flipped.length, 0);
+    assert.deepEqual(Array.from(r.normals!), Array.from(up), 'the normals were right: kept');
+    const fl = flipFaces(r.geo, sel({ faces: [0] }))!;
+    assert.ok(fl.normals![2] < 0, 'Flip turns the normals with the face');
+  }
+  // a barrel the file has inside out (an open tube, winding and normals both pointing at its axis): its outside is the
+  // side that sees out, so it turns outward and its normals with it
+  {
+    const xs: number[] = [], ns: number[] = [], ring = (k: number): V => [Math.cos((k / 12) * 2 * Math.PI), Math.sin((k / 12) * 2 * Math.PI)];
+    type V = [number, number];
+    for (let k = 0; k < 12; k++) {
+      const [a, b] = [ring(k), ring(k + 1)], p = (q: V, z: number) => [q[0], q[1], z];
+      // outward would be a0 b0 b1 / a0 b1 a1: wound the other way, normals at the axis
+      for (const tri of [[p(a, 0), p(b, 1), p(b, 0)], [p(a, 0), p(a, 1), p(b, 1)]]) for (const c of tri) { xs.push(...c); ns.push(-c[0], -c[1], 0); }
+    }
+    const soup = new Float32Array(xs), tube = { soup, ...ownPolygons(soup.length / 9), normals: new Float32Array(ns) };
+    assert.equal(meshCheck(tube).flipped.length, 0, 'consistent, and agreeing with its own normals');
+    const r = recalcOutside(tube, sel({}))!;
+    assert.equal(r.faces!.length, 24, 'the whole tube turned');
+    for (let f = 0; f < 24; f++) {
+      const o = f * 9, q = r.geo.soup, u = [q[o + 3] - q[o], q[o + 4] - q[o + 1], q[o + 5] - q[o + 2]], v = [q[o + 6] - q[o], q[o + 7] - q[o + 1], q[o + 8] - q[o + 2]];
+      const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2]], cx = (q[o] + q[o + 3] + q[o + 6]) / 3, cy = (q[o + 1] + q[o + 4] + q[o + 7]) / 3;
+      assert.ok(n[0] * cx + n[1] * cy > 0, `triangle ${f} still faces the axis`);
+      assert.ok(r.normals![o] * cx + r.normals![o + 1] * cy > 0, `triangle ${f}'s normal still at the axis`);
+    }
   }
 }
 console.log('polygeo ok');

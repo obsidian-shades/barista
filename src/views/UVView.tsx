@@ -8,7 +8,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { islandColor, stretchColor, uvMapCanvas, type UVMap } from '../colors';
 import { pickTri } from '../islands';
 import {
-  texSet, paintPress, paintDrag, paintEnd, painting, selectPaintInUV, deselectPaint, type PaintMods, beginEdit, cancelXform, clearSelection, confirmXform, kindOf, liveSel, nudge, pinsOf, pointer, xformMouse, repack, selectElems, selectLoop, setUvScope, setTextureResolution, setUvMap, TEXTURE_RESOLUTIONS, TILE, useApp, uvTiles, contextMenu,
+  texSet, paintPress, paintDrag, paintEnd, painting, selectPaintInUV, deselectPaint, type PaintMods, beginEdit, cancelXform, clearSelection, confirmXform, kindOf, liveSel, nudge, pinsOf, pointer, xformMouse, repack, selectElems, selectLoop, setUvScope, setTextureResolution, setUvMap, TEXTURE_RESOLUTIONS, TILE, useApp, uvTiles, contextMenu, partMenu,
   type SelOp,
 } from '../store';
 import { polygonsOf, topoOf } from '../topo';
@@ -581,7 +581,7 @@ export function UVView() {
       <div className="vbody uvbody" ref={box}>
         {paint && <div className="brushring" ref={rings} style={{ display: 'none' }}><div /></div>}
         <canvas ref={cv} className={paint ? 'painting' : undefined} onPointerDown={down} onPointerMove={move} onPointerUp={up} onWheel={wheel} onPointerLeave={() => { setHot(null); if (rings.current) rings.current.style.display = 'none'; }}
-          onContextMenu={(e) => { e.preventDefault(); if (noMenu.current) noMenu.current = false; else if (!paint) contextMenu(); }} />
+          onContextMenu={(e) => { e.preventDefault(); if (noMenu.current) noMenu.current = false; else if (!paint) contextMenu(); else partMenu(e.clientX, e.clientY); }} />
         {!paint && !xform && <IslandBar />}
         {xform && <div className="xform-info">{xform.info}<span>X / Y axis · type a value · Ctrl snaps · click or Enter keeps · Esc or right click cancels</span></div>}
         {loading && (loading.phase === 'error'
